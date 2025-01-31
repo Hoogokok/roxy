@@ -1,32 +1,35 @@
-use reverse_proxy_traefik::routing::{HostInfo, RoutingTable, BackendService};
+use reverse_proxy_traefik::routing::{HostInfo, RoutingTable, BackendService, RoutingError};
 
 #[test]
 fn test_host_info_parsing() {
     // 기본 케이스 테스트
     let test_cases = vec![
         // (입력, 예상 결과)
-        ("example.com", Some(("example.com", None))),
-        ("example.com:8080", Some(("example.com", Some(8080)))),
-        ("example.com:80", Some(("example.com", Some(80)))),
+        ("example.com", Ok(("example.com", None))),
+        ("example.com:8080", Ok(("example.com", Some(8080)))),
+        ("example.com:80", Ok(("example.com", Some(80)))),
         // 잘못된 입력 테스트
-        ("example.com:invalid", None),
-        ("example.com:", None),
-        (":8080", None),
-        ("", None),
-        ("example.com:65536", None),  // 포트 범위 초과
-        ("example.com:0", None),      // 유효하지 않은 포트
-        ("example.com:8080:extra", None), // 추가 콜론
+        ("example.com:invalid", Err(RoutingError::InvalidPort("invalid".to_string()))),
+        ("example.com:", Err(RoutingError::InvalidHost("example.com:".to_string()))),
+        (":8080", Err(RoutingError::InvalidHost(":8080".to_string()))),
+        ("", Err(RoutingError::InvalidHost("".to_string()))),
+        ("example.com:65536", Err(RoutingError::InvalidPort("65536".to_string()))),
+        ("example.com:0", Err(RoutingError::InvalidPort("0".to_string()))),
+        ("example.com:8080:extra", Err(RoutingError::InvalidHost("example.com:8080:extra".to_string()))),
     ];
 
     for (input, expected) in test_cases {
         let result = HostInfo::from_header_value(input);
         match expected {
-            Some((name, port)) => {
+            Ok((name, port)) => {
                 let info = result.expect(&format!("Failed to parse valid host: {}", input));
                 assert_eq!(info.name, name);
                 assert_eq!(info.port, port);
             }
-            None => assert!(result.is_none(), "Should fail to parse invalid host: {}", input),
+            Err(expected_err) => {
+                let err = result.expect_err(&format!("Should fail to parse invalid host: {}", input));
+                assert!(matches!(err, expected_err));
+            }
         }
     }
 }
@@ -45,7 +48,7 @@ fn test_routing_table_basic() {
         name: "example.com".to_string(),
         port: None,
     };
-    assert!(table.find_backend(&host_info).is_some());
+    assert!(table.find_backend(&host_info).is_ok());
 }
 
 #[test]
@@ -83,7 +86,10 @@ fn test_routing_table_multiple_hosts() {
         name: "unknown.com".to_string(),
         port: None,
     };
-    assert!(table.find_backend(&unknown_host).is_none());
+    assert!(matches!(
+        table.find_backend(&unknown_host).unwrap_err(),
+        RoutingError::BackendNotFound(_)
+    ));
 }
 
 #[test]
