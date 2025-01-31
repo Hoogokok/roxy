@@ -1,3 +1,5 @@
+mod routing;
+
 use std::convert::Infallible;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
