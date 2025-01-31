@@ -5,7 +5,7 @@ use tokio::net::TcpListener;
 use http_body_util::{Empty, Full};
 use hyper::body::Bytes;
 use hyper_util::rt;
-use hyper::{Method, StatusCode};
+use hyper::{Method, StatusCode, header};
 use std::sync::Arc;
 
 // 라우트 설정을 위한 불변 데이터 구조
@@ -55,12 +55,61 @@ fn welcome_handler() -> hyper::Response<Full<Bytes>> {
         .unwrap()
 }
 
+// 호스트 정보를 담는 불변 데이터 구조
+#[derive(Clone, Debug)]
+struct HostInfo {
+    name: String,
+    port: Option<u16>,
+}
+
+impl HostInfo {
+    // 호스트 헤더 값에서 HostInfo를 생성하는 순수 함수
+    fn from_header_value(host: &str) -> Option<Self> {
+        let parts: Vec<&str> = host.split(':').collect();
+        match parts.as_slice() {
+            [name] => Some(HostInfo {
+                name: name.to_string(),
+                port: None,
+            }),
+            [name, port] => Some(HostInfo {
+                name: name.to_string(),
+                port: port.parse().ok(),
+            }),
+            _ => None,
+        }
+    }
+}
+
+// 요청에서 호스트 정보를 추출하는 순수 함수
+fn extract_host(req: &hyper::Request<hyper::body::Incoming>) -> Option<HostInfo> {
+    req.headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .and_then(HostInfo::from_header_value)
+}
+
 // handle_request 함수 수정
 async fn handle_request(
     router: Arc<Router>,
     req: hyper::Request<hyper::body::Incoming>,
 ) -> Result<hyper::Response<Full<Bytes>>, Infallible> {
-    Ok(router.route(&req).await)
+    // 호스트 헤더 추출
+    match extract_host(&req) {
+        Some(host) => {
+            println!("Received request for host: {:?}", host);
+            Ok(hyper::Response::builder()
+                .status(StatusCode::OK)
+                .body(Full::new(Bytes::from(format!("Received request for host: {:?}", host))))
+                .unwrap())
+        }
+        None => {
+            println!("No host header found");
+            Ok(hyper::Response::builder()
+                .status(StatusCode::BAD_REQUEST)
+                .body(Full::new(Bytes::from("Missing or invalid Host header")))
+                .unwrap())
+        }
+    }
 }
 
 #[tokio::main]
