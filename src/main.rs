@@ -13,6 +13,7 @@ use std::sync::Arc;
 use routing::RoutingTable;
 use docker::DockerManager;
 use tokio::time::{interval, Duration};
+use crate::docker::DockerEvent;
 
 async fn handle_request(
     routing_table: Arc<tokio::sync::RwLock<RoutingTable>>,
@@ -67,16 +68,23 @@ async fn main() {
     // 라우팅 테이블을 RwLock으로 감싸서 동시성 지원
     let routing_table = Arc::new(tokio::sync::RwLock::new(RoutingTable::new()));
 
-    // 주기적으로 라우팅 테이블 업데이트
-    let update_interval = interval(Duration::from_secs(30));
-    let docker_manager = Arc::new(docker_manager);
+    // Docker 이벤트 구독
+    let mut event_rx = docker_manager.subscribe_to_events().await;
     let routing_table_clone = routing_table.clone();
 
+    // 이벤트 처리 태스크 시작
     tokio::spawn(async move {
-        let mut interval = update_interval;
-        loop {
-            interval.tick().await;
-            update_routes(&docker_manager, routing_table_clone.clone()).await;
+        while let Some(event) = event_rx.recv().await {
+            match event {
+                DockerEvent::RoutesUpdated(routes) => {
+                    let mut table = routing_table_clone.write().await;
+                    table.sync_docker_routes(routes);
+                    println!("라우팅 테이블이 Docker 이벤트로 인해 업데이트되었습니다");
+                }
+                DockerEvent::Error(e) => {
+                    eprintln!("Docker 이벤트 처리 중 에러 발생: {}", e);
+                }
+            }
         }
     });
 
