@@ -14,14 +14,19 @@ impl HostInfo {
     pub fn from_header_value(host: &str) -> Option<Self> {
         let parts: Vec<&str> = host.split(':').collect();
         match parts.as_slice() {
-            [name] => Some(HostInfo {
+            [name] if !name.is_empty() => Some(HostInfo {
                 name: name.to_string(),
                 port: None,
             }),
-            [name, port] => port.parse::<u16>().ok().map(|port_num| HostInfo {
-                name: name.to_string(),
-                port: Some(port_num),
-            }),
+            [name, port] if !name.is_empty() => {
+                port.parse::<u16>()
+                    .ok()
+                    .filter(|&p| p > 0)  // 포트 0 제외
+                    .map(|port_num| HostInfo {
+                        name: name.to_string(),
+                        port: Some(port_num),
+                    })
+            },
             _ => None,
         }
     }
