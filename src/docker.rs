@@ -60,6 +60,16 @@ pub struct ContainerInfo {
     address: SocketAddr,
 }
 
+impl ContainerInfo {
+    fn new(host: String, address: SocketAddr) -> Self {
+        Self { host, address }
+    }
+
+    fn into_route(self) -> (String, BackendService) {
+        (self.host, BackendService { address: self.address })
+    }
+}
+
 impl DockerManager {
     /// Docker 클라이언트를 초기화합니다.
     pub async fn new() -> Result<Self, DockerError> {
@@ -95,10 +105,12 @@ impl DockerManager {
     fn container_to_route(&self, container: &ContainerSummary) -> Result<(String, BackendService), DockerError> {
         let container_id = container.id.as_deref().unwrap_or("unknown").to_string();
         
-        let host = self.extract_host_label(container, &container_id)?;
-        let address = self.extract_address(container, &container_id)?;
+        let info = ContainerInfo::new(
+            self.extract_host_label(container, &container_id)?,
+            self.extract_address(container, &container_id)?
+        );
         
-        Ok((host, BackendService { address }))
+        Ok(info.into_route())
     }
 
     /// 컨테이너에서 호스트 라벨을 추출합니다.
@@ -143,29 +155,32 @@ impl DockerManager {
         })
     }
 
+    fn create_event_filters() -> HashMap<String, Vec<String>> {
+        let mut filters = HashMap::new();
+        filters.insert(
+            "type".to_string(),
+            vec!["container".to_string()]
+        );
+        filters.insert(
+            "event".to_string(),
+            vec![
+                "start".to_string(),
+                "stop".to_string(),
+                "die".to_string(),
+                "destroy".to_string(),
+            ]
+        );
+        filters
+    }
+
     /// Docker 이벤트를 구독하고 라우팅 테이블 업데이트를 위한 이벤트를 전송합니다.
     pub async fn subscribe_to_events(&self) -> mpsc::Receiver<DockerEvent> {
         let (tx, rx) = mpsc::channel(32);
         let docker = self.docker.clone();
 
         tokio::spawn(async move {
-            let mut filters = HashMap::new();
-            filters.insert(
-                "type".to_string(),
-                vec!["container".to_string()]
-            );
-            filters.insert(
-                "event".to_string(),
-                vec![
-                    "start".to_string(),
-                    "stop".to_string(),
-                    "die".to_string(),
-                    "destroy".to_string(),
-                ]
-            );
-
             let options = EventsOptions {
-                filters,
+                filters: Self::create_event_filters(),
                 ..Default::default()
             };
 
@@ -188,34 +203,44 @@ impl DockerManager {
         rx
     }
 
+    fn should_update_routes(action: Option<&str>) -> bool {
+        matches!(action.as_deref(), 
+            Some("start") | Some("stop") | Some("die") | Some("destroy"))
+    }
+
     /// Docker 이벤트를 처리하고 필요한 경우 라우팅 테이블을 업데이트합니다.
     async fn handle_docker_event(
         docker: &Docker,
         event: &EventMessage,
         tx: &mpsc::Sender<DockerEvent>,
     ) -> Result<(), DockerError> {
-        // 컨테이너 이벤트인지 확인
         if event.typ != Some(EventMessageTypeEnum::CONTAINER) {
             return Ok(());
         }
 
-        // 이벤트 종류에 따라 처리
-        match event.action.as_deref() {
-            Some("start") | Some("stop") | Some("die") | Some("destroy") => {
-                // 전체 라우팅 테이블 갱신
-                let manager = DockerManager { docker: docker.clone() };
-                match manager.get_container_routes().await {
-                    Ok(routes) => {
-                        let _ = tx.send(DockerEvent::RoutesUpdated(routes)).await;
-                    }
-                    Err(e) => {
-                        let _ = tx.send(DockerEvent::Error(e)).await;
-                    }
-                }
-            }
-            _ => {}
+        if Self::should_update_routes(event.action.as_deref()) {
+            Self::update_and_send_routes(docker, tx).await?;
         }
 
+        Ok(())
+    }
+
+    async fn update_and_send_routes(
+        docker: &Docker, 
+        tx: &mpsc::Sender<DockerEvent>
+    ) -> Result<(), DockerError> {
+        let manager = DockerManager { docker: docker.clone() };
+        let routes = manager.get_container_routes().await?;
+        tx.send(DockerEvent::RoutesUpdated(routes))
+            .await
+            .map_err(|_| DockerError::ConnectionError(
+                bollard::errors::Error::IOError { 
+                    err: std::io::Error::new(
+                        std::io::ErrorKind::Other, 
+                        "채널 전송 실패"
+                    )
+                }
+            ))?;
         Ok(())
     }
 }
