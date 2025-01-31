@@ -8,33 +8,51 @@ use hyper_util::rt;
 use hyper::{Method, StatusCode};
 use std::sync::Arc;
 
-// Router 구조체 정의
+// 라우트 설정을 위한 불변 데이터 구조
 #[derive(Clone)]
-struct Router;
+struct Route {
+    path: String,
+    method: Method,
+    handler: Arc<dyn Fn() -> hyper::Response<Full<Bytes>> + Send + Sync>,
+}
+
+// 라우터 상태를 표현하는 불변 데이터 구조
+#[derive(Clone)]
+struct Router {
+    routes: Arc<Vec<Route>>,
+}
 
 impl Router {
-    fn new() -> Self {
-        Router
+    fn new(routes: Vec<Route>) -> Self {
+        Router {
+            routes: Arc::new(routes)
+        }
     }
 
+    // 순수 함수: 입력이 같으면 항상 같은 출력을 반환
     async fn route(&self, req: &hyper::Request<hyper::body::Incoming>) -> hyper::Response<Full<Bytes>> {
         println!("Routing request: {} {}", req.method(), req.uri().path());
         
-        match (req.method(), req.uri().path()) {
-            (&Method::GET, "/") => {
-                hyper::Response::builder()
-                    .status(StatusCode::OK)
-                    .body(Full::new(Bytes::from("Welcome to Reverse Proxy!")))
-                    .unwrap()
-            }
-            _ => {
+        // 함수형 스타일로 라우트 찾기
+        self.routes
+            .iter()
+            .find(|route| route.method == *req.method() && route.path == req.uri().path())
+            .map(|route| (route.handler)())
+            .unwrap_or_else(|| {
                 hyper::Response::builder()
                     .status(StatusCode::NOT_FOUND)
                     .body(Full::new(Bytes::from("Not Found")))
                     .unwrap()
-            }
-        }
+            })
     }
+}
+
+// 핸들러 함수들 - 순수 함수로 구현
+fn welcome_handler() -> hyper::Response<Full<Bytes>> {
+    hyper::Response::builder()
+        .status(StatusCode::OK)
+        .body(Full::new(Bytes::from("Welcome to Reverse Proxy!")))
+        .unwrap()
 }
 
 // handle_request 함수 수정
@@ -47,7 +65,16 @@ async fn handle_request(
 
 #[tokio::main]
 async fn main() {
-    let router = Arc::new(Router::new());
+    // 라우트 설정을 데이터로 정의
+    let routes = vec![
+        Route {
+            path: "/".to_string(),
+            method: Method::GET,
+            handler: Arc::new(welcome_handler),
+        },
+    ];
+
+    let router = Arc::new(Router::new(routes));
     
     // TCP 리스너 생성
     let listener = match TcpListener::bind("0.0.0.0:80").await {
