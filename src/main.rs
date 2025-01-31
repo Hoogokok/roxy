@@ -17,30 +17,30 @@ async fn handle_request(
 ) -> Result<hyper::Response<Full<Bytes>>, Infallible> {
     // 호스트 헤더 추출 및 백엔드 서비스 찾기
     match RoutingTable::extract_host(&req) {
-        Some(host_info) => {
+        Ok(host_info) => {
             println!("Received request for host: {:?}", host_info);
             match routing_table.find_backend(&host_info) {
-                Some(backend) => {
+                Ok(backend) => {
                     println!("Found backend service: {:?}", backend);
                     Ok(hyper::Response::builder()
                         .status(StatusCode::OK)
                         .body(Full::new(Bytes::from(format!("Found backend: {:?}", backend.address))))
                         .unwrap())
                 }
-                None => {
-                    println!("No backend found for host: {:?}", host_info);
+                Err(e) => {
+                    println!("Backend not found: {}", e);
                     Ok(hyper::Response::builder()
                         .status(StatusCode::NOT_FOUND)
-                        .body(Full::new(Bytes::from("No backend found for host")))
+                        .body(Full::new(Bytes::from(format!("Error: {}", e))))
                         .unwrap())
                 }
             }
         }
-        None => {
-            println!("No host header found");
+        Err(e) => {
+            println!("Failed to extract host: {}", e);
             Ok(hyper::Response::builder()
                 .status(StatusCode::BAD_REQUEST)
-                .body(Full::new(Bytes::from("Missing or invalid Host header")))
+                .body(Full::new(Bytes::from(format!("Error: {}", e))))
                 .unwrap())
         }
     }
