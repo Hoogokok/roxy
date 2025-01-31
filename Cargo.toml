@@ -3,9 +3,16 @@ name = "reverse_proxy_traefik"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "reverse_proxy_traefik"
+path = "src/lib.rs"
+
+[[bin]]
+name = "reverse_proxy_traefik"
+path = "src/main.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["net", "macros", "rt-multi-thread"] }
 hyper = { version = "1.6.0", features = ["server", "http1", "client"] }
 http-body-util = "0.1"
-tokio-util = { version = "0.7.10", features = ["compat"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
