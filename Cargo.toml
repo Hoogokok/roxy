@@ -5,3 +5,6 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1", features = ["net", "macros", "rt-multi-thread"] }
+hyper = { version = "1.6.0", features = ["server", "http1"] }
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["server", "tcp"] }
