@@ -12,23 +12,23 @@ pub struct HostInfo {
 impl HostInfo {
     // 호스트 헤더 값에서 HostInfo를 생성하는 순수 함수
     pub fn from_header_value(host: &str) -> Option<Self> {
-        let parts: Vec<&str> = host.split(':').collect();
-        match parts.as_slice() {
-            [name] if !name.is_empty() => Some(HostInfo {
-                name: name.to_string(),
-                port: None,
-            }),
-            [name, port] if !name.is_empty() => {
-                port.parse::<u16>()
-                    .ok()
-                    .filter(|&p| p > 0)  // 포트 0 제외
-                    .map(|port_num| HostInfo {
-                        name: name.to_string(),
-                        port: Some(port_num),
-                    })
-            },
-            _ => None,
-        }
+        // 호스트 문자열을 (이름, 포트) 튜플로 파싱
+        let parse_host_parts = |s: &str| -> Option<(String, Option<u16>)> {
+            let parts: Vec<&str> = s.split(':').collect();
+            match parts.as_slice() {
+                [name] if !name.is_empty() => 
+                    Some((name.to_string(), None)),
+                [name, port] if !name.is_empty() => 
+                    port.parse::<u16>()
+                        .ok()
+                        .filter(|&p| p > 0)
+                        .map(|port_num| (name.to_string(), Some(port_num))),
+                _ => None,
+            }
+        };
+
+        // 파싱된 결과를 HostInfo로 변환
+        parse_host_parts(host).map(|(name, port)| HostInfo { name, port })
     }
 }
 
