@@ -144,8 +144,23 @@ impl RoutingTable {
             .ok_or_else(|| RoutingError::BackendNotFound(host.to_string()))
     }
 
+    /// HTTP 요청에서 호스트 정보를 추출하고 해당하는 백엔드 서비스를 찾습니다.
+    /// 
+    /// # 인자
+    /// 
+    /// * `req` - HTTP 요청
+    /// 
+    /// # 반환
+    /// 
+    /// 성공 시 `BackendService`에 대한 참조를 포함한 `Ok`를 반환하고,
+    /// 실패 시 적절한 `RoutingError`를 포함한 `Err`를 반환합니다.
+    pub fn route_request<B>(&self, req: &hyper::Request<B>) -> Result<&BackendService, RoutingError> {
+        let host_info = Self::extract_host(req)?;
+        self.find_backend(&host_info)
+    }
+
     /// HTTP 요청에서 호스트 정보를 추출합니다.
-    pub fn extract_host(req: &hyper::Request<hyper::body::Incoming>) -> Result<HostInfo, RoutingError> {
+    pub fn extract_host<B>(req: &hyper::Request<B>) -> Result<HostInfo, RoutingError> {
         let host = req.headers()
             .get(header::HOST)
             .ok_or(RoutingError::MissingHost)?

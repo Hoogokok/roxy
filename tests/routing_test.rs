@@ -1,4 +1,8 @@
 use reverse_proxy_traefik::routing::{HostInfo, RoutingTable, BackendService, RoutingError};
+use std::net::SocketAddr;
+use hyper::{Request, Method};
+use http_body_util::Empty;
+use hyper::body::Bytes;
 
 #[test]
 fn test_host_info_parsing() {
@@ -119,4 +123,90 @@ fn test_routing_table_overwrite() {
     };
     let backend = table.find_backend(&host_info).unwrap();
     assert_eq!(backend.address.to_string(), "127.0.0.1:9090");
+}
+
+fn setup_routing_table() -> RoutingTable {
+    let mut table = RoutingTable::new();
+    table.add_route(
+        "example.com".to_string(),
+        BackendService {
+            address: "127.0.0.1:8080".parse().unwrap(),
+        },
+    );
+    table
+}
+
+fn create_request(host: Option<&str>) -> Request<Empty<Bytes>> {
+    let mut builder = Request::builder()
+        .method(Method::GET)
+        .uri("http://example.com/some/path");
+
+    if let Some(host_value) = host {
+        builder = builder.header("Host", host_value);
+    }
+
+    builder.body(Empty::new()).unwrap()
+}
+
+#[test]
+fn test_route_request_success() {
+    let table = setup_routing_table();
+    let req = create_request(Some("example.com"));
+
+    let result = table.route_request(&req);
+    assert!(result.is_ok());
+    
+    let backend = result.unwrap();
+    assert_eq!(
+        backend.address,
+        "127.0.0.1:8080".parse::<SocketAddr>().unwrap()
+    );
+}
+
+#[test]
+fn test_route_request_missing_host() {
+    let table = setup_routing_table();
+    let req = create_request(None);
+
+    let result = table.route_request(&req);
+    assert!(matches!(result.unwrap_err(), RoutingError::MissingHost));
+}
+
+#[test]
+fn test_route_request_unknown_host() {
+    let table = setup_routing_table();
+    let req = create_request(Some("unknown.com"));
+
+    let result = table.route_request(&req);
+    assert!(matches!(
+        result.unwrap_err(),
+        RoutingError::BackendNotFound(host) if host == "unknown.com"
+    ));
+}
+
+#[test]
+fn test_route_request_invalid_host() {
+    let table = setup_routing_table();
+    let req = create_request(Some("example.com:invalid_port"));
+
+    let result = table.route_request(&req);
+    assert!(matches!(
+        result.unwrap_err(),
+        RoutingError::InvalidPort(port) if port == "invalid_port"
+    ));
+}
+
+#[test]
+fn test_route_request_with_port() {
+    let table = setup_routing_table();
+    let req = create_request(Some("example.com:8080"));
+
+    let result = table.route_request(&req);
+    assert!(result.is_ok());
+    
+    let backend = result.unwrap();
+    assert_eq!(
+        backend.address,
+        "127.0.0.1:8080".parse::<SocketAddr>().unwrap()
+    );
 } 
