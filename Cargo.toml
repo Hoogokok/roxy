@@ -1,0 +1,6 @@
+[package]
+name = "reverse_proxy_traefik"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
