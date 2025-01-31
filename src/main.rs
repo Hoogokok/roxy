@@ -12,7 +12,6 @@ use hyper::StatusCode;
 use std::sync::Arc;
 use routing::RoutingTable;
 use docker::DockerManager;
-use tokio::time::{interval, Duration};
 use crate::docker::DockerEvent;
 
 async fn handle_request(
@@ -41,20 +40,6 @@ async fn handle_request(
                 .body(Full::new(Bytes::from(format!("Error: {}", e))))
                 .unwrap())
         }
-    }
-}
-
-async fn update_routes(
-    docker_manager: &DockerManager,
-    routing_table: Arc<tokio::sync::RwLock<RoutingTable>>,
-) {
-    match docker_manager.get_container_routes().await {
-        Ok(routes) => {
-            let mut table = routing_table.write().await;
-            table.sync_docker_routes(routes);
-            println!("Updated routing table from Docker containers");
-        }
-        Err(e) => eprintln!("Failed to update routes from Docker: {}", e),
     }
 }
 
