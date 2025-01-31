@@ -174,4 +174,9 @@ impl RoutingTable {
     pub fn find_backend(&self, host_info: &HostInfo) -> Result<&BackendService, RoutingError> {
         self.get_backend(&host_info.name)
     }
+
+    /// Docker 컨테이너로부터 라우팅 규칙을 업데이트합니다.
+    pub fn sync_docker_routes(&mut self, routes: HashMap<String, BackendService>) {
+        self.routes = routes;
+    }
 } 
