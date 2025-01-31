@@ -15,31 +15,24 @@ async fn handle_request(
     routing_table: Arc<RoutingTable>,
     req: hyper::Request<hyper::body::Incoming>,
 ) -> Result<hyper::Response<Full<Bytes>>, Infallible> {
-    // 호스트 헤더 추출 및 백엔드 서비스 찾기
-    match RoutingTable::extract_host(&req) {
-        Ok(host_info) => {
-            println!("Received request for host: {:?}", host_info);
-            match routing_table.find_backend(&host_info) {
-                Ok(backend) => {
-                    println!("Found backend service: {:?}", backend);
-                    Ok(hyper::Response::builder()
-                        .status(StatusCode::OK)
-                        .body(Full::new(Bytes::from(format!("Found backend: {:?}", backend.address))))
-                        .unwrap())
-                }
-                Err(e) => {
-                    println!("Backend not found: {}", e);
-                    Ok(hyper::Response::builder()
-                        .status(StatusCode::NOT_FOUND)
-                        .body(Full::new(Bytes::from(format!("Error: {}", e))))
-                        .unwrap())
-                }
-            }
+    match routing_table.route_request(&req) {
+        Ok(backend) => {
+            println!("Found backend service: {:?}", backend);
+            Ok(hyper::Response::builder()
+                .status(StatusCode::OK)
+                .body(Full::new(Bytes::from(format!("Found backend: {:?}", backend.address))))
+                .unwrap())
         }
         Err(e) => {
-            println!("Failed to extract host: {}", e);
+            println!("Routing error: {}", e);
+            let status = match e {
+                routing::RoutingError::MissingHost | routing::RoutingError::InvalidHost(_) | 
+                routing::RoutingError::InvalidPort(_) | routing::RoutingError::HeaderParseError(_) => StatusCode::BAD_REQUEST,
+                routing::RoutingError::BackendNotFound(_) => StatusCode::NOT_FOUND,
+            };
+            
             Ok(hyper::Response::builder()
-                .status(StatusCode::BAD_REQUEST)
+                .status(status)
                 .body(Full::new(Bytes::from(format!("Error: {}", e))))
                 .unwrap())
         }
