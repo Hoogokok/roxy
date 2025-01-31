@@ -18,9 +18,9 @@ impl HostInfo {
                 name: name.to_string(),
                 port: None,
             }),
-            [name, port] => Some(HostInfo {
+            [name, port] => port.parse::<u16>().ok().map(|port_num| HostInfo {
                 name: name.to_string(),
-                port: port.parse().ok(),
+                port: Some(port_num),
             }),
             _ => None,
         }
