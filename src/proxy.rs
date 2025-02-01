@@ -30,27 +30,44 @@ pub async fn proxy_request(
 ) -> Response<Full<Bytes>> {
     match build_proxied_request(backend, req) {
         Ok(proxied_req) => {
+            println!("Proxying request to backend: {}", backend.address);
             match config.client.request(proxied_req).await {
                 Ok(res) => {
+                    let status = res.status();
+                    println!("Backend responded with status: {}", status);
+                    
                     let (parts, body) = res.into_parts();
                     match body.collect().await {
-                        Ok(collected) => Response::from_parts(parts, Full::new(collected.to_bytes())),
-                        Err(e) => build_error_response(
-                            StatusCode::BAD_GATEWAY,
-                            format!("Failed to collect response body: {}", e)
-                        )
+                        Ok(collected) => {
+                            let bytes = collected.to_bytes();
+                            println!("Successfully collected response body ({} bytes)", bytes.len());
+                            Response::from_parts(parts, Full::new(bytes))
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to collect response body: {}", e);
+                            build_error_response(
+                                StatusCode::BAD_GATEWAY,
+                                format!("Failed to collect response body: {}", e)
+                            )
+                        }
                     }
                 }
-                Err(e) => build_error_response(
-                    StatusCode::BAD_GATEWAY,
-                    format!("Backend request failed: {}", e)
-                )
+                Err(e) => {
+                    eprintln!("Backend request failed: {}", e);
+                    build_error_response(
+                        StatusCode::BAD_GATEWAY,
+                        format!("Backend request failed: {}", e)
+                    )
+                }
             }
         }
-        Err(e) => build_error_response(
-            StatusCode::BAD_REQUEST,
-            format!("Failed to build request: {}", e)
-        )
+        Err(e) => {
+            eprintln!("Failed to build request: {}", e);
+            build_error_response(
+                StatusCode::BAD_REQUEST,
+                format!("Failed to build request: {}", e)
+            )
+        }
     }
 }
 
