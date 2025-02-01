@@ -112,7 +112,6 @@ async fn main() {
                 DockerEvent::Error(e) => {
                     eprintln!("Docker 이벤트 처리 중 에러 발생: {}", e);
                 }
-                _ => {}
             }
         }
     });
