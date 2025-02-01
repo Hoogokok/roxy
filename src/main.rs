@@ -80,14 +80,25 @@ async fn main() {
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
             match event {
+                DockerEvent::ContainerStarted { container_id, host, service } => {
+                    let mut table = routing_table_clone.write().await;
+                    table.add_route(host.clone(), service);
+                    println!("컨테이너 {} 시작: {} 호스트 추가", container_id, host);
+                }
+                DockerEvent::ContainerStopped { container_id, host } => {
+                    let mut table = routing_table_clone.write().await;
+                    table.remove_route(&host);
+                    println!("컨테이너 {} 중지: {} 호스트 제거", container_id, host);
+                }
                 DockerEvent::RoutesUpdated(routes) => {
                     let mut table = routing_table_clone.write().await;
                     table.sync_docker_routes(routes);
-                    println!("라우팅 테이블이 Docker 이벤트로 인해 업데이트되었습니다");
+                    println!("라우팅 테이블이 업데이트되었습니다");
                 }
                 DockerEvent::Error(e) => {
                     eprintln!("Docker 이벤트 처리 중 에러 발생: {}", e);
                 }
+                _ => {}
             }
         }
     });

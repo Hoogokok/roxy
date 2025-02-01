@@ -118,6 +118,11 @@ impl RoutingTable {
         }
     }
 
+    /// 라우팅 테이블에서 호스트를 제거합니다.
+    pub fn remove_route(&mut self, host: &str) {
+        self.routes.remove(host);
+    }
+
     /// 라우팅 테이블에 새로운 라우트를 추가합니다.
     /// 
     /// # 인자
