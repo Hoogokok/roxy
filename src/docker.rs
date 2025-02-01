@@ -65,7 +65,7 @@ impl DockerManager {
     /// 호스트-백엔드 서비스 매핑을 반환합니다.
     pub async fn get_container_routes(&self) -> Result<HashMap<String, BackendService>, DockerError> {
         let options = Some(ListContainersOptions::<String> {
-            all: true,  // 모든 컨테이너 표시
+            all: true,
             filters: {
                 let mut filters = HashMap::new();
                 filters.insert("label".to_string(), vec!["reverse-proxy.host".to_string()]);
@@ -74,15 +74,11 @@ impl DockerManager {
             ..Default::default()
         });
 
-        println!("Fetching containers with options: {:?}", options);  // 디버그 로그
-
         let containers = self.docker.list_containers(options).await
             .map_err(DockerError::ListContainersError)?;
 
-        println!("Found containers: {:?}", containers);  // 디버그 로그
-
         let routes = self.extract_routes(&containers);
-        println!("Extracted routes: {:?}", routes);  // 디버그 로그
+        println!("Routing table updated with {} routes", routes.len());  // 중요한 로그만 유지
 
         Ok(routes)
     }
@@ -92,8 +88,10 @@ impl DockerManager {
         containers.iter()
             .filter_map(|container| {
                 let container_id = container.id.as_deref().unwrap_or("unknown");
-                println!("Processing container: {} with labels: {:?}", container_id, container.labels);  // 디버그 로그
-                self.container_to_route(container).ok()
+                // 에러 발생 시에만 로그 출력
+                self.container_to_route(container)
+                    .map_err(|e| eprintln!("Failed to process container {}: {}", container_id, e))
+                    .ok()
             })
             .collect()
     }
