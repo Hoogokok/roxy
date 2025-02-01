@@ -4,7 +4,6 @@ use bollard::models::{ContainerSummary, EventMessage, EventMessageTypeEnum};
 use bollard::system::EventsOptions;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::fmt;
 use tokio::sync::mpsc;
 use crate::routing::BackendService;
@@ -154,6 +153,7 @@ impl DockerManager {
                 "stop".to_string(),
                 "die".to_string(),
                 "destroy".to_string(),
+                "update".to_string(),
             ]
         );
         filters
@@ -163,7 +163,12 @@ impl DockerManager {
     pub async fn subscribe_to_events(&self) -> mpsc::Receiver<DockerEvent> {
         let (tx, rx) = mpsc::channel(32);
         let docker = self.docker.clone();
-        let config = self.config.clone();  // 설정 복제
+        let config = self.config.clone();
+
+        // 초기 라우트 전송
+        if let Ok(routes) = self.get_container_routes().await {
+            let _ = tx.send(DockerEvent::RoutesUpdated(routes)).await;
+        }
 
         tokio::spawn(async move {
             let options = EventsOptions {
@@ -190,15 +195,10 @@ impl DockerManager {
         rx
     }
 
-    fn should_update_routes(action: Option<&str>) -> bool {
-        matches!(action.as_deref(), 
-            Some("start") | Some("stop") | Some("die") | Some("destroy"))
-    }
-
     /// Docker 이벤트를 처리하고 필요한 경우 라우팅 테이블을 업데이트합니다.
     async fn handle_docker_event(
         docker: &Docker,
-        config: &Config,  // 설정 매개변수 추가
+        config: &Config,
         event: &EventMessage,
         tx: &mpsc::Sender<DockerEvent>,
     ) -> Result<(), DockerError> {
@@ -206,41 +206,110 @@ impl DockerManager {
             return Ok(());
         }
 
-        if Self::should_update_routes(event.action.as_deref()) {
-            Self::update_and_send_routes(docker, config, tx).await?;  // config 전달
+        let container_id = event.actor.as_ref()
+            .and_then(|actor| actor.id.as_ref())
+            .unwrap_or(&"unknown".to_string())
+            .to_string();
+
+        let manager = DockerManager { 
+            docker: docker.clone(), 
+            config: config.clone(),
+        };
+
+        match event.action.as_deref() {
+            Some("start") => {
+                if let Ok(Some((host, service))) = manager.get_container_info(&container_id).await {
+                    tx.send(DockerEvent::ContainerStarted { 
+                        container_id: container_id.clone(),
+                        host,
+                        service,
+                    }).await.map_err(|_| Self::channel_send_error())?;
+                }
+            },
+            Some("stop") | Some("die") | Some("destroy") => {
+                // 컨테이너가 중지되기 전의 정보를 가져옴
+                if let Ok(Some((host, _))) = manager.get_container_info(&container_id).await {
+                    tx.send(DockerEvent::ContainerStopped { 
+                        container_id: container_id.clone(),
+                        host,
+                    }).await.map_err(|_| Self::channel_send_error())?;
+                }
+            },
+            Some("update") => {
+                let old_info = manager.get_container_info(&container_id).await?;
+                // 컨테이너 설정 업데이트 후 새 정보 가져오기
+                let new_info = manager.get_container_info(&container_id).await?;
+                if let Some((host, service)) = new_info {
+                    tx.send(DockerEvent::ContainerUpdated { 
+                        container_id: container_id.clone(),
+                        old_host: old_info.map(|(h, _)| h),
+                        new_host: Some(host),
+                        service: Some(service),
+                    }).await.map_err(|_| Self::channel_send_error())?;
+                }
+            },
+            _ => {}
         }
 
         Ok(())
     }
 
-    async fn update_and_send_routes(
-        docker: &Docker,
-        config: &Config,  // 설정 매개변수 추가
-        tx: &mpsc::Sender<DockerEvent>
-    ) -> Result<(), DockerError> {
-        let manager = DockerManager { 
-            docker: docker.clone(), 
-            config: config.clone(),  // 기존 설정 사용
-        };
-        let routes = manager.get_container_routes().await?;
-        tx.send(DockerEvent::RoutesUpdated(routes))
-            .await
-            .map_err(|_| DockerError::ConnectionError(
-                bollard::errors::Error::IOError { 
-                    err: std::io::Error::new(
-                        std::io::ErrorKind::Other, 
-                        "채널 전송 실패"
-                    )
-                }
-            ))?;
-        Ok(())
+    fn channel_send_error() -> DockerError {
+        DockerError::ConnectionError(
+            bollard::errors::Error::IOError { 
+                err: std::io::Error::new(
+                    std::io::ErrorKind::Other, 
+                    "채널 전송 실패"
+                )
+            }
+        )
+    }
+
+    /// 단일 컨테이너의 라우팅 정보를 가져옵니다.
+    async fn get_container_info(&self, container_id: &str) -> Result<Option<(String, BackendService)>, DockerError> {
+        let options = Some(ListContainersOptions::<String> {
+            all: true,
+            filters: {
+                let mut filters = HashMap::new();
+                filters.insert("id".to_string(), vec![container_id.to_string()]);
+                filters
+            },
+            ..Default::default()
+        });
+
+        let containers = self.docker.list_containers(options).await
+            .map_err(DockerError::ListContainersError)?;
+
+        if let Some(container) = containers.first() {
+            self.container_to_route(container).map(Some)
+        } else {
+            Ok(None)
+        }
     }
 }
 
 #[derive(Debug)]
 pub enum DockerEvent {
-    /// 라우팅 테이블 전체 업데이트
-    RoutesUpdated(HashMap<String, BackendService>),
-    /// 에러 발생
+    /// 컨테이너 시작
+    ContainerStarted {
+        container_id: String,
+        host: String,
+        service: BackendService,
+    },
+    /// 컨테이너 중지
+    ContainerStopped {
+        container_id: String,
+        host: String,
+    },
+    /// 컨테이너 설정 변경
+    ContainerUpdated {
+        container_id: String,
+        old_host: Option<String>,
+        new_host: Option<String>,
+        service: Option<BackendService>,
+    },
+    /// 에러 상황
     Error(DockerError),
+    /// 라우팅 테이블 업데이트
+    RoutesUpdated(HashMap<String, BackendService>),
 } 
