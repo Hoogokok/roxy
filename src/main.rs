@@ -7,31 +7,76 @@ use hyper::service::service_fn;
 use tokio::net::TcpListener;
 use http_body_util::Full;
 use hyper::body::Bytes;
-use hyper_util::rt;
+use hyper_util::rt::{self, TokioExecutor};
 use hyper::StatusCode;
 use std::sync::Arc;
 use routing::RoutingTable;
 use docker::DockerManager;
 use crate::docker::DockerEvent;
+use hyper::body::Incoming;
+use hyper_util::client::legacy::connect::HttpConnector;
+use hyper_util::client::legacy;
+use hyper::Request;
+use http_body_util::BodyExt;
 
 async fn handle_request(
     routing_table: Arc<tokio::sync::RwLock<RoutingTable>>,
-    req: hyper::Request<hyper::body::Incoming>,
+    req: Request<Incoming>,
 ) -> Result<hyper::Response<Full<Bytes>>, Infallible> {
     let table = routing_table.read().await;
+    
     match table.route_request(&req) {
         Ok(backend) => {
-            println!("Found backend service: {:?}", backend);
-            Ok(hyper::Response::builder()
-                .status(StatusCode::OK)
-                .body(Full::new(Bytes::from(format!("Found backend: {:?}", backend.address))))
-                .unwrap())
+            // HTTP 클라이언트 생성
+            let connector = HttpConnector::new();
+            let client = legacy::Client::builder(TokioExecutor::new())
+                .build::<_, hyper::body::Incoming>(connector);
+
+            // 백엔드 URL 생성
+            let uri: hyper::Uri = format!("http://{}{}", backend.address, req.uri().path())
+                .parse()
+                .unwrap();
+
+            // 새 요청 생성
+            let mut proxied_req = Request::builder()
+                .method(req.method().clone())
+                .uri(uri);
+
+            // 원본 헤더 복사
+            *proxied_req.headers_mut().unwrap() = req.headers().clone();
+
+            // body 설정
+            let proxied_req = proxied_req.body(req.into_body()).unwrap();
+
+            // 프록시 요청 전송
+            match client.request(proxied_req).await {
+                Ok(res) => {
+                    println!("Backend responded with status: {}", res.status());
+                    
+                    // 응답 변환
+                    let (parts, body) = res.into_parts();
+                    let bytes = body.collect().await
+                        .map(|collected| collected.to_bytes())
+                        .unwrap_or_default();
+
+                    Ok(hyper::Response::from_parts(parts, Full::new(bytes)))
+                }
+                Err(e) => {
+                    eprintln!("Backend request failed: {}", e);
+                    Ok(hyper::Response::builder()
+                        .status(StatusCode::BAD_GATEWAY)
+                        .body(Full::new(Bytes::from(format!("Backend error: {}", e))))
+                        .unwrap())
+                }
+            }
         }
         Err(e) => {
             println!("Routing error: {}", e);
             let status = match e {
-                routing::RoutingError::MissingHost | routing::RoutingError::InvalidHost(_) | 
-                routing::RoutingError::InvalidPort(_) | routing::RoutingError::HeaderParseError(_) => StatusCode::BAD_REQUEST,
+                routing::RoutingError::MissingHost | 
+                routing::RoutingError::InvalidHost(_) | 
+                routing::RoutingError::InvalidPort(_) | 
+                routing::RoutingError::HeaderParseError(_) => StatusCode::BAD_REQUEST,
                 routing::RoutingError::BackendNotFound(_) => StatusCode::NOT_FOUND,
             };
             
