@@ -55,7 +55,7 @@ async fn main() {
     println!("Starting with config: {:?}", config);
     
     // Docker 매니저 초기화
-    let docker_manager = DockerManager::new()
+    let docker_manager = DockerManager::new(config.clone())
         .await
         .expect("Failed to initialize Docker manager");
 
@@ -93,13 +93,13 @@ async fn main() {
     });
 
     // TCP 리스너 생성
-    let listener = match TcpListener::bind("0.0.0.0:80").await {
+    let listener = match TcpListener::bind(format!("0.0.0.0:{}", config.http_port)).await {
         Ok(listener) => {
-            println!("Reverse Proxy listening on port 80");
+            println!("Reverse Proxy listening on port {}", config.http_port);
             listener
         }
         Err(e) => {
-            eprintln!("Failed to bind to port 80: {}", e);
+            eprintln!("Failed to bind to port {}: {}", config.http_port, e);
             return;
         }
     };
