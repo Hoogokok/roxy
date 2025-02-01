@@ -190,11 +190,6 @@ impl DockerManager {
         rx
     }
 
-    fn should_update_routes(action: Option<&str>) -> bool {
-        matches!(action.as_deref(), 
-            Some("start") | Some("stop") | Some("die") | Some("destroy"))
-    }
-
     /// Docker 이벤트를 처리하고 필요한 경우 라우팅 테이블을 업데이트합니다.
     async fn handle_docker_event(
         docker: &Docker,
