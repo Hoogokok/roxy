@@ -156,6 +156,8 @@ impl RoutingTable {
     /// 실패 시 적절한 `RoutingError`를 포함한 `Err`를 반환합니다.
     pub fn route_request<B>(&self, req: &hyper::Request<B>) -> Result<&BackendService, RoutingError> {
         let host_info = Self::extract_host(req)?;
+        println!("Attempting to route request for host: {}", host_info.name);
+        println!("Available routes: {:?}", self.routes);
         self.find_backend(&host_info)
     }
 
@@ -177,6 +179,7 @@ impl RoutingTable {
 
     /// Docker 컨테이너로부터 라우팅 규칙을 업데이트합니다.
     pub fn sync_docker_routes(&mut self, routes: HashMap<String, BackendService>) {
+        println!("Syncing routes: {:?}", routes);
         self.routes = routes;
     }
 } 
