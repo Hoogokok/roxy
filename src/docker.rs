@@ -113,7 +113,6 @@ impl DockerManager {
                 reason: format!("IP address not found in network {}", self.config.docker_network),
             })?;
 
-        // 라벨 prefix 사용
         let host = self.extract_host_label(container, &container_id)?;
         let port = container.labels.as_ref()
             .and_then(|labels| labels.get(&format!("{}port", self.config.label_prefix)))
@@ -125,7 +124,7 @@ impl DockerManager {
             address: format!("{}:{}", ip, port),
         })?;
 
-        Ok((host, BackendService { address: addr }))
+        Ok((host, BackendService::new(addr)))  // BackendService::new 사용
     }
 
     /// 컨테이너에서 호스트 라벨을 추출합니다.
