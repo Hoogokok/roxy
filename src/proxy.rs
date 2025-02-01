@@ -28,9 +28,12 @@ pub async fn proxy_request(
     backend: &BackendService,
     req: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    match build_proxied_request(backend, req) {
+    // Round-Robin으로 다음 백엔드 선택
+    let address = backend.get_next_address();
+    
+    match build_proxied_request(address, req) {
         Ok(proxied_req) => {
-            println!("Proxying request to backend: {}", backend.address);
+            println!("Proxying request to backend: {}", address);
             match config.client.request(proxied_req).await {
                 Ok(res) => {
                     let status = res.status();
@@ -72,10 +75,10 @@ pub async fn proxy_request(
 }
 
 fn build_proxied_request(
-    backend: &BackendService,
+    address: std::net::SocketAddr,
     req: Request<Incoming>,
 ) -> Result<Request<Incoming>, hyper::http::Error> {
-    let uri: Uri = format!("http://{}{}", backend.address, req.uri().path())
+    let uri: Uri = format!("http://{}{}", address, req.uri().path())
         .parse()
         .unwrap();
 
