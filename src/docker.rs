@@ -80,8 +80,27 @@ impl DockerManager {
     /// reverse-proxy.host 라벨이 있는 컨테이너를 찾고 
     /// 호스트-백엔드 서비스 매핑을 반환합니다.
     pub async fn get_container_routes(&self) -> Result<HashMap<String, BackendService>, DockerError> {
-        let containers = self.list_containers().await?;
-        Ok(self.extract_routes(&containers))
+        let options = Some(ListContainersOptions::<String> {
+            all: true,  // 모든 컨테이너 표시
+            filters: {
+                let mut filters = HashMap::new();
+                filters.insert("label".to_string(), vec!["reverse-proxy.host".to_string()]);
+                filters
+            },
+            ..Default::default()
+        });
+
+        println!("Fetching containers with options: {:?}", options);  // 디버그 로그
+
+        let containers = self.docker.list_containers(options).await
+            .map_err(DockerError::ListContainersError)?;
+
+        println!("Found containers: {:?}", containers);  // 디버그 로그
+
+        let routes = self.extract_routes(&containers);
+        println!("Extracted routes: {:?}", routes);  // 디버그 로그
+
+        Ok(routes)
     }
 
     /// 모든 컨테이너 목록을 가져옵니다.
@@ -97,7 +116,11 @@ impl DockerManager {
     /// 컨테이너 목록에서 라우팅 정보를 추출합니다.
     fn extract_routes(&self, containers: &[ContainerSummary]) -> HashMap<String, BackendService> {
         containers.iter()
-            .filter_map(|container| self.container_to_route(container).ok())
+            .filter_map(|container| {
+                let container_id = container.id.as_deref().unwrap_or("unknown");
+                println!("Processing container: {} with labels: {:?}", container_id, container.labels);  // 디버그 로그
+                self.container_to_route(container).ok()
+            })
             .collect()
     }
 
@@ -105,12 +128,32 @@ impl DockerManager {
     fn container_to_route(&self, container: &ContainerSummary) -> Result<(String, BackendService), DockerError> {
         let container_id = container.id.as_deref().unwrap_or("unknown").to_string();
         
-        let info = ContainerInfo::new(
-            self.extract_host_label(container, &container_id)?,
-            self.extract_address(container, &container_id)?
-        );
-        
-        Ok(info.into_route())
+        // 컨테이너의 IP 주소 가져오기
+        let ip = container
+            .network_settings
+            .as_ref()
+            .and_then(|settings| settings.networks.as_ref())
+            .and_then(|networks| networks.get("reverse-proxy-network"))
+            .and_then(|network| network.ip_address.as_ref())
+            .ok_or_else(|| DockerError::ContainerConfigError {
+                container_id: container_id.clone(),
+                reason: "IP 주소를 찾을 수 없음".to_string(),
+            })?;
+
+        // 호스트 이름과 포트 가져오기
+        let host = self.extract_host_label(container, &container_id)?;
+        let port = container.labels.as_ref()
+            .and_then(|labels| labels.get("reverse-proxy.port"))
+            .and_then(|port| port.parse::<u16>().ok())
+            .unwrap_or(80);
+
+        // IP:Port 형식의 주소 생성
+        let addr = format!("{}:{}", ip, port).parse().map_err(|_| DockerError::AddressParseError {
+            container_id: container_id.clone(),
+            address: format!("{}:{}", ip, port),
+        })?;
+
+        Ok((host, BackendService { address: addr }))
     }
 
     /// 컨테이너에서 호스트 라벨을 추출합니다.
@@ -128,31 +171,28 @@ impl DockerManager {
 
     /// 컨테이너에서 주소 정보를 추출합니다.
     fn extract_address(&self, container: &ContainerSummary, container_id: &str) -> Result<SocketAddr, DockerError> {
-        let ports = container.ports.as_ref().ok_or_else(|| DockerError::ContainerConfigError {
-            container_id: container_id.to_string(),
-            reason: "포트 설정 누락".to_string(),
-        })?;
+        // 컨테이너 이름과 포트를 사용
+        let container_name = container.names.as_ref()
+            .and_then(|names| names.first())
+            .and_then(|name| name.strip_prefix("/"))
+            .ok_or_else(|| DockerError::ContainerConfigError {
+                container_id: container_id.to_string(),
+                reason: "컨테이너 이름 누락".to_string(),
+            })?;
 
-        let port_mapping = ports.first().ok_or_else(|| DockerError::ContainerConfigError {
-            container_id: container_id.to_string(),
-            reason: "포트 매핑 누락".to_string(),
-        })?;
+        // 라벨에서 포트 정보 가져오기 (기본값 80)
+        let port = container.labels.as_ref()
+            .and_then(|labels| labels.get("reverse-proxy.port"))
+            .and_then(|port| port.parse::<u16>().ok())
+            .unwrap_or(80);
 
-        let ip = port_mapping.ip.as_ref().ok_or_else(|| DockerError::ContainerConfigError {
-            container_id: container_id.to_string(),
-            reason: "IP 주소 누락".to_string(),
-        })?;
-
-        let port = port_mapping.public_port.ok_or_else(|| DockerError::ContainerConfigError {
-            container_id: container_id.to_string(),
-            reason: "공개 포트 누락".to_string(),
-        })?;
-
-        let addr_str = format!("{}:{}", ip, port);
-        addr_str.parse().map_err(|_| DockerError::AddressParseError {
-            container_id: container_id.to_string(),
-            address: addr_str,
-        })
+        // 컨테이너 이름:포트 형식으로 주소 생성
+        format!("{}:{}", container_name, port)
+            .parse()
+            .map_err(|_| DockerError::AddressParseError {
+                container_id: container_id.to_string(),
+                address: format!("{}:{}", container_name, port),
+            })
     }
 
     fn create_event_filters() -> HashMap<String, Vec<String>> {
