@@ -56,6 +56,16 @@ async fn main() {
     // 라우팅 테이블을 RwLock으로 감싸서 동시성 지원
     let routing_table = Arc::new(tokio::sync::RwLock::new(RoutingTable::new()));
 
+    // 초기 라우팅 테이블 설정
+    let initial_routes = docker_manager.get_container_routes().await
+        .expect("Failed to get initial container routes");
+    {
+        let mut table = routing_table.write().await;
+        table.sync_docker_routes(initial_routes.clone());
+        println!("Initial routing table setup completed");
+        println!("Current routes: {:?}", initial_routes);
+    }
+
     // Docker 이벤트 구독
     let mut event_rx = docker_manager.subscribe_to_events().await;
     let routing_table_clone = routing_table.clone();
