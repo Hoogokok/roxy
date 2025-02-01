@@ -21,6 +21,8 @@ services:
   web1:
     image: nginx:alpine
     container_name: web1-dev
+    ports:
+      - "8081:80"
     labels:
       - "reverse-proxy.host=web1.localhost"
     networks:
@@ -29,6 +31,8 @@ services:
   web2:
     image: nginx:alpine
     container_name: web2-dev
+    ports:
+      - "8082:80"
     labels:
       - "reverse-proxy.host=web2.localhost"
     networks:
