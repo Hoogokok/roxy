@@ -163,7 +163,12 @@ impl DockerManager {
     pub async fn subscribe_to_events(&self) -> mpsc::Receiver<DockerEvent> {
         let (tx, rx) = mpsc::channel(32);
         let docker = self.docker.clone();
-        let config = self.config.clone();  // 설정 복제
+        let config = self.config.clone();
+
+        // 초기 라우트 전송
+        if let Ok(routes) = self.get_container_routes().await {
+            let _ = tx.send(DockerEvent::RoutesUpdated(routes)).await;
+        }
 
         tokio::spawn(async move {
             let options = EventsOptions {
@@ -285,8 +290,6 @@ impl DockerManager {
 
 #[derive(Debug)]
 pub enum DockerEvent {
-    /// 라우팅 테이블 전체 업데이트
-    RoutesUpdated(HashMap<String, BackendService>),
     /// 컨테이너 시작
     ContainerStarted {
         container_id: String,
@@ -307,4 +310,6 @@ pub enum DockerEvent {
     },
     /// 에러 상황
     Error(DockerError),
+    /// 라우팅 테이블 업데이트
+    RoutesUpdated(HashMap<String, BackendService>),
 } 
