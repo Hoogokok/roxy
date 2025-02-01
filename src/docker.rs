@@ -54,22 +54,6 @@ pub struct DockerManager {
     docker: Docker,
 }
 
-#[derive(Debug)]
-pub struct ContainerInfo {
-    host: String,
-    address: SocketAddr,
-}
-
-impl ContainerInfo {
-    fn new(host: String, address: SocketAddr) -> Self {
-        Self { host, address }
-    }
-
-    fn into_route(self) -> (String, BackendService) {
-        (self.host, BackendService { address: self.address })
-    }
-}
-
 impl DockerManager {
     /// Docker 클라이언트를 초기화합니다.
     pub async fn new() -> Result<Self, DockerError> {
@@ -101,16 +85,6 @@ impl DockerManager {
         println!("Extracted routes: {:?}", routes);  // 디버그 로그
 
         Ok(routes)
-    }
-
-    /// 모든 컨테이너 목록을 가져옵니다.
-    async fn list_containers(&self) -> Result<Vec<ContainerSummary>, DockerError> {
-        let mut options = ListContainersOptions::<String>::default();
-        options.all = true;
-        self.docker
-            .list_containers(Some(options))
-            .await
-            .map_err(DockerError::ListContainersError)
     }
 
     /// 컨테이너 목록에서 라우팅 정보를 추출합니다.
@@ -166,32 +140,6 @@ impl DockerManager {
             .ok_or_else(|| DockerError::ContainerConfigError {
                 container_id: container_id.to_string(),
                 reason: "reverse-proxy.host 라벨 누락".to_string(),
-            })
-    }
-
-    /// 컨테이너에서 주소 정보를 추출합니다.
-    fn extract_address(&self, container: &ContainerSummary, container_id: &str) -> Result<SocketAddr, DockerError> {
-        // 컨테이너 이름과 포트를 사용
-        let container_name = container.names.as_ref()
-            .and_then(|names| names.first())
-            .and_then(|name| name.strip_prefix("/"))
-            .ok_or_else(|| DockerError::ContainerConfigError {
-                container_id: container_id.to_string(),
-                reason: "컨테이너 이름 누락".to_string(),
-            })?;
-
-        // 라벨에서 포트 정보 가져오기 (기본값 80)
-        let port = container.labels.as_ref()
-            .and_then(|labels| labels.get("reverse-proxy.port"))
-            .and_then(|port| port.parse::<u16>().ok())
-            .unwrap_or(80);
-
-        // 컨테이너 이름:포트 형식으로 주소 생성
-        format!("{}:{}", container_name, port)
-            .parse()
-            .map_err(|_| DockerError::AddressParseError {
-                container_id: container_id.to_string(),
-                address: format!("{}:{}", container_name, port),
             })
     }
 
