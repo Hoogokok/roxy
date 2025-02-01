@@ -1,5 +1,6 @@
 mod routing;
 mod docker;
+mod proxy;
 
 use std::convert::Infallible;
 use hyper::server::conn::http1;
@@ -14,61 +15,18 @@ use routing::RoutingTable;
 use docker::DockerManager;
 use crate::docker::DockerEvent;
 use hyper::body::Incoming;
-use hyper_util::client::legacy::connect::HttpConnector;
-use hyper_util::client::legacy;
 use hyper::Request;
-use http_body_util::BodyExt;
 
 async fn handle_request(
     routing_table: Arc<tokio::sync::RwLock<RoutingTable>>,
     req: Request<Incoming>,
 ) -> Result<hyper::Response<Full<Bytes>>, Infallible> {
     let table = routing_table.read().await;
+    let proxy_config = proxy::ProxyConfig::new();
     
     match table.route_request(&req) {
         Ok(backend) => {
-            // HTTP 클라이언트 생성
-            let connector = HttpConnector::new();
-            let client = legacy::Client::builder(TokioExecutor::new())
-                .build::<_, hyper::body::Incoming>(connector);
-
-            // 백엔드 URL 생성
-            let uri: hyper::Uri = format!("http://{}{}", backend.address, req.uri().path())
-                .parse()
-                .unwrap();
-
-            // 새 요청 생성
-            let mut proxied_req = Request::builder()
-                .method(req.method().clone())
-                .uri(uri);
-
-            // 원본 헤더 복사
-            *proxied_req.headers_mut().unwrap() = req.headers().clone();
-
-            // body 설정
-            let proxied_req = proxied_req.body(req.into_body()).unwrap();
-
-            // 프록시 요청 전송
-            match client.request(proxied_req).await {
-                Ok(res) => {
-                    println!("Backend responded with status: {}", res.status());
-                    
-                    // 응답 변환
-                    let (parts, body) = res.into_parts();
-                    let bytes = body.collect().await
-                        .map(|collected| collected.to_bytes())
-                        .unwrap_or_default();
-
-                    Ok(hyper::Response::from_parts(parts, Full::new(bytes)))
-                }
-                Err(e) => {
-                    eprintln!("Backend request failed: {}", e);
-                    Ok(hyper::Response::builder()
-                        .status(StatusCode::BAD_GATEWAY)
-                        .body(Full::new(Bytes::from(format!("Backend error: {}", e))))
-                        .unwrap())
-                }
-            }
+            Ok(proxy::proxy_request(&proxy_config, backend, req).await)
         }
         Err(e) => {
             println!("Routing error: {}", e);
