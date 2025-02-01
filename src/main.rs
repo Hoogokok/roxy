@@ -95,6 +95,20 @@ async fn main() {
                     table.sync_docker_routes(routes);
                     println!("라우팅 테이블이 업데이트되었습니다");
                 }
+                DockerEvent::ContainerUpdated { container_id, old_host, new_host, service } => {
+                    let mut table = routing_table_clone.write().await;
+                    // 이전 호스트 제거
+                    if let Some(old) = old_host {
+                        table.remove_route(&old);
+                    }
+                    // 새 호스트 추가
+                    if let Some(host) = new_host {
+                        if let Some(svc) = service {
+                            table.add_route(host.clone(), svc);
+                            println!("컨테이너 {} 설정 변경: {} 호스트 업데이트", container_id, host);
+                        }
+                    }
+                }
                 DockerEvent::Error(e) => {
                     eprintln!("Docker 이벤트 처리 중 에러 발생: {}", e);
                 }

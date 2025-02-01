@@ -154,6 +154,7 @@ impl DockerManager {
                 "stop".to_string(),
                 "die".to_string(),
                 "destroy".to_string(),
+                "update".to_string(),
             ]
         );
         filters
@@ -232,6 +233,19 @@ impl DockerManager {
                     tx.send(DockerEvent::ContainerStopped { 
                         container_id: container_id.clone(),
                         host,
+                    }).await.map_err(|_| Self::channel_send_error())?;
+                }
+            },
+            Some("update") => {
+                let old_info = manager.get_container_info(&container_id).await?;
+                // 컨테이너 설정 업데이트 후 새 정보 가져오기
+                let new_info = manager.get_container_info(&container_id).await?;
+                if let Some((host, service)) = new_info {
+                    tx.send(DockerEvent::ContainerUpdated { 
+                        container_id: container_id.clone(),
+                        old_host: old_info.map(|(h, _)| h),
+                        new_host: Some(host),
+                        service: Some(service),
                     }).await.map_err(|_| Self::channel_send_error())?;
                 }
             },
