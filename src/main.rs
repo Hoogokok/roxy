@@ -1,37 +1,40 @@
 mod routing;
 mod docker;
+mod proxy;
 
 use std::convert::Infallible;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
+use hyper_util::rt;
 use tokio::net::TcpListener;
 use http_body_util::Full;
 use hyper::body::Bytes;
-use hyper_util::rt;
 use hyper::StatusCode;
 use std::sync::Arc;
 use routing::RoutingTable;
 use docker::DockerManager;
 use crate::docker::DockerEvent;
+use hyper::body::Incoming;
+use hyper::Request;
 
 async fn handle_request(
     routing_table: Arc<tokio::sync::RwLock<RoutingTable>>,
-    req: hyper::Request<hyper::body::Incoming>,
+    req: Request<Incoming>,
 ) -> Result<hyper::Response<Full<Bytes>>, Infallible> {
     let table = routing_table.read().await;
+    let proxy_config = proxy::ProxyConfig::new();
+    
     match table.route_request(&req) {
         Ok(backend) => {
-            println!("Found backend service: {:?}", backend);
-            Ok(hyper::Response::builder()
-                .status(StatusCode::OK)
-                .body(Full::new(Bytes::from(format!("Found backend: {:?}", backend.address))))
-                .unwrap())
+            Ok(proxy::proxy_request(&proxy_config, backend, req).await)
         }
         Err(e) => {
             println!("Routing error: {}", e);
             let status = match e {
-                routing::RoutingError::MissingHost | routing::RoutingError::InvalidHost(_) | 
-                routing::RoutingError::InvalidPort(_) | routing::RoutingError::HeaderParseError(_) => StatusCode::BAD_REQUEST,
+                routing::RoutingError::MissingHost | 
+                routing::RoutingError::InvalidHost(_) | 
+                routing::RoutingError::InvalidPort(_) | 
+                routing::RoutingError::HeaderParseError(_) => StatusCode::BAD_REQUEST,
                 routing::RoutingError::BackendNotFound(_) => StatusCode::NOT_FOUND,
             };
             
