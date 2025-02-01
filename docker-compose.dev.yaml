@@ -12,11 +12,16 @@ services:
       - .:/usr/src/app
       - /var/run/docker.sock:/var/run/docker.sock
       - cargo-cache:/usr/local/cargo/registry
-    command: cargo watch -x run
     environment:
       - RUST_LOG=debug
+      - PROXY_DOCKER_NETWORK=reverse-proxy-network
+      - PROXY_LABEL_PREFIX=reverse-proxy.
+      - PROXY_HTTP_PORT=80
+    command: cargo watch -x run
     restart: unless-stopped
     user: root
+    networks:
+      - reverse-proxy-network
 
   web1:
     image: nginx:alpine
