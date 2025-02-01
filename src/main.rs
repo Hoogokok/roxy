@@ -1,6 +1,7 @@
 mod routing;
 mod docker;
 mod proxy;
+mod config;
 
 use std::convert::Infallible;
 use hyper::server::conn::http1;
@@ -16,6 +17,7 @@ use docker::DockerManager;
 use crate::docker::DockerEvent;
 use hyper::body::Incoming;
 use hyper::Request;
+use config::Config;
 
 async fn handle_request(
     routing_table: Arc<tokio::sync::RwLock<RoutingTable>>,
@@ -48,6 +50,10 @@ async fn handle_request(
 
 #[tokio::main]
 async fn main() {
+    // 설정 로드
+    let config = Config::from_env();
+    println!("Starting with config: {:?}", config);
+    
     // Docker 매니저 초기화
     let docker_manager = DockerManager::new()
         .await
