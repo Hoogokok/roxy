@@ -1,0 +1,37 @@
+services:
+  reverse-proxy:
+    build: .
+    container_name: reverse-proxy
+    ports:
+      - "80:80"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+    user: root
+
+
+  # 테스트용 백엔드 서비스들
+  web1:
+    image: nginx:alpine
+    container_name: web1
+    ports:
+      - "8081:80"
+    labels:
+      - "reverse-proxy.host=web1.localhost"
+    networks:
+      - default
+
+  web2:
+    image: nginx:alpine
+    container_name: web2
+    ports:
+      - "8082:80"
+    labels:
+      - "reverse-proxy.host=web2.localhost"
+    networks:
+      - default
+
+# 테스트를 위한 네트워크 설정
+networks:
+  default:
+    name: reverse-proxy-network 
