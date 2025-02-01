@@ -4,7 +4,6 @@ use bollard::models::{ContainerSummary, EventMessage, EventMessageTypeEnum};
 use bollard::system::EventsOptions;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
-use std::net::SocketAddr;
 use std::fmt;
 use tokio::sync::mpsc;
 use crate::routing::BackendService;
@@ -252,29 +251,6 @@ impl DockerManager {
             _ => {}
         }
 
-        Ok(())
-    }
-
-    async fn update_and_send_routes(
-        docker: &Docker,
-        config: &Config,  // 설정 매개변수 추가
-        tx: &mpsc::Sender<DockerEvent>
-    ) -> Result<(), DockerError> {
-        let manager = DockerManager { 
-            docker: docker.clone(), 
-            config: config.clone(),  // 기존 설정 사용
-        };
-        let routes = manager.get_container_routes().await?;
-        tx.send(DockerEvent::RoutesUpdated(routes))
-            .await
-            .map_err(|_| DockerError::ConnectionError(
-                bollard::errors::Error::IOError { 
-                    err: std::io::Error::new(
-                        std::io::ErrorKind::Other, 
-                        "채널 전송 실패"
-                    )
-                }
-            ))?;
         Ok(())
     }
 
