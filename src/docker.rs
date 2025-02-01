@@ -163,6 +163,7 @@ impl DockerManager {
     pub async fn subscribe_to_events(&self) -> mpsc::Receiver<DockerEvent> {
         let (tx, rx) = mpsc::channel(32);
         let docker = self.docker.clone();
+        let config = self.config.clone();  // 설정 복제
 
         tokio::spawn(async move {
             let options = EventsOptions {
@@ -175,7 +176,7 @@ impl DockerManager {
             while let Some(event) = events.next().await {
                 match event {
                     Ok(event) => {
-                        if let Err(e) = Self::handle_docker_event(&docker, &event, &tx).await {
+                        if let Err(e) = Self::handle_docker_event(&docker, &config, &event, &tx).await {  // config 추가
                             let _ = tx.send(DockerEvent::Error(e)).await;
                         }
                     }
@@ -197,6 +198,7 @@ impl DockerManager {
     /// Docker 이벤트를 처리하고 필요한 경우 라우팅 테이블을 업데이트합니다.
     async fn handle_docker_event(
         docker: &Docker,
+        config: &Config,  // 설정 매개변수 추가
         event: &EventMessage,
         tx: &mpsc::Sender<DockerEvent>,
     ) -> Result<(), DockerError> {
@@ -205,17 +207,21 @@ impl DockerManager {
         }
 
         if Self::should_update_routes(event.action.as_deref()) {
-            Self::update_and_send_routes(docker, tx).await?;
+            Self::update_and_send_routes(docker, config, tx).await?;  // config 전달
         }
 
         Ok(())
     }
 
     async fn update_and_send_routes(
-        docker: &Docker, 
+        docker: &Docker,
+        config: &Config,  // 설정 매개변수 추가
         tx: &mpsc::Sender<DockerEvent>
     ) -> Result<(), DockerError> {
-        let manager = DockerManager { docker: docker.clone(), config: Config::from_env() };
+        let manager = DockerManager { 
+            docker: docker.clone(), 
+            config: config.clone(),  // 기존 설정 사용
+        };
         let routes = manager.get_container_routes().await?;
         tx.send(DockerEvent::RoutesUpdated(routes))
             .await
