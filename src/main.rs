@@ -1,4 +1,5 @@
 mod routing;
+mod docker;
 
 use std::convert::Infallible;
 use hyper::server::conn::http1;
@@ -9,13 +10,16 @@ use hyper::body::Bytes;
 use hyper_util::rt;
 use hyper::StatusCode;
 use std::sync::Arc;
-use routing::{RoutingTable, BackendService};
+use routing::RoutingTable;
+use docker::DockerManager;
+use crate::docker::DockerEvent;
 
 async fn handle_request(
-    routing_table: Arc<RoutingTable>,
+    routing_table: Arc<tokio::sync::RwLock<RoutingTable>>,
     req: hyper::Request<hyper::body::Incoming>,
 ) -> Result<hyper::Response<Full<Bytes>>, Infallible> {
-    match routing_table.route_request(&req) {
+    let table = routing_table.read().await;
+    match table.route_request(&req) {
         Ok(backend) => {
             println!("Found backend service: {:?}", backend);
             Ok(hyper::Response::builder()
@@ -41,19 +45,34 @@ async fn handle_request(
 
 #[tokio::main]
 async fn main() {
-    // 라우팅 테이블 초기화
-    let mut table = RoutingTable::new();
-    
-    // 테스트용 백엔드 서비스 추가
-    table.add_route(
-        "example.com".to_string(),
-        BackendService {
-            address: "127.0.0.1:8080".parse().unwrap(),
-        },
-    );
+    // Docker 매니저 초기화
+    let docker_manager = DockerManager::new()
+        .await
+        .expect("Failed to initialize Docker manager");
 
-    let routing_table = Arc::new(table);
-    
+    // 라우팅 테이블을 RwLock으로 감싸서 동시성 지원
+    let routing_table = Arc::new(tokio::sync::RwLock::new(RoutingTable::new()));
+
+    // Docker 이벤트 구독
+    let mut event_rx = docker_manager.subscribe_to_events().await;
+    let routing_table_clone = routing_table.clone();
+
+    // 이벤트 처리 태스크 시작
+    tokio::spawn(async move {
+        while let Some(event) = event_rx.recv().await {
+            match event {
+                DockerEvent::RoutesUpdated(routes) => {
+                    let mut table = routing_table_clone.write().await;
+                    table.sync_docker_routes(routes);
+                    println!("라우팅 테이블이 Docker 이벤트로 인해 업데이트되었습니다");
+                }
+                DockerEvent::Error(e) => {
+                    eprintln!("Docker 이벤트 처리 중 에러 발생: {}", e);
+                }
+            }
+        }
+    });
+
     // TCP 리스너 생성
     let listener = match TcpListener::bind("0.0.0.0:80").await {
         Ok(listener) => {
