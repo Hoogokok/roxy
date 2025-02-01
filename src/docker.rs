@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::fmt;
 use tokio::sync::mpsc;
 use crate::routing::BackendService;
+use crate::config::Config;
 
 #[derive(Debug)]
 pub enum DockerError {
@@ -52,13 +53,14 @@ impl From<bollard::errors::Error> for DockerError {
 
 pub struct DockerManager {
     docker: Docker,
+    config: Config,
 }
 
 impl DockerManager {
     /// Docker 클라이언트를 초기화합니다.
-    pub async fn new() -> Result<Self, DockerError> {
+    pub async fn new(config: Config) -> Result<Self, DockerError> {
         let docker = Docker::connect_with_local_defaults()?;
-        Ok(DockerManager { docker })
+        Ok(DockerManager { docker, config })
     }
 
     /// reverse-proxy.host 라벨이 있는 컨테이너를 찾고 
@@ -88,7 +90,6 @@ impl DockerManager {
         containers.iter()
             .filter_map(|container| {
                 let container_id = container.id.as_deref().unwrap_or("unknown");
-                // 에러 발생 시에만 로그 출력
                 self.container_to_route(container)
                     .map_err(|e| eprintln!("Failed to process container {}: {}", container_id, e))
                     .ok()
@@ -100,26 +101,25 @@ impl DockerManager {
     fn container_to_route(&self, container: &ContainerSummary) -> Result<(String, BackendService), DockerError> {
         let container_id = container.id.as_deref().unwrap_or("unknown").to_string();
         
-        // 컨테이너의 IP 주소 가져오기
+        // 네트워크 이름을 설정에서 가져오기
         let ip = container
             .network_settings
             .as_ref()
             .and_then(|settings| settings.networks.as_ref())
-            .and_then(|networks| networks.get("reverse-proxy-network"))
+            .and_then(|networks| networks.get(&self.config.docker_network))
             .and_then(|network| network.ip_address.as_ref())
             .ok_or_else(|| DockerError::ContainerConfigError {
                 container_id: container_id.clone(),
-                reason: "IP 주소를 찾을 수 없음".to_string(),
+                reason: format!("IP address not found in network {}", self.config.docker_network),
             })?;
 
-        // 호스트 이름과 포트 가져오기
+        // 라벨 prefix 사용
         let host = self.extract_host_label(container, &container_id)?;
         let port = container.labels.as_ref()
-            .and_then(|labels| labels.get("reverse-proxy.port"))
+            .and_then(|labels| labels.get(&format!("{}port", self.config.label_prefix)))
             .and_then(|port| port.parse::<u16>().ok())
             .unwrap_or(80);
 
-        // IP:Port 형식의 주소 생성
         let addr = format!("{}:{}", ip, port).parse().map_err(|_| DockerError::AddressParseError {
             container_id: container_id.clone(),
             address: format!("{}:{}", ip, port),
@@ -133,11 +133,11 @@ impl DockerManager {
         container
             .labels
             .as_ref()
-            .and_then(|labels| labels.get("reverse-proxy.host"))
+            .and_then(|labels| labels.get(&format!("{}host", self.config.label_prefix)))
             .map(|s| s.to_string())
             .ok_or_else(|| DockerError::ContainerConfigError {
                 container_id: container_id.to_string(),
-                reason: "reverse-proxy.host 라벨 누락".to_string(),
+                reason: format!("{}host label missing", self.config.label_prefix),
             })
     }
 
@@ -215,7 +215,7 @@ impl DockerManager {
         docker: &Docker, 
         tx: &mpsc::Sender<DockerEvent>
     ) -> Result<(), DockerError> {
-        let manager = DockerManager { docker: docker.clone() };
+        let manager = DockerManager { docker: docker.clone(), config: Config::from_env() };
         let routes = manager.get_container_routes().await?;
         tx.send(DockerEvent::RoutesUpdated(routes))
             .await
