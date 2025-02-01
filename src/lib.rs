@@ -8,19 +8,37 @@
 //! 
 //! # 예제
 //! 
-//! ```no_run
+//! ```
 //! use reverse_proxy_traefik::routing::{RoutingTable, BackendService};
+//! use std::net::SocketAddr;
 //! 
-//! // 라우팅 테이블 초기화
 //! let mut table = RoutingTable::new();
 //! 
-//! // 백엔드 서비스 추가
-//! table.add_route(
-//!     "example.com".to_string(),
-//!     BackendService {
-//!         address: "127.0.0.1:8080".parse().unwrap(),
-//!     },
-//! );
+//! // 백엔드 서비스 생성
+//! let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+//! let backend = BackendService::new(addr);
+//! 
+//! // 라우팅 규칙 추가
+//! table.add_route("example.com".to_string(), backend);
+//! ```
+//! 
+//! # 로드 밸런싱
+//! 
+//! ```
+//! use reverse_proxy_traefik::routing::{RoutingTable, BackendService};
+//! use std::net::SocketAddr;
+//! 
+//! let mut table = RoutingTable::new();
+//! 
+//! // 첫 번째 백엔드 추가
+//! let addr1: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+//! let backend1 = BackendService::new(addr1);
+//! table.add_route("example.com".to_string(), backend1);
+//! 
+//! // 동일 호스트에 두 번째 백엔드 추가 (자동으로 로드 밸런싱됨)
+//! let addr2: SocketAddr = "127.0.0.1:8081".parse().unwrap();
+//! let backend2 = BackendService::new(addr2);
+//! table.add_route("example.com".to_string(), backend2);
 //! ```
 
 pub mod routing; 
