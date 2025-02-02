@@ -2,6 +2,7 @@ mod routing;
 mod docker;
 mod proxy;
 mod config;
+mod logging;
 
 use std::convert::Infallible;
 use hyper::server::conn::http1;
