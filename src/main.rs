@@ -18,6 +18,7 @@ use crate::docker::DockerEvent;
 use hyper::body::Incoming;
 use hyper::Request;
 use config::Config;
+use reverse_proxy_traefik::logging::init_logging;
 
 async fn handle_request(
     routing_table: Arc<tokio::sync::RwLock<RoutingTable>>,
@@ -50,6 +51,7 @@ async fn handle_request(
 
 #[tokio::main]
 async fn main() {
+    init_logging();
     // 설정 로드
     let config = Config::from_env();
     println!("Starting with config: {:?}", config);
