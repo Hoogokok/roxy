@@ -8,6 +8,7 @@ use std::fmt;
 use tokio::sync::mpsc;
 use crate::routing::BackendService;
 use crate::config::Config;
+use tracing::{debug, error, info, warn};
 
 #[derive(Debug)]
 pub enum DockerError {
@@ -88,6 +89,8 @@ impl DockerManager {
     /// reverse-proxy.host 라벨이 있는 컨테이너를 찾고 
     /// 호스트-백엔드 서비스 매핑을 반환합니다.
     pub async fn get_container_routes(&self) -> Result<HashMap<String, BackendService>, DockerError> {
+        info!("컨테이너 라우트 조회 시작");
+        
         let options = Some(ListContainersOptions::<String> {
             all: true,
             filters: {
@@ -98,14 +101,22 @@ impl DockerManager {
             ..Default::default()
         });
 
-        let containers = self.docker.list_containers(options).await
-            .map_err(|e| DockerError::ListContainersError {
-                source: e,
-                context: "컨테이너 목록 조회".to_string()
-            })?;
+        let containers = match self.docker.list_containers(options).await {
+            Ok(containers) => {
+                info!(count = containers.len(), "컨테이너 목록 조회 성공");
+                containers
+            },
+            Err(e) => {
+                error!(error = %e, "컨테이너 목록 조회 실패");
+                return Err(DockerError::ListContainersError {
+                    source: e,
+                    context: "라우팅 가능한 컨테이너 조회 중 오류".to_string()
+                });
+            }
+        };
 
         let routes = self.extract_routes(&containers);
-        println!("Routing table updated with {} routes", routes.len());  // 중요한 로그만 유지
+        info!(route_count = routes.len(), "라우팅 테이블 업데이트 완료");
 
         Ok(routes)
     }
@@ -278,8 +289,11 @@ impl DockerManager {
 
         let container_id = event.actor.as_ref()
             .and_then(|actor| actor.id.as_ref())
-            .unwrap_or(&"unknown".to_string())
-            .to_string();
+            .map(String::from)
+            .unwrap_or_else(|| {
+                warn!("컨테이너 ID를 찾을 수 없음");
+                "unknown".to_string()
+            });
 
         let manager = DockerManager { 
             docker: docker.clone(), 
@@ -288,37 +302,95 @@ impl DockerManager {
 
         match event.action.as_deref() {
             Some("start") => {
-                if let Ok(Some((host, service))) = manager.get_container_info(&container_id).await {
-                    tx.send(DockerEvent::ContainerStarted { 
-                        container_id: container_id.clone(),
-                        host,
-                        service,
-                    }).await.map_err(|_| Self::channel_send_error())?;
+                info!(container_id = %container_id, "컨테이너 시작 이벤트 수신");
+                match manager.get_container_info(&container_id).await {
+                    Ok(Some((host, service))) => {
+                        info!(
+                            container_id = %container_id,
+                            host = %host,
+                            "컨테이너 시작 처리 완료"
+                        );
+                        if let Err(_) = tx.send(DockerEvent::ContainerStarted { 
+                            container_id: container_id.clone(),
+                            host,
+                            service,
+                        }).await {
+                            error!(container_id = %container_id, "이벤트 전송 실패");
+                            return Err(Self::channel_send_error());
+                        }
+                    }
+                    Ok(None) => {
+                        warn!(container_id = %container_id, "시작된 컨테이너 정보를 찾을 수 없음");
+                    }
+                    Err(e) => {
+                        error!(
+                            container_id = %container_id,
+                            error = %e,
+                            "컨테이너 정보 조회 실패"
+                        );
+                        return Err(e);
+                    }
                 }
             },
             Some("stop") | Some("die") | Some("destroy") => {
-                // 컨테이너가 중지되기 전의 정보를 가져옴
-                if let Ok(Some((host, _))) = manager.get_container_info(&container_id).await {
-                    tx.send(DockerEvent::ContainerStopped { 
-                        container_id: container_id.clone(),
-                        host,
-                    }).await.map_err(|_| Self::channel_send_error())?;
+                info!(
+                    container_id = %container_id,
+                    action = %event.action.as_deref().unwrap_or("unknown"),
+                    "컨테이너 중지 관련 이벤트 수신"
+                );
+                match manager.get_container_info(&container_id).await {
+                    Ok(Some((host, _))) => {
+                        if let Err(_) = tx.send(DockerEvent::ContainerStopped { 
+                            container_id: container_id.clone(),
+                            host,
+                        }).await {
+                            error!(container_id = %container_id, "이벤트 전송 실패");
+                            return Err(Self::channel_send_error());
+                        }
+                    }
+                    Ok(None) => {
+                        warn!(container_id = %container_id, "중지된 컨테이너 정보를 찾을 수 없음");
+                    }
+                    Err(e) => {
+                        error!(
+                            container_id = %container_id,
+                            error = %e,
+                            "컨테이너 정보 조회 실패"
+                        );
+                        return Err(e);
+                    }
                 }
             },
             Some("update") => {
+                info!(container_id = %container_id, "컨테이너 업데이트 이벤트 수신");
                 let old_info = manager.get_container_info(&container_id).await?;
-                // 컨테이너 설정 업데이트 후 새 정보 가져오기
                 let new_info = manager.get_container_info(&container_id).await?;
+                
                 if let Some((host, service)) = new_info {
-                    tx.send(DockerEvent::ContainerUpdated { 
+                    info!(
+                        container_id = %container_id,
+                        old_host = ?old_info.as_ref().map(|(h, _)| h),
+                        new_host = %host,
+                        "컨테이너 설정 변경 처리"
+                    );
+                    if let Err(_) = tx.send(DockerEvent::ContainerUpdated { 
                         container_id: container_id.clone(),
                         old_host: old_info.map(|(h, _)| h),
                         new_host: Some(host),
                         service: Some(service),
-                    }).await.map_err(|_| Self::channel_send_error())?;
+                    }).await {
+                        error!(container_id = %container_id, "이벤트 전송 실패");
+                        return Err(Self::channel_send_error());
+                    }
                 }
             },
-            _ => {}
+            action => {
+                debug!(
+                    container_id = %container_id,
+                    action = ?action,
+                    "처리되지 않는 컨테이너 이벤트"
+                );
+            }
         }
 
         Ok(())
