@@ -1,11 +1,15 @@
 services:
   reverse-proxy:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: reverse-proxy
     ports:
       - "80:80"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - cargo-cache:/usr/local/cargo/registry
+      - target-cache:/app/target
     environment:
       - PROXY_DOCKER_NETWORK=reverse-proxy-network
       - PROXY_LABEL_PREFIX=reverse-proxy.
@@ -46,3 +50,7 @@ services:
 networks:
   reverse-proxy-network:
     name: reverse-proxy-network 
+
+volumes:
+  cargo-cache:
+  target-cache:

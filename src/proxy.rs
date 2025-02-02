@@ -4,7 +4,11 @@ use http_body_util::{BodyExt, Full};
 use hyper_util::client::legacy;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
+use crate::logging::{RequestLog, log_request};
 use crate::routing::BackendService;
+use uuid::Uuid;
+use std::time::Instant;
+use tracing::{info, error, instrument, Level};
 
 // 프록시 요청을 위한 불변 설정 구조체
 #[derive(Clone)]
@@ -23,31 +27,40 @@ impl ProxyConfig {
 }
 
 // 순수 함수들: 입력을 받아서 새로운 값을 반환
+#[instrument(skip(config, backend))]
 pub async fn proxy_request(
     config: &ProxyConfig,
     backend: &BackendService,
     req: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
-    // Round-Robin으로 다음 백엔드 선택
+    let request_id = Uuid::new_v4().to_string();
+    let _span = tracing::span!(Level::INFO, "request", request_id = %request_id);
+    let _enter = _span.enter();
+    let start_time = Instant::now();
+    let mut log = RequestLog::new(request_id);
+    log.with_request(&req);
+
     let address = backend.get_next_address();
+    log.with_backend(address);
     
-    match build_proxied_request(address, req) {
+    info!(backend = %address, "Proxying request to backend");
+
+    let response = match build_proxied_request(address, req) {
         Ok(proxied_req) => {
-            println!("Proxying request to backend: {}", address);
             match config.client.request(proxied_req).await {
                 Ok(res) => {
                     let status = res.status();
-                    println!("Backend responded with status: {}", status);
+                    log.with_response(status);
                     
                     let (parts, body) = res.into_parts();
                     match body.collect().await {
                         Ok(collected) => {
                             let bytes = collected.to_bytes();
-                            println!("Successfully collected response body ({} bytes)", bytes.len());
+                            info!(bytes_size = bytes.len(), "Response body collected");
                             Response::from_parts(parts, Full::new(bytes))
                         }
                         Err(e) => {
-                            eprintln!("Failed to collect response body: {}", e);
+                            log.with_error(&e);
                             build_error_response(
                                 StatusCode::BAD_GATEWAY,
                                 format!("Failed to collect response body: {}", e)
@@ -56,7 +69,7 @@ pub async fn proxy_request(
                     }
                 }
                 Err(e) => {
-                    eprintln!("Backend request failed: {}", e);
+                    log.with_error(&e);
                     build_error_response(
                         StatusCode::BAD_GATEWAY,
                         format!("Backend request failed: {}", e)
@@ -65,13 +78,18 @@ pub async fn proxy_request(
             }
         }
         Err(e) => {
-            eprintln!("Failed to build request: {}", e);
+            log.with_error(&e);
             build_error_response(
                 StatusCode::BAD_REQUEST,
                 format!("Failed to build request: {}", e)
             )
         }
-    }
+    };
+
+    log.duration_ms = start_time.elapsed().as_millis() as u64;
+    log_request(&log);
+
+    response
 }
 
 fn build_proxied_request(
