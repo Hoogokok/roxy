@@ -98,10 +98,36 @@ impl HostInfo {
 }
 
 /// 백엔드 서비스 정보를 담는 구조체입니다.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct BackendService {
-    /// 백엔드 서비스의 주소 (IP:Port)
-    pub address: SocketAddr,
+    pub addresses: Vec<SocketAddr>,
+    current_index: std::sync::atomic::AtomicUsize,
+}
+
+impl Clone for BackendService {
+    fn clone(&self) -> Self {
+        Self {
+            addresses: self.addresses.clone(),
+            current_index: std::sync::atomic::AtomicUsize::new(
+                self.current_index.load(std::sync::atomic::Ordering::Relaxed)
+            ),
+        }
+    }
+}
+
+impl BackendService {
+    pub fn new(addr: SocketAddr) -> Self {
+        Self {
+            addresses: vec![addr],
+            current_index: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    pub fn get_next_address(&self) -> SocketAddr {
+        let len = self.addresses.len();
+        let index = self.current_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % len;
+        self.addresses[index]
+    }
 }
 
 /// 라우팅 테이블을 관리하는 구조체입니다.
@@ -130,7 +156,16 @@ impl RoutingTable {
     /// * `host` - 호스트 이름
     /// * `service` - 백엔드 서비스 정보
     pub fn add_route(&mut self, host: String, service: BackendService) {
-        self.routes.insert(host, service);
+        match self.routes.get_mut(&host) {
+            Some(existing) => {
+                // 기존 서비스에 새 주소 추가
+                existing.addresses.extend(service.addresses);
+            }
+            None => {
+                // 새로운 서비스 추가
+                self.routes.insert(host, service);
+            }
+        }
     }
 
     /// 주어진 호스트에 대한 백엔드 서비스를 찾습니다.

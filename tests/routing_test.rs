@@ -41,11 +41,8 @@ fn test_host_info_parsing() {
 #[test]
 fn test_routing_table_basic() {
     let mut table = RoutingTable::new();
-    let backend = BackendService {
-        address: "127.0.0.1:8080".parse().unwrap(),
-    };
+    let backend = BackendService::new("127.0.0.1:8080".parse().unwrap());
 
-    // 기본 라우팅 테스트
     table.add_route("example.com".to_string(), backend);
 
     let host_info = HostInfo {
@@ -59,7 +56,6 @@ fn test_routing_table_basic() {
 fn test_routing_table_multiple_hosts() {
     let mut table = RoutingTable::new();
     
-    // 여러 백엔드 서비스 추가
     let backends = vec![
         ("example.com", "127.0.0.1:8080"),
         ("test.com", "127.0.0.1:8081"),
@@ -69,9 +65,7 @@ fn test_routing_table_multiple_hosts() {
     for (host, addr) in backends.clone() {
         table.add_route(
             host.to_string(),
-            BackendService {
-                address: addr.parse().unwrap(),
-            },
+            BackendService::new(addr.parse().unwrap()),
         );
     }
 
@@ -82,7 +76,7 @@ fn test_routing_table_multiple_hosts() {
             port: None,
         };
         let backend = table.find_backend(&host_info).expect("Backend not found");
-        assert_eq!(backend.address.to_string(), addr);
+        assert_eq!(backend.get_next_address().to_string(), addr);
     }
 
     // 존재하지 않는 호스트 테스트
@@ -100,38 +94,30 @@ fn test_routing_table_multiple_hosts() {
 fn test_routing_table_overwrite() {
     let mut table = RoutingTable::new();
     
-    // 첫 번째 백엔드 추가
     table.add_route(
         "example.com".to_string(),
-        BackendService {
-            address: "127.0.0.1:8080".parse().unwrap(),
-        },
+        BackendService::new("127.0.0.1:8080".parse().unwrap()),
     );
 
-    // 같은 호스트에 대해 다른 백엔드 추가
     table.add_route(
         "example.com".to_string(),
-        BackendService {
-            address: "127.0.0.1:9090".parse().unwrap(),
-        },
+        BackendService::new("127.0.0.1:9090".parse().unwrap()),
     );
 
-    // 최신 백엔드로 업데이트되었는지 확인
     let host_info = HostInfo {
         name: "example.com".to_string(),
         port: None,
     };
     let backend = table.find_backend(&host_info).unwrap();
-    assert_eq!(backend.address.to_string(), "127.0.0.1:9090");
+    assert_eq!(backend.get_next_address().to_string(), "127.0.0.1:8080");
+    assert_eq!(backend.get_next_address().to_string(), "127.0.0.1:9090");
 }
 
 fn setup_routing_table() -> RoutingTable {
     let mut table = RoutingTable::new();
     table.add_route(
         "example.com".to_string(),
-        BackendService {
-            address: "127.0.0.1:8080".parse().unwrap(),
-        },
+        BackendService::new("127.0.0.1:8080".parse().unwrap()),
     );
     table
 }
@@ -158,7 +144,7 @@ fn test_route_request_success() {
     
     let backend = result.unwrap();
     assert_eq!(
-        backend.address,
+        backend.get_next_address(),
         "127.0.0.1:8080".parse::<SocketAddr>().unwrap()
     );
 }
@@ -206,7 +192,7 @@ fn test_route_request_with_port() {
     
     let backend = result.unwrap();
     assert_eq!(
-        backend.address,
+        backend.get_next_address(),
         "127.0.0.1:8080".parse::<SocketAddr>().unwrap()
     );
 } 
