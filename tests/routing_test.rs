@@ -13,13 +13,34 @@ fn test_host_info_parsing() {
         ("example.com:8080", Ok(("example.com", Some(8080)))),
         ("example.com:80", Ok(("example.com", Some(80)))),
         // 잘못된 입력 테스트
-        ("example.com:invalid", Err(RoutingError::InvalidPort("invalid".to_string()))),
-        ("example.com:", Err(RoutingError::InvalidHost("example.com:".to_string()))),
-        (":8080", Err(RoutingError::InvalidHost(":8080".to_string()))),
-        ("", Err(RoutingError::InvalidHost("".to_string()))),
-        ("example.com:65536", Err(RoutingError::InvalidPort("65536".to_string()))),
-        ("example.com:0", Err(RoutingError::InvalidPort("0".to_string()))),
-        ("example.com:8080:extra", Err(RoutingError::InvalidHost("example.com:8080:extra".to_string()))),
+        ("example.com:invalid", Err(RoutingError::InvalidPort { 
+            port: "invalid".to_string(),
+            reason: "Invalid format".to_string(),
+        })),
+        ("example.com:", Err(RoutingError::InvalidHost { 
+            host: "example.com:".to_string(),
+            reason: "Invalid format".to_string(),
+        })),
+        (":8080", Err(RoutingError::InvalidHost { 
+            host: ":8080".to_string(),
+            reason: "Invalid format".to_string(),
+        })),
+        ("", Err(RoutingError::InvalidHost { 
+            host: "".to_string(),
+            reason: "Invalid format".to_string(),
+        })),
+        ("example.com:65536", Err(RoutingError::InvalidPort { 
+            port: "65536".to_string(),
+            reason: "Invalid format".to_string(),
+        })),
+        ("example.com:0", Err(RoutingError::InvalidPort { 
+            port: "0".to_string(),
+            reason: "Port must be greater than 0".to_string(),
+        })),
+        ("example.com:8080:extra", Err(RoutingError::InvalidHost { 
+            host: "example.com:8080:extra".to_string(),
+            reason: "Invalid format".to_string(),
+        })),
     ];
 
     for (input, expected) in test_cases {
@@ -86,7 +107,8 @@ fn test_routing_table_multiple_hosts() {
     };
     assert!(matches!(
         table.find_backend(&unknown_host).unwrap_err(),
-        RoutingError::BackendNotFound(_)
+        RoutingError::BackendNotFound { host, available_routes: _ } 
+        if host == "unknown.com"
     ));
 }
 
@@ -166,7 +188,8 @@ fn test_route_request_unknown_host() {
     let result = table.route_request(&req);
     assert!(matches!(
         result.unwrap_err(),
-        RoutingError::BackendNotFound(host) if host == "unknown.com"
+        RoutingError::BackendNotFound { host, available_routes: _ }
+        if host == "unknown.com"
     ));
 }
 
@@ -178,7 +201,8 @@ fn test_route_request_invalid_host() {
     let result = table.route_request(&req);
     assert!(matches!(
         result.unwrap_err(),
-        RoutingError::InvalidPort(port) if port == "invalid_port"
+        RoutingError::InvalidPort { port, reason: _ }
+        if port == "invalid_port"
     ));
 }
 

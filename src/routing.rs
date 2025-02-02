@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use hyper::header;
 use std::fmt;
+use tracing::{debug, error, info, warn};
 
 /// 호스트 정보를 담는 불변 데이터 구조입니다.
 /// 
@@ -26,25 +27,42 @@ pub struct HostInfo {
 #[derive(Debug)]
 pub enum RoutingError {
     /// 유효하지 않은 호스트 이름
-    InvalidHost(String),
+    InvalidHost {
+        host: String,
+        reason: String,
+    },
     /// 유효하지 않은 포트 번호
-    InvalidPort(String),
+    InvalidPort {
+        port: String,
+        reason: String,
+    },
     /// Host 헤더 누락
     MissingHost,
     /// 백엔드 서비스를 찾을 수 없음
-    BackendNotFound(String),
+    BackendNotFound {
+        host: String,
+        available_routes: Vec<String>,
+    },
     /// 헤더 파싱 에러
-    HeaderParseError(String),
+    HeaderParseError {
+        header_name: String,
+        error: String,
+    },
 }
 
 impl fmt::Display for RoutingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            RoutingError::InvalidHost(host) => write!(f, "Invalid host: {}", host),
-            RoutingError::InvalidPort(port) => write!(f, "Invalid port: {}", port),
-            RoutingError::MissingHost => write!(f, "Missing Host header"),
-            RoutingError::BackendNotFound(host) => write!(f, "Backend not found for host: {}", host),
-            RoutingError::HeaderParseError(err) => write!(f, "Failed to parse header: {}", err),
+            RoutingError::InvalidHost { host, reason } => 
+                write!(f, "유효하지 않은 호스트 {}: {}", host, reason),
+            RoutingError::InvalidPort { port, reason } => 
+                write!(f, "유효하지 않은 포트 {}: {}", port, reason),
+            RoutingError::MissingHost => 
+                write!(f, "Host 헤더가 누락됨"),
+            RoutingError::BackendNotFound { host, available_routes } => 
+                write!(f, "호스트 {}에 대한 백엔드를 찾을 수 없음 (사용 가능한 라우트: {:?})", host, available_routes),
+            RoutingError::HeaderParseError { header_name, error } => 
+                write!(f, "{} 헤더 파싱 실패: {}", header_name, error),
         }
     }
 }
@@ -80,16 +98,16 @@ impl HostInfo {
                     Ok((name.to_string(), None)),
                 [name, port] if !name.is_empty() => {
                     port.parse::<u16>()
-                        .map_err(|_| RoutingError::InvalidPort(port.to_string()))
+                        .map_err(|_| RoutingError::InvalidPort { port: port.to_string(), reason: "Invalid format".to_string() })
                         .and_then(|p| {
                             if p > 0 {
                                 Ok((name.to_string(), Some(p)))
                             } else {
-                                Err(RoutingError::InvalidPort(p.to_string()))
+                                Err(RoutingError::InvalidPort { port: p.to_string(), reason: "Port must be greater than 0".to_string() })
                             }
                         })
                 }
-                _ => Err(RoutingError::InvalidHost(s.to_string())),
+                _ => Err(RoutingError::InvalidHost { host: s.to_string(), reason: "Invalid format".to_string() }),
             }
         };
 
@@ -181,7 +199,10 @@ impl RoutingTable {
     pub fn get_backend(&self, host: &str) -> Result<&BackendService, RoutingError> {
         self.routes
             .get(host)
-            .ok_or_else(|| RoutingError::BackendNotFound(host.to_string()))
+            .ok_or_else(|| RoutingError::BackendNotFound {
+                host: host.to_string(),
+                available_routes: self.routes.keys().cloned().collect(),
+            })
     }
 
     /// HTTP 요청에서 호스트 정보를 추출하고 해당하는 백엔드 서비스를 찾습니다.
@@ -196,9 +217,19 @@ impl RoutingTable {
     /// 실패 시 적절한 `RoutingError`를 포함한 `Err`를 반환합니다.
     pub fn route_request<B>(&self, req: &hyper::Request<B>) -> Result<&BackendService, RoutingError> {
         let host_info = Self::extract_host(req)?;
-        println!("Attempting to route request for host: {}", host_info.name);
-        println!("Available routes: {:?}", self.routes);
-        self.find_backend(&host_info)
+        debug!(host = %host_info.name, "라우팅 요청 처리");
+        
+        let backend = self.find_backend(&host_info);
+        match &backend {
+            Ok(_) => info!(host = %host_info.name, "백엔드 서비스 찾음"),
+            Err(e) => warn!(
+                host = %host_info.name,
+                error = %e,
+                available_routes = ?self.routes.keys().collect::<Vec<_>>(),
+                "백엔드 서비스를 찾을 수 없음"
+            ),
+        }
+        backend
     }
 
     /// HTTP 요청에서 호스트 정보를 추출합니다.
@@ -207,19 +238,28 @@ impl RoutingTable {
             .get(header::HOST)
             .ok_or(RoutingError::MissingHost)?
             .to_str()
-            .map_err(|e| RoutingError::HeaderParseError(e.to_string()))?;
+            .map_err(|e| RoutingError::HeaderParseError { header_name: "Host".to_string(), error: e.to_string() })?;
         
         HostInfo::from_header_value(host)
     }
 
     /// 호스트 정보를 기반으로 백엔드 서비스를 찾습니다.
     pub fn find_backend(&self, host_info: &HostInfo) -> Result<&BackendService, RoutingError> {
-        self.get_backend(&host_info.name)
+        self.routes
+            .get(&host_info.name)
+            .ok_or_else(|| RoutingError::BackendNotFound {
+                host: host_info.name.clone(),
+                available_routes: self.routes.keys().cloned().collect(),
+            })
     }
 
     /// Docker 컨테이너로부터 라우팅 규칙을 업데이트합니다.
     pub fn sync_docker_routes(&mut self, routes: HashMap<String, BackendService>) {
-        println!("Syncing routes: {:?}", routes);
+        info!(
+            route_count = routes.len(),
+            routes = ?routes.keys().collect::<Vec<_>>(),
+            "Docker 라우트 동기화"
+        );
         self.routes = routes;
     }
 } 
