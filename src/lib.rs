@@ -42,3 +42,4 @@
 //! ```
 
 pub mod routing; 
+pub mod proxy;
