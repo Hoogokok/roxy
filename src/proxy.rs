@@ -4,11 +4,11 @@ use http_body_util::{BodyExt, Full};
 use hyper_util::client::legacy;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
-use crate::routing::BackendService;
 use crate::logging::{RequestLog, log_request};
+use crate::routing::BackendService;
 use uuid::Uuid;
 use std::time::Instant;
-use tracing::{info, error, instrument};
+use tracing::{info, error, instrument, Level};
 
 // 프록시 요청을 위한 불변 설정 구조체
 #[derive(Clone)]
@@ -27,13 +27,15 @@ impl ProxyConfig {
 }
 
 // 순수 함수들: 입력을 받아서 새로운 값을 반환
-#[instrument(skip(config, backend), fields(request_id = %request_id))]
+#[instrument(skip(config, backend))]
 pub async fn proxy_request(
     config: &ProxyConfig,
     backend: &BackendService,
     req: Request<Incoming>,
 ) -> Response<Full<Bytes>> {
     let request_id = Uuid::new_v4().to_string();
+    let _span = tracing::span!(Level::INFO, "request", request_id = %request_id);
+    let _enter = _span.enter();
     let start_time = Instant::now();
     let mut log = RequestLog::new(request_id);
     log.with_request(&req);
