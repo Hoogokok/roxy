@@ -144,7 +144,14 @@ impl BackendService {
     pub fn get_next_address(&self) -> SocketAddr {
         let len = self.addresses.len();
         let index = self.current_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % len;
-        self.addresses[index]
+        let addr = self.addresses[index];
+        debug!(
+            addresses_count = len,
+            selected_index = index,
+            selected_address = %addr,
+            "로드 밸런서 주소 선택"
+        );
+        addr
     }
 }
 
@@ -164,7 +171,11 @@ impl RoutingTable {
 
     /// 라우팅 테이블에서 호스트를 제거합니다.
     pub fn remove_route(&mut self, host: &str) {
-        self.routes.remove(host);
+        if self.routes.remove(host).is_some() {
+            info!(host = %host, "라우트 제거됨");
+        } else {
+            debug!(host = %host, "존재하지 않는 라우트 제거 시도");
+        }
     }
 
     /// 라우팅 테이블에 새로운 라우트를 추가합니다.
@@ -176,11 +187,21 @@ impl RoutingTable {
     pub fn add_route(&mut self, host: String, service: BackendService) {
         match self.routes.get_mut(&host) {
             Some(existing) => {
-                // 기존 서비스에 새 주소 추가
+                let new_addresses = service.addresses.clone();
                 existing.addresses.extend(service.addresses);
+                info!(
+                    host = %host,
+                    existing_addresses = ?existing.addresses,
+                    new_addresses = ?new_addresses,
+                    "기존 서비스에 주소 추가"
+                );
             }
             None => {
-                // 새로운 서비스 추가
+                info!(
+                    host = %host,
+                    addresses = ?service.addresses,
+                    "새 라우트 추가"
+                );
                 self.routes.insert(host, service);
             }
         }

@@ -219,4 +219,24 @@ fn test_route_request_with_port() {
         backend.get_next_address(),
         "127.0.0.1:8080".parse::<SocketAddr>().unwrap()
     );
+}
+
+#[test]
+fn test_routing_table_remove_route() {
+    let mut table = setup_routing_table();
+    
+    // 존재하는 라우트 제거
+    table.remove_route("example.com");
+    let host_info = HostInfo {
+        name: "example.com".to_string(),
+        port: None,
+    };
+    assert!(matches!(
+        table.find_backend(&host_info).unwrap_err(),
+        RoutingError::BackendNotFound { host, available_routes }
+        if host == "example.com" && available_routes.is_empty()
+    ));
+
+    // 존재하지 않는 라우트 제거
+    table.remove_route("nonexistent.com");
 } 
