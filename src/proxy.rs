@@ -112,4 +112,35 @@ fn build_error_response(status: StatusCode, message: String) -> Response<Full<By
         .status(status)
         .body(Full::new(Bytes::from(message)))
         .unwrap()
+}
+
+#[derive(Debug)]
+pub enum ProxyError {
+    /// 백엔드 요청 실패
+    BackendRequestFailed {
+        backend: String,
+        error: String,
+    },
+    /// 응답 처리 실패
+    ResponseError {
+        backend: String,
+        error: String,
+    },
+    /// 요청 빌드 실패
+    RequestBuildError {
+        reason: String,
+    },
+}
+
+impl std::fmt::Display for ProxyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProxyError::BackendRequestFailed { backend, error } => 
+                write!(f, "백엔드 {} 요청 실패: {}", backend, error),
+            ProxyError::ResponseError { backend, error } => 
+                write!(f, "백엔드 {} 응답 처리 실패: {}", backend, error),
+            ProxyError::RequestBuildError { reason } => 
+                write!(f, "요청 빌드 실패: {}", reason),
+        }
+    }
 } 
