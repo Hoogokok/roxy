@@ -1,16 +1,18 @@
-use tracing::{info, warn, error, Level, span};
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing::{info, warn, error, Level};
+use tracing_subscriber::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn init_logging() {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env()
-            .add_directive(Level::INFO.into())
-            .add_directive("reverse_proxy_traefik=debug".parse().unwrap()))
+    fmt::Subscriber::builder()
         .with_target(true)
         .with_thread_ids(true)
         .with_file(true)
         .with_line_number(true)
+        .with_level(true)
+        .with_target(true)
+        .with_thread_ids(true)
+        .with_ansi(true)
+        .with_max_level(Level::DEBUG)
         .init();
 }
 
@@ -95,29 +97,35 @@ pub fn log_request(log: &RequestLog) {
         Level::INFO
     };
 
-    let span = span!(
-        level,
-        "request",
-        request_id = %log.request_id,
-        method = %log.method,
-        path = %log.path,
-        host = %log.host,
-        status = %log.status_code,
-        duration_ms = %log.duration_ms
-    );
-    let _enter = span.enter();
-
     match level {
         Level::ERROR => error!(
+            request_id = %log.request_id,
+            method = %log.method,
+            path = %log.path,
+            host = %log.host,
+            status = %log.status_code,
+            duration_ms = %log.duration_ms,
             backend = ?log.backend_address,
             error = ?log.error,
             "Request failed"
         ),
         Level::WARN => warn!(
+            request_id = %log.request_id,
+            method = %log.method,
+            path = %log.path,
+            host = %log.host,
+            status = %log.status_code,
+            duration_ms = %log.duration_ms,
             backend = ?log.backend_address,
             "Request completed with warning"
         ),
         _ => info!(
+            request_id = %log.request_id,
+            method = %log.method,
+            path = %log.path,
+            host = %log.host,
+            status = %log.status_code,
+            duration_ms = %log.duration_ms,
             backend = ?log.backend_address,
             "Request completed successfully"
         ),
