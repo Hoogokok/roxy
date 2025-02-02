@@ -255,13 +255,30 @@ impl RoutingTable {
 
     /// HTTP 요청에서 호스트 정보를 추출합니다.
     pub fn extract_host<B>(req: &hyper::Request<B>) -> Result<HostInfo, RoutingError> {
-        let host = req.headers()
-            .get(header::HOST)
-            .ok_or(RoutingError::MissingHost)?
-            .to_str()
-            .map_err(|e| RoutingError::HeaderParseError { header_name: "Host".to_string(), error: e.to_string() })?;
-        
-        HostInfo::from_header_value(host)
+        let host = match req.headers().get(header::HOST) {
+            Some(value) => {
+                debug!("Host 헤더 발견");
+                value
+            }
+            None => {
+                warn!("Host 헤더 누락");
+                return Err(RoutingError::MissingHost);
+            }
+        };
+
+        match host.to_str() {
+            Ok(host_str) => {
+                debug!(host = %host_str, "Host 헤더 파싱 성공");
+                HostInfo::from_header_value(host_str)
+            }
+            Err(e) => {
+                error!(error = %e, "Host 헤더 파싱 실패");
+                Err(RoutingError::HeaderParseError { 
+                    header_name: "Host".to_string(), 
+                    error: e.to_string() 
+                })
+            }
+        }
     }
 
     /// 호스트 정보를 기반으로 백엔드 서비스를 찾습니다.
