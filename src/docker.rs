@@ -33,12 +33,14 @@ pub enum DockerError {
         container_id: String,
         address: String,
         network: String,
+        context: Option<String>,
     },
     /// 네트워크 설정 오류
     NetworkError {
         container_id: String,
         network: String,
         reason: String,
+        context: Option<String>,
     },
 }
 
@@ -55,10 +57,12 @@ impl fmt::Display for DockerError {
                 } else {
                     write!(f, "컨테이너 {} 설정 오류: {}", container_id, reason)
                 },
-            DockerError::AddressParseError { container_id, address, network } => 
-                write!(f, "컨테이너 {}의 네트워크 {} 주소 {} 파싱 실패", container_id, network, address),
-            DockerError::NetworkError { container_id, network, reason } =>
-                write!(f, "컨테이너 {}의 네트워크 {} 설정 오류: {}", container_id, network, reason),
+            DockerError::AddressParseError { container_id, address, network, context } => 
+                write!(f, "컨테이너 {}의 네트워크 {} 주소 {} 파싱 실패 ({})", 
+                    container_id, network, address, context.as_deref().unwrap_or("No context provided")),
+            DockerError::NetworkError { container_id, network, reason, context } =>
+                write!(f, "컨테이너 {}의 네트워크 {} 설정 오류 ({}): {}", 
+                    container_id, network, context.as_deref().unwrap_or("No context provided"), reason),
         }
     }
 }
@@ -131,16 +135,26 @@ impl DockerManager {
                 routes.entry(host)
                     .and_modify(|service: &mut BackendService| {
                         service.addresses.push(addr.get_next_address());
-                        println!("Added address {:?} to service for host {}", addr.get_next_address(), host_clone);
+                        info!(
+                            host = %host_clone,
+                            address = ?addr.get_next_address(),
+                            "기존 서비스에 주소 추가"
+                        );
                     })
                     .or_insert_with(|| {
-                        println!("Created new service for host {} with address {:?}", host_clone, addr.get_next_address());
+                        info!(
+                            host = %host_clone,
+                            address = ?addr.get_next_address(),
+                            "새 서비스 생성"
+                        );
                         addr
                     });
             }
         }
         
-        println!("Final routing table: {:?}", routes);
+        if !routes.is_empty() {
+            debug!(routes = ?routes, "라우팅 테이블 구성 완료");
+        }
         routes
     }
 
@@ -154,6 +168,7 @@ impl DockerManager {
                 container_id: container_id.clone(),
                 network: self.config.docker_network.clone(),
                 reason: "네트워크 설정을 찾을 수 없음".to_string(),
+                context: None,
             })?;
 
         let networks = network_settings.networks.as_ref()
@@ -161,6 +176,7 @@ impl DockerManager {
                 container_id: container_id.clone(),
                 network: self.config.docker_network.clone(),
                 reason: "네트워크 정보를 찾을 수 없음".to_string(),
+                context: None,
             })?;
 
         let network = networks.get(&self.config.docker_network)
@@ -168,6 +184,7 @@ impl DockerManager {
                 container_id: container_id.clone(),
                 network: self.config.docker_network.clone(),
                 reason: "지정된 네트워크를 찾을 수 없음".to_string(),
+                context: None,
             })?;
 
         let ip = network.ip_address.as_ref()
@@ -175,6 +192,7 @@ impl DockerManager {
                 container_id: container_id.clone(),
                 network: self.config.docker_network.clone(),
                 reason: "IP 주소를 찾을 수 없음".to_string(),
+                context: None,
             })?;
 
         // 호스트와 포트 가져오기
@@ -190,6 +208,7 @@ impl DockerManager {
                 container_id,
                 network: self.config.docker_network.clone(),
                 reason: "IP 주소가 비어있음".to_string(),
+                context: None,
             });
         }
 
@@ -198,9 +217,17 @@ impl DockerManager {
             container_id: container_id.clone(),
             address: format!("{}:{}", ip, port),
             network: self.config.docker_network.clone(),
+            context: None,
         })?;
 
-        println!("컨테이너 {} ({}:{})를 호스트 {}에 매핑", container_id, ip, port, host);
+        info!(
+            container_id = %container_id,
+            ip = %ip,
+            port = %port,
+            host = %host,
+            "컨테이너 라우팅 정보 추출"
+        );
+        
         Ok((host, BackendService::new(addr)))
     }
 
