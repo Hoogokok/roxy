@@ -87,21 +87,32 @@ impl DockerManager {
 
     /// 컨테이너 목록에서 라우팅 정보를 추출합니다.
     fn extract_routes(&self, containers: &[ContainerSummary]) -> HashMap<String, BackendService> {
-        containers.iter()
-            .filter_map(|container| {
-                let container_id = container.id.as_deref().unwrap_or("unknown");
-                self.container_to_route(container)
-                    .map_err(|e| eprintln!("Failed to process container {}: {}", container_id, e))
-                    .ok()
-            })
-            .collect()
+        let mut routes = HashMap::new();
+        
+        for container in containers {
+            if let Ok((host, addr)) = self.container_to_route(container) {
+                let host_clone = host.clone();
+                routes.entry(host)
+                    .and_modify(|service: &mut BackendService| {
+                        service.addresses.push(addr.get_next_address());
+                        println!("Added address {:?} to service for host {}", addr.get_next_address(), host_clone);
+                    })
+                    .or_insert_with(|| {
+                        println!("Created new service for host {} with address {:?}", host_clone, addr.get_next_address());
+                        addr
+                    });
+            }
+        }
+        
+        println!("Final routing table: {:?}", routes);
+        routes
     }
 
     /// 단일 컨테이너에서 라우팅 정보를 추출합니다.
     fn container_to_route(&self, container: &ContainerSummary) -> Result<(String, BackendService), DockerError> {
         let container_id = container.id.as_deref().unwrap_or("unknown").to_string();
         
-        // 네트워크 이름을 설정에서 가져오기
+        // IP 주소 가져오기
         let ip = container
             .network_settings
             .as_ref()
@@ -113,18 +124,29 @@ impl DockerManager {
                 reason: format!("IP address not found in network {}", self.config.docker_network),
             })?;
 
+        // 호스트와 포트 가져오기
         let host = self.extract_host_label(container, &container_id)?;
         let port = container.labels.as_ref()
             .and_then(|labels| labels.get(&format!("{}port", self.config.label_prefix)))
             .and_then(|port| port.parse::<u16>().ok())
             .unwrap_or(80);
 
+        // IP가 비어있지 않은지 확인
+        if ip.is_empty() {
+            return Err(DockerError::ContainerConfigError {
+                container_id,
+                reason: "Empty IP address".to_string(),
+            });
+        }
+
+        // 주소 파싱
         let addr = format!("{}:{}", ip, port).parse().map_err(|_| DockerError::AddressParseError {
             container_id: container_id.clone(),
             address: format!("{}:{}", ip, port),
         })?;
 
-        Ok((host, BackendService::new(addr)))  // BackendService::new 사용
+        println!("Found container {} with address {} for host {}", container_id, addr, host);
+        Ok((host, BackendService::new(addr)))
     }
 
     /// 컨테이너에서 호스트 라벨을 추출합니다.

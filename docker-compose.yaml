@@ -22,10 +22,12 @@ services:
     expose:
       - "80"
     labels:
-      - "reverse-proxy.host=web1.localhost"
+      - "reverse-proxy.host=test.localhost"
       - "reverse-proxy.port=80"
     networks:
       - reverse-proxy-network
+    volumes:
+      - ./test/web1:/usr/share/nginx/html
 
   web2:
     image: nginx:alpine
@@ -33,10 +35,12 @@ services:
     expose:
       - "80"
     labels:
-      - "reverse-proxy.host=web2.localhost"
+      - "reverse-proxy.host=test.localhost"
       - "reverse-proxy.port=80"
     networks:
       - reverse-proxy-network
+    volumes:
+      - ./test/web2:/usr/share/nginx/html
 
 # 테스트를 위한 네트워크 설정
 networks:
