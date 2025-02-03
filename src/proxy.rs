@@ -87,16 +87,21 @@ pub async fn proxy_request(
 fn build_proxied_request(
     address: std::net::SocketAddr,
     req: Request<Incoming>,
-) -> Result<Request<Incoming>, hyper::http::Error> {
+) -> Result<Request<Incoming>, ProxyError> {
     let uri: Uri = format!("http://{}{}", address, req.uri().path())
         .parse()
-        .unwrap();
+        .map_err(|e| ProxyError::RequestBuildError {
+            reason: format!("URI 파싱 실패: {}", e),
+        })?;
 
     let (parts, body) = req.into_parts();
     Request::builder()
         .method(parts.method)
         .uri(uri)
         .body(body)
+        .map_err(|e| ProxyError::RequestBuildError {
+            reason: format!("요청 빌드 실패: {}", e),
+        })
 }
 
 // 에러 응답 생성 헬퍼 함수
@@ -144,4 +149,7 @@ impl std::fmt::Display for ProxyError {
                 write!(f, "요청 빌드 실패: {}", reason),
         }
     }
-} 
+}
+
+impl std::error::Error for ProxyError {}
+
