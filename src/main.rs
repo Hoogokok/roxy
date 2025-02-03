@@ -3,6 +3,7 @@ mod docker;
 mod proxy;
 mod config;
 mod logging;
+mod tls;
 
 use std::convert::Infallible;
 use hyper::{Request, Response, StatusCode};
@@ -18,11 +19,8 @@ use config::Config;
 use crate::logging::init_logging;
 use tracing::{error, info, warn};
 use proxy::ProxyConfig;
-use tokio_rustls::rustls::{self, Certificate, PrivateKey};
-use tokio_rustls::TlsAcceptor;
-use std::fs::File;
-use std::io::BufReader;
 use hyper_util::rt::TokioIo;
+use crate::tls::TlsConfig;
 
 async fn handle_request(
     routing_table: Arc<tokio::sync::RwLock<RoutingTable>>,
@@ -115,29 +113,6 @@ async fn handle_docker_event(
     Ok(())
 }
 
-async fn load_tls_config(cert_path: &str, key_path: &str) -> Result<rustls::ServerConfig, Box<dyn std::error::Error>> {
-    let cert_file = File::open(cert_path)?;
-    let mut cert_reader = BufReader::new(cert_file);
-    let certs = rustls_pemfile::certs(&mut cert_reader)?
-        .into_iter()
-        .map(Certificate)
-        .collect();
-
-    let key_file = File::open(key_path)?;
-    let mut key_reader = BufReader::new(key_file);
-    let key = rustls_pemfile::pkcs8_private_keys(&mut key_reader)?
-        .first()
-        .ok_or("개인키를 찾을 수 없음")?
-        .clone();
-
-    let config = rustls::ServerConfig::builder()
-        .with_safe_defaults()
-        .with_no_client_auth()
-        .with_single_cert(certs, PrivateKey(key))?;
-
-    Ok(config)
-}
-
 async fn handle_connection<I>(io: I, routing_table: Arc<tokio::sync::RwLock<RoutingTable>>)
 where
     I: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
@@ -202,21 +177,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!(port = config.http_port, "HTTP 리스너 시작");
 
-    let https_acceptor = if config.https_enabled {
+    let https_config = if config.https_enabled {
         let cert_path = config.tls_cert_path.as_ref().unwrap();
         let key_path = config.tls_key_path.as_ref().unwrap();
         
-        let tls_config = load_tls_config(cert_path, key_path).await?;
-        let acceptor = TlsAcceptor::from(Arc::new(tls_config));
-        
-        let https_listener = TcpListener::bind(format!("0.0.0.0:{}", config.https_port)).await
-            .map_err(|e| {
-                error!(error = %e, port = config.https_port, "HTTPS 포트 바인딩 실패");
-                e
-            })?;
-
-        info!(port = config.https_port, "HTTPS 리스너 시작");
-        Some((https_listener, acceptor))
+        Some(TlsConfig::new(cert_path, key_path, config.https_port).await?)
     } else {
         None
     };
@@ -240,8 +205,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             
             result = async { 
-                if let Some((listener, acceptor)) = &https_acceptor {
-                    listener.accept().await
+                if let Some(config) = &https_config {
+                    config.listener.accept().await
                 } else {
                     std::future::pending().await
                 }
@@ -250,7 +215,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     Ok((stream, addr)) => {
                         info!(client_addr = %addr, "HTTPS 클라이언트 연결 수락");
                         let routing_table = routing_table.clone();
-                        let acceptor = https_acceptor.as_ref().unwrap().1.clone();
+                        let acceptor = https_config.as_ref().unwrap().acceptor.clone();
                         
                         tokio::spawn(async move {
                             match acceptor.accept(stream).await {
