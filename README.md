@@ -14,10 +14,27 @@ Docker 컨테이너를 위한 동적 리버스 프록시 서버입니다. 호스
 - 컨테이너 시작/중지/업데이트에 따른 자동 라우팅 설정
 - 라우팅 테이블 실시간 업데이트
 
-## 환경 변수 설정
+## 설정
+
+### TOML 설정 파일
+
+`PROXY_CONFIG_FILE` 환경 변수로 TOML 설정 파일 경로를 지정할 수 있습니다:
+
+```toml
+docker_network = "reverse-proxy-network"
+label_prefix = "reverse-proxy."
+http_port = 80
+https_enabled = false
+https_port = 443
+```
+
+### 환경 변수 설정
+
+환경 변수는 TOML 설정을 덮어쓸 수 있습니다.
 
 | 환경 변수 | 설명 | 기본값 |
 |-----------|------|--------|
+| `PROXY_CONFIG_FILE` | TOML 설정 파일 경로 | - |
 | `PROXY_DOCKER_NETWORK` | 프록시가 모니터링할 Docker 네트워크 이름 | `proxy` |
 | `PROXY_LABEL_PREFIX` | 컨테이너 라벨 접두사 | `reverse-proxy.` |
 | `HTTP_PORT` | HTTP 리스너 포트 | `8080` |
@@ -58,6 +75,7 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./certs:/certs  # TLS 인증서 디렉토리
+      - ./config:/config  # TOML 설정 파일 디렉토리
     environment:
       - PROXY_DOCKER_NETWORK=proxy
       - HTTP_PORT=80

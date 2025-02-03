@@ -1,6 +1,9 @@
+use serde::Deserialize;
 use std::env;
+use std::fs;
+use std::path::Path;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub docker_network: String,
     pub label_prefix: String,
@@ -21,6 +24,8 @@ pub enum ConfigError {
         value: String,
         reason: String,
     },
+    TomlError { error: String },
+    FileError { path: String, error: String },
 }
 
 impl std::fmt::Display for ConfigError {
@@ -30,6 +35,10 @@ impl std::fmt::Display for ConfigError {
                 write!(f, "환경 변수 {} 누락", var_name),
             ConfigError::EnvVarInvalid { var_name, value, reason } => 
                 write!(f, "환경 변수 {} 값 {} 유효하지 않음: {}", var_name, value, reason),
+            ConfigError::TomlError { error } =>
+                write!(f, "TOML 파싱 오류: {}", error),
+            ConfigError::FileError { path, error } =>
+                write!(f, "파일 {} 읽기 오류: {}", path, error),
         }
     }
 }
@@ -37,6 +46,17 @@ impl std::fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl Config {
+    pub fn from_toml_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
+        let contents = fs::read_to_string(path.as_ref()).map_err(|e| ConfigError::FileError {
+            path: path.as_ref().display().to_string(),
+            error: e.to_string(),
+        })?;
+
+        toml::from_str(&contents).map_err(|e| ConfigError::TomlError {
+            error: e.to_string(),
+        })
+    }
+
     pub fn from_env() -> Result<Self, ConfigError> {
         let http_port = std::env::var("HTTP_PORT")
             .map_err(|_| ConfigError::EnvVarMissing { 
@@ -89,5 +109,65 @@ impl Config {
             tls_cert_path,
             tls_key_path,
         })
+    }
+
+    fn apply_env_overrides(&mut self) {
+        // HTTP 포트 환경 변수 적용
+        if let Ok(port) = env::var("HTTP_PORT")
+            .map_err(|_| ())
+            .and_then(|p| p.parse::<u16>().map_err(|_| ()))
+        {
+            self.http_port = port;
+        }
+
+        // Docker 네트워크 환경 변수 적용
+        if let Ok(network) = env::var("PROXY_DOCKER_NETWORK") {
+            self.docker_network = network;
+        }
+
+        // 레이블 접두사 환경 변수 적용
+        if let Ok(prefix) = env::var("PROXY_LABEL_PREFIX") {
+            self.label_prefix = prefix;
+        }
+
+        // HTTPS 활성화 환경 변수 적용
+        if let Ok(enabled) = env::var("HTTPS_ENABLED") {
+            self.https_enabled = enabled.to_lowercase() == "true";
+        }
+
+        // HTTPS가 활성화된 경우에만 관련 설정 적용
+        if self.https_enabled {
+            if let Ok(port) = env::var("HTTPS_PORT")
+                .map_err(|_| ())
+                .and_then(|p| p.parse::<u16>().map_err(|_| ()))
+            {
+                self.https_port = port;
+            }
+
+            // TLS 인증서 경로 환경 변수 적용
+            if let Ok(cert_path) = env::var("TLS_CERT_PATH") {
+                self.tls_cert_path = Some(cert_path);
+            }
+
+            // TLS 키 경로 환경 변수 적용
+            if let Ok(key_path) = env::var("TLS_KEY_PATH") {
+                self.tls_key_path = Some(key_path);
+            }
+        }
+    }
+
+    pub fn load() -> Result<Self, ConfigError> {
+        let mut config = if let Ok(config_path) = env::var("PROXY_CONFIG_FILE") {
+            Self::from_toml_file(config_path)?
+        } else {
+            Self::from_env()?
+        };
+
+        // TOML에서 로드한 경우에만 환경 변수로 덮어쓰기
+        if env::var("PROXY_CONFIG_FILE").is_ok() {
+            config.apply_env_overrides();
+        }
+
+        Ok(config)
     }
 } 

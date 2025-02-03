@@ -1,0 +1,5 @@
+docker_network = "reverse-proxy-network"
+label_prefix = "reverse-proxy."
+http_port = 80
+https_enabled = false
+https_port = 443 
