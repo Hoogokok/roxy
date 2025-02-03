@@ -59,17 +59,25 @@ async fn handle_request(
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
     
     // 설정 로드
-    let config = Config::from_env();
+    let config = Config::from_env()
+        .map_err(|e| {
+            error!(error = %e, "설정 로드 실패");
+            e
+        })?;
+    
     info!(http_port = config.http_port, "서버 시작");
     
     // Docker 매니저 초기화
     let docker_manager = DockerManager::new(config.clone())
         .await
-        .expect("Docker 매니저 초기화 실패");
+        .map_err(|e| {
+            error!(error = %e, "Docker 매니저 초기화 실패");
+            e
+        })?;
 
     let routing_table = Arc::new(tokio::sync::RwLock::new(RoutingTable::new()));
 
