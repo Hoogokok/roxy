@@ -105,7 +105,7 @@ fn build_proxied_request(
 }
 
 // 에러 응답 생성 헬퍼 함수
-fn error_response(error: &ProxyError) -> Response<Full<Bytes>> {
+pub fn error_response(error: &ProxyError) -> Response<Full<Bytes>> {
     let (status, message) = match error {
         ProxyError::RequestBuildError { .. } => 
             (StatusCode::BAD_REQUEST, error.to_string()),
