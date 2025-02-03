@@ -30,6 +30,8 @@ impl std::fmt::Display for ConfigError {
     }
 }
 
+impl std::error::Error for ConfigError {}
+
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
         let http_port = std::env::var("HTTP_PORT")
