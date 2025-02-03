@@ -7,6 +7,7 @@ Docker 컨테이너를 위한 동적 리버스 프록시 서버입니다. 호스
 ### 호스트 기반 라우팅
 - HTTP Host 헤더를 기반으로 요청을 적절한 백엔드 서비스로 라우팅
 - 동일한 호스트에 대해 여러 백엔드 서버 지원 (라운드 로빈 방식)
+- HTTP 및 HTTPS 프로토콜 지원
 
 ### 동적 백엔드 서비스 관리
 - Docker 이벤트 실시간 모니터링
@@ -19,7 +20,11 @@ Docker 컨테이너를 위한 동적 리버스 프록시 서버입니다. 호스
 |-----------|------|--------|
 | `PROXY_DOCKER_NETWORK` | 프록시가 모니터링할 Docker 네트워크 이름 | `proxy` |
 | `PROXY_LABEL_PREFIX` | 컨테이너 라벨 접두사 | `reverse-proxy.` |
-| `PROXY_HTTP_PORT` | 프록시 서버가 리스닝할 포트 | `8080` |
+| `HTTP_PORT` | HTTP 리스너 포트 | `8080` |
+| `HTTPS_ENABLED` | HTTPS 활성화 여부 | `false` |
+| `HTTPS_PORT` | HTTPS 리스너 포트 | `443` |
+| `TLS_CERT_PATH` | TLS 인증서 파일 경로 (HTTPS 활성화 시 필수) | - |
+| `TLS_KEY_PATH` | TLS 개인키 파일 경로 (HTTPS 활성화 시 필수) | - |
 
 ## 컨테이너 라벨 설정
 
@@ -48,12 +53,18 @@ services:
   reverse-proxy:
     build: .
     ports:
-      - "8080:8080"
+      - "80:80"
+      - "443:443"  # HTTPS 사용 시
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./certs:/certs  # TLS 인증서 디렉토리
     environment:
       - PROXY_DOCKER_NETWORK=proxy
-      - PROXY_HTTP_PORT=8080
+      - HTTP_PORT=80
+      - HTTPS_ENABLED=true  # HTTPS 활성화
+      - HTTPS_PORT=443
+      - TLS_CERT_PATH=/certs/cert.pem
+      - TLS_KEY_PATH=/certs/key.pem
     networks:
       - proxy
 
@@ -91,6 +102,7 @@ networks:
 - 구조화된 JSON 로깅 지원
 - 요청/응답 정보, 라우팅 결정, 에러 등 상세 로깅
 - Docker 이벤트 및 백엔드 서비스 상태 변경 추적
+- TLS 핸드쉐이크 및 HTTPS 연결 관련 로그
 
 ## 라이선스
 
