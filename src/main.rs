@@ -64,8 +64,25 @@ async fn handle_docker_event(
 ) -> Result<(), Box<dyn std::error::Error>> {
     match event {
         DockerEvent::ContainerStarted { container_id, host, service } => {
-            table.add_route(host.clone(), service);
-            info!(container_id = %container_id, host = %host, "컨테이너 시작");
+            match service.get_next_address() {
+                Ok(addr) => {
+                    table.add_route(host.clone(), service);
+                    info!(
+                        container_id = %container_id,
+                        host = %host,
+                        address = ?addr,
+                        "컨테이너 시작"
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        error = %e,
+                        container_id = %container_id,
+                        host = %host,
+                        "컨테이너 시작 실패: 백엔드 주소 획득 실패"
+                    );
+                }
+            }
         }
         DockerEvent::ContainerStopped { container_id, host } => {
             table.remove_route(&host);
