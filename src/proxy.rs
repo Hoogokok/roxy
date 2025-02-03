@@ -117,7 +117,10 @@ pub fn error_response(error: &ProxyError) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
         .body(Full::new(Bytes::from(message)))
-        .unwrap()
+        .unwrap_or_else(|e| {
+            error!(error = %e, "에러 응답 생성 실패");
+            Response::new(Full::new(Bytes::from("Internal Server Error")))
+        })
 }
 
 #[derive(Debug)]
