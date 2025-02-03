@@ -1,6 +1,5 @@
 use tracing::{info, warn, error, Level};
 use tracing_subscriber::fmt;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn init_logging() {
     fmt::Subscriber::builder()
@@ -47,7 +46,14 @@ impl RequestLog {
         self.method = req.method().to_string();
         self.path = req.uri().path().to_string();
         if let Some(host) = req.headers().get(hyper::header::HOST) {
-            self.host = host.to_str().unwrap_or_default().to_string();
+            if let Ok(host_str) = host.to_str() {
+                self.host = host_str.to_string();
+            } else {
+                warn!(
+                    request_id = %self.request_id,
+                    "Invalid UTF-8 in Host header"
+                );
+            }
         }
 
         info!(

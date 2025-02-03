@@ -97,7 +97,10 @@ fn test_routing_table_multiple_hosts() {
             port: None,
         };
         let backend = table.find_backend(&host_info).expect("Backend not found");
-        assert_eq!(backend.get_next_address().to_string(), addr);
+        assert_eq!(
+            backend.get_next_address().unwrap().to_string(),
+            addr
+        );
     }
 
     // 존재하지 않는 호스트 테스트
@@ -131,8 +134,8 @@ fn test_routing_table_overwrite() {
         port: None,
     };
     let backend = table.find_backend(&host_info).unwrap();
-    assert_eq!(backend.get_next_address().to_string(), "127.0.0.1:8080");
-    assert_eq!(backend.get_next_address().to_string(), "127.0.0.1:9090");
+    assert_eq!(backend.get_next_address().unwrap().to_string(), "127.0.0.1:8080");
+    assert_eq!(backend.get_next_address().unwrap().to_string(), "127.0.0.1:9090");
 }
 
 fn setup_routing_table() -> RoutingTable {
@@ -166,7 +169,7 @@ fn test_route_request_success() {
     
     let backend = result.unwrap();
     assert_eq!(
-        backend.get_next_address(),
+        backend.get_next_address().unwrap(),
         "127.0.0.1:8080".parse::<SocketAddr>().unwrap()
     );
 }
@@ -216,7 +219,7 @@ fn test_route_request_with_port() {
     
     let backend = result.unwrap();
     assert_eq!(
-        backend.get_next_address(),
+        backend.get_next_address().unwrap(),
         "127.0.0.1:8080".parse::<SocketAddr>().unwrap()
     );
 }
