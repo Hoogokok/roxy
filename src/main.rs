@@ -17,7 +17,7 @@ use routing::RoutingTable;
 use docker::{DockerManager, DockerEvent};
 use config::Config;
 use crate::logging::init_logging;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use proxy::ProxyConfig;
 
 async fn handle_request(
@@ -58,6 +58,42 @@ async fn handle_request(
     }
 }
 
+async fn handle_docker_event(
+    event: DockerEvent,
+    table: &mut tokio::sync::RwLockWriteGuard<'_, RoutingTable>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match event {
+        DockerEvent::ContainerStarted { container_id, host, service } => {
+            table.add_route(host.clone(), service);
+            info!(container_id = %container_id, host = %host, "컨테이너 시작");
+        }
+        DockerEvent::ContainerStopped { container_id, host } => {
+            table.remove_route(&host);
+            info!(container_id = %container_id, host = %host, "컨테이너 중지");
+        }
+        DockerEvent::RoutesUpdated(routes) => {
+            table.sync_docker_routes(routes);
+            info!("라우팅 테이블 업데이트");
+        }
+        DockerEvent::ContainerUpdated { container_id, old_host, new_host, service } => {
+            if let Some(old) = old_host {
+                table.remove_route(&old);
+            }
+            if let Some(host) = new_host {
+                if let Some(svc) = service {
+                    table.add_route(host.clone(), svc);
+                    info!(container_id = %container_id, host = %host, "컨테이너 설정 변경");
+                }
+            }
+        }
+        DockerEvent::Error(e) => {
+            error!(error = %e, "Docker 이벤트 처리 오류");
+            return Err(e.into());
+        }
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
@@ -83,7 +119,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 초기 라우팅 테이블 설정
     let initial_routes = docker_manager.get_container_routes().await
-        .expect("초기 컨테이너 라우트 획득 실패");
+        .map_err(|e| {
+            error!(error = %e, "초기 컨테이너 라우트 획득 실패");
+            e
+        })?;
     {
         let mut table = routing_table.write().await;
         table.sync_docker_routes(initial_routes.clone());
@@ -97,47 +136,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 이벤트 처리 태스크 시작
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
-            match event {
-                DockerEvent::ContainerStarted { container_id, host, service } => {
-                    let mut table = routing_table_clone.write().await;
-                    table.add_route(host.clone(), service);
-                    info!(container_id = %container_id, host = %host, "컨테이너 시작");
-                }
-                DockerEvent::ContainerStopped { container_id, host } => {
-                    let mut table = routing_table_clone.write().await;
-                    table.remove_route(&host);
-                    info!(container_id = %container_id, host = %host, "컨테이너 중지");
-                }
-                DockerEvent::RoutesUpdated(routes) => {
-                    let mut table = routing_table_clone.write().await;
-                    table.sync_docker_routes(routes);
-                    info!("라우팅 테이블 업데이트");
-                }
-                DockerEvent::ContainerUpdated { container_id, old_host, new_host, service } => {
-                    let mut table = routing_table_clone.write().await;
-                    if let Some(old) = old_host {
-                        table.remove_route(&old);
-                    }
-                    if let Some(host) = new_host {
-                        if let Some(svc) = service {
-                            table.add_route(host.clone(), svc);
-                            info!(container_id = %container_id, host = %host, "컨테이너 설정 변경");
-                        }
-                    }
-                }
-                DockerEvent::Error(e) => {
-                    error!(error = %e, "Docker 이벤트 처리 오류");
-                }
+            if let Err(e) = handle_docker_event(event, &mut routing_table_clone.write().await).await {
+                error!(error = %e, "Docker 이벤트 처리 실패");
             }
         }
+        warn!("Docker 이벤트 스트림 종료");
     });
 
     // TCP 리스너 생성
     let listener = TcpListener::bind(format!("0.0.0.0:{}", config.http_port)).await
-        .unwrap_or_else(|e| {
+        .map_err(|e| {
             error!(error = %e, port = config.http_port, "포트 바인딩 실패");
-            std::process::exit(1);
-        });
+            e
+        })?;
 
     info!(port = config.http_port, "리버스 프록시 서버 시작");
 
