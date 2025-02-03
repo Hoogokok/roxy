@@ -5,74 +5,128 @@ mod config;
 mod logging;
 
 use std::convert::Infallible;
+use hyper::{Request, Response, StatusCode};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt;
 use tokio::net::TcpListener;
 use http_body_util::Full;
-use hyper::body::Bytes;
-use hyper::StatusCode;
+use hyper::body::{Bytes, Incoming};
 use std::sync::Arc;
 use routing::RoutingTable;
-use docker::DockerManager;
-use crate::docker::DockerEvent;
-use hyper::body::Incoming;
-use hyper::Request;
+use docker::{DockerManager, DockerEvent};
 use config::Config;
-use reverse_proxy_traefik::logging::init_logging;
+use crate::logging::init_logging;
+use tracing::{error, info, warn};
+use proxy::ProxyConfig;
 
 async fn handle_request(
     routing_table: Arc<tokio::sync::RwLock<RoutingTable>>,
     req: Request<Incoming>,
-) -> Result<hyper::Response<Full<Bytes>>, Infallible> {
+) -> Result<Response<Full<Bytes>>, Infallible> {
     let table = routing_table.read().await;
-    let proxy_config = proxy::ProxyConfig::new();
+    let proxy_config = ProxyConfig::new();
     
     match table.route_request(&req) {
         Ok(backend) => {
-            Ok(proxy::proxy_request(&proxy_config, backend, req).await)
+            match proxy::proxy_request(&proxy_config, backend, req).await {
+                Ok(response) => Ok(response),
+                Err(e) => {
+                    error!(error = %e, "프록시 요청 실패");
+                    Ok(proxy::error_response(&e))
+                }
+            }
         }
         Err(e) => {
-            println!("Routing error: {}", e);
+            error!(error = %e, "라우팅 실패");
             let status = match e {
                 routing::RoutingError::MissingHost | 
-                routing::RoutingError::InvalidHost(_) | 
-                routing::RoutingError::InvalidPort(_) | 
-                routing::RoutingError::HeaderParseError(_) => StatusCode::BAD_REQUEST,
-                routing::RoutingError::BackendNotFound(_) => StatusCode::NOT_FOUND,
+                routing::RoutingError::InvalidHost { .. } | 
+                routing::RoutingError::InvalidPort { .. } | 
+                routing::RoutingError::HeaderParseError { .. } => StatusCode::BAD_REQUEST,
+                routing::RoutingError::BackendNotFound { .. } => StatusCode::NOT_FOUND,
             };
             
-            Ok(hyper::Response::builder()
+            Ok(Response::builder()
                 .status(status)
                 .body(Full::new(Bytes::from(format!("Error: {}", e))))
-                .unwrap())
+                .unwrap_or_else(|e| {
+                    error!(error = %e, "에러 응답 생성 실패");
+                    Response::new(Full::new(Bytes::from("Internal Server Error")))
+                }))
         }
     }
 }
 
+async fn handle_docker_event(
+    event: DockerEvent,
+    table: &mut tokio::sync::RwLockWriteGuard<'_, RoutingTable>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match event {
+        DockerEvent::ContainerStarted { container_id, host, service } => {
+            table.add_route(host.clone(), service);
+            info!(container_id = %container_id, host = %host, "컨테이너 시작");
+        }
+        DockerEvent::ContainerStopped { container_id, host } => {
+            table.remove_route(&host);
+            info!(container_id = %container_id, host = %host, "컨테이너 중지");
+        }
+        DockerEvent::RoutesUpdated(routes) => {
+            table.sync_docker_routes(routes);
+            info!("라우팅 테이블 업데이트");
+        }
+        DockerEvent::ContainerUpdated { container_id, old_host, new_host, service } => {
+            if let Some(old) = old_host {
+                table.remove_route(&old);
+            }
+            if let Some(host) = new_host {
+                if let Some(svc) = service {
+                    table.add_route(host.clone(), svc);
+                    info!(container_id = %container_id, host = %host, "컨테이너 설정 변경");
+                }
+            }
+        }
+        DockerEvent::Error(e) => {
+            error!(error = %e, "Docker 이벤트 처리 오류");
+            return Err(e.into());
+        }
+    }
+    Ok(())
+}
+
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
+    
     // 설정 로드
-    let config = Config::from_env();
-    println!("Starting with config: {:?}", config);
+    let config = Config::from_env()
+        .map_err(|e| {
+            error!(error = %e, "설정 로드 실패");
+            e
+        })?;
+    
+    info!(http_port = config.http_port, "서버 시작");
     
     // Docker 매니저 초기화
     let docker_manager = DockerManager::new(config.clone())
         .await
-        .expect("Failed to initialize Docker manager");
+        .map_err(|e| {
+            error!(error = %e, "Docker 매니저 초기화 실패");
+            e
+        })?;
 
-    // 라우팅 테이블을 RwLock으로 감싸서 동시성 지원
     let routing_table = Arc::new(tokio::sync::RwLock::new(RoutingTable::new()));
 
     // 초기 라우팅 테이블 설정
     let initial_routes = docker_manager.get_container_routes().await
-        .expect("Failed to get initial container routes");
+        .map_err(|e| {
+            error!(error = %e, "초기 컨테이너 라우트 획득 실패");
+            e
+        })?;
     {
         let mut table = routing_table.write().await;
         table.sync_docker_routes(initial_routes.clone());
-        println!("Initial routing table setup completed");
-        println!("Current routes: {:?}", initial_routes);
+        info!(routes = ?initial_routes, "초기 라우팅 테이블 설정 완료");
     }
 
     // Docker 이벤트 구독
@@ -82,59 +136,26 @@ async fn main() {
     // 이벤트 처리 태스크 시작
     tokio::spawn(async move {
         while let Some(event) = event_rx.recv().await {
-            match event {
-                DockerEvent::ContainerStarted { container_id, host, service } => {
-                    let mut table = routing_table_clone.write().await;
-                    table.add_route(host.clone(), service);
-                    println!("컨테이너 {} 시작: {} 호스트 추가", container_id, host);
-                }
-                DockerEvent::ContainerStopped { container_id, host } => {
-                    let mut table = routing_table_clone.write().await;
-                    table.remove_route(&host);
-                    println!("컨테이너 {} 중지: {} 호스트 제거", container_id, host);
-                }
-                DockerEvent::RoutesUpdated(routes) => {
-                    let mut table = routing_table_clone.write().await;
-                    table.sync_docker_routes(routes);
-                    println!("라우팅 테이블이 업데이트되었습니다");
-                }
-                DockerEvent::ContainerUpdated { container_id, old_host, new_host, service } => {
-                    let mut table = routing_table_clone.write().await;
-                    // 이전 호스트 제거
-                    if let Some(old) = old_host {
-                        table.remove_route(&old);
-                    }
-                    // 새 호스트 추가
-                    if let Some(host) = new_host {
-                        if let Some(svc) = service {
-                            table.add_route(host.clone(), svc);
-                            println!("컨테이너 {} 설정 변경: {} 호스트 업데이트", container_id, host);
-                        }
-                    }
-                }
-                DockerEvent::Error(e) => {
-                    eprintln!("Docker 이벤트 처리 중 에러 발생: {}", e);
-                }
+            if let Err(e) = handle_docker_event(event, &mut routing_table_clone.write().await).await {
+                error!(error = %e, "Docker 이벤트 처리 실패");
             }
         }
+        warn!("Docker 이벤트 스트림 종료");
     });
 
     // TCP 리스너 생성
-    let listener = match TcpListener::bind(format!("0.0.0.0:{}", config.http_port)).await {
-        Ok(listener) => {
-            println!("Reverse Proxy listening on port {}", config.http_port);
-            listener
-        }
-        Err(e) => {
-            eprintln!("Failed to bind to port {}: {}", config.http_port, e);
-            return;
-        }
-    };
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", config.http_port)).await
+        .map_err(|e| {
+            error!(error = %e, port = config.http_port, "포트 바인딩 실패");
+            e
+        })?;
+
+    info!(port = config.http_port, "리버스 프록시 서버 시작");
 
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
-                println!("Accepted connection from: {}", addr);
+                info!(client_addr = %addr, "클라이언트 연결 수락");
                 
                 let routing_table = routing_table.clone();
                 
@@ -144,12 +165,12 @@ async fn main() {
                         .serve_connection(io, service_fn(move |req| handle_request(routing_table.clone(), req)))
                         .await 
                     {
-                        eprintln!("Error serving connection: {}", err);
+                        error!(error = %err, "연결 처리 실패");
                     }
                 });
             }
             Err(e) => {
-                eprintln!("Error accepting connection: {}", e);
+                error!(error = %e, "연결 수락 실패");
             }
         }
     }

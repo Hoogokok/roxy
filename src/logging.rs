@@ -1,6 +1,5 @@
 use tracing::{info, warn, error, Level};
 use tracing_subscriber::fmt;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub fn init_logging() {
     fmt::Subscriber::builder()
