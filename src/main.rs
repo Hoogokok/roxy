@@ -5,47 +5,55 @@ mod config;
 mod logging;
 
 use std::convert::Infallible;
+use hyper::{Request, Response, StatusCode};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt;
 use tokio::net::TcpListener;
 use http_body_util::Full;
-use hyper::body::Bytes;
-use hyper::StatusCode;
+use hyper::body::{Bytes, Incoming};
 use std::sync::Arc;
 use routing::RoutingTable;
-use docker::DockerManager;
-use crate::docker::DockerEvent;
-use hyper::body::Incoming;
-use hyper::Request;
+use docker::{DockerManager, DockerEvent};
 use config::Config;
-use reverse_proxy_traefik::logging::init_logging;
+use crate::logging::init_logging;
+use tracing::{info, warn, error};
+use proxy::{ProxyConfig, ProxyError};
 
 async fn handle_request(
     routing_table: Arc<tokio::sync::RwLock<RoutingTable>>,
     req: Request<Incoming>,
-) -> Result<hyper::Response<Full<Bytes>>, Infallible> {
+) -> Result<Response<Full<Bytes>>, Infallible> {
     let table = routing_table.read().await;
-    let proxy_config = proxy::ProxyConfig::new();
+    let proxy_config = ProxyConfig::new();
     
     match table.route_request(&req) {
         Ok(backend) => {
-            Ok(proxy::proxy_request(&proxy_config, backend, req).await)
+            match proxy::proxy_request(&proxy_config, backend, req).await {
+                Ok(response) => Ok(response),
+                Err(e) => {
+                    error!(error = %e, "프록시 요청 실패");
+                    Ok(proxy::error_response(&e))
+                }
+            }
         }
         Err(e) => {
-            println!("Routing error: {}", e);
+            error!(error = %e, "라우팅 실패");
             let status = match e {
                 routing::RoutingError::MissingHost | 
-                routing::RoutingError::InvalidHost(_) | 
-                routing::RoutingError::InvalidPort(_) | 
-                routing::RoutingError::HeaderParseError(_) => StatusCode::BAD_REQUEST,
-                routing::RoutingError::BackendNotFound(_) => StatusCode::NOT_FOUND,
+                routing::RoutingError::InvalidHost { .. } | 
+                routing::RoutingError::InvalidPort { .. } | 
+                routing::RoutingError::HeaderParseError { .. } => StatusCode::BAD_REQUEST,
+                routing::RoutingError::BackendNotFound { .. } => StatusCode::NOT_FOUND,
             };
             
-            Ok(hyper::Response::builder()
+            Ok(Response::builder()
                 .status(status)
                 .body(Full::new(Bytes::from(format!("Error: {}", e))))
-                .unwrap())
+                .unwrap_or_else(|e| {
+                    error!(error = %e, "에러 응답 생성 실패");
+                    Response::new(Full::new(Bytes::from("Internal Server Error")))
+                }))
         }
     }
 }
