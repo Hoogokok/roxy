@@ -125,45 +125,67 @@ impl DockerManager {
             }
         };
 
-        let routes = self.extract_routes(&containers);
+        let routes = self.extract_routes(&containers)?;
         info!(route_count = routes.len(), "라우팅 테이블 업데이트 완료");
 
         Ok(routes)
     }
 
     /// 컨테이너 목록에서 라우팅 정보를 추출합니다.
-    fn extract_routes(&self, containers: &[ContainerSummary]) -> HashMap<String, BackendService> {
+    fn extract_routes(&self, containers: &[ContainerSummary]) -> Result<HashMap<String, BackendService>, DockerError> {
         let mut routes = HashMap::new();
         
         for container in containers {
-            if let Ok((host, addr)) = self.container_to_route(container) {
-                let host_clone = host.clone();
-                routes.entry(host)
-                    .and_modify(|service: &mut BackendService| {
-                        if let Ok(addr) = addr.get_next_address() {
-                            service.addresses.push(addr);
-                            info!(
-                                host = %host_clone,
-                                address = ?addr,
-                                "기존 서비스에 주소 추가"
-                            );
+            let container_id = container.id.as_deref().unwrap_or("unknown");
+            match self.container_to_route(container) {
+                Ok((host, addr)) => {
+                    let host_clone = host.clone();
+                    match addr.get_next_address() {
+                        Ok(initial_addr) => {
+                            routes.entry(host)
+                                .and_modify(|service: &mut BackendService| {
+                                    service.addresses.push(initial_addr);
+                                    info!(
+                                        host = %host_clone,
+                                        address = ?initial_addr,
+                                        "기존 서비스에 주소 추가"
+                                    );
+                                })
+                                .or_insert_with(|| {
+                                    info!(
+                                        host = %host_clone,
+                                        address = ?initial_addr,
+                                        "새 서비스 생성"
+                                    );
+                                    BackendService::new(initial_addr)
+                                });
                         }
-                    })
-                    .or_insert_with(|| {
-                        info!(
-                            host = %host_clone,
-                            address = ?addr.get_next_address(),
-                            "새 서비스 생성"
-                        );
-                        addr
-                    });
+                        Err(e) => {
+                            return Err(DockerError::BackendError {
+                                container_id: container_id.to_string(),
+                                error: format!("백엔드 주소 획득 실패: {}", e),
+                            });
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!(
+                        error = %e,
+                        container_id = %container_id,
+                        "컨테이너 라우팅 정보 추출 실패"
+                    );
+                    return Err(e);
+                }
             }
         }
         
-        if !routes.is_empty() {
-            debug!(routes = ?routes, "라우팅 테이블 구성 완료");
+        if routes.is_empty() {
+            warn!("사용 가능한 라우트가 없음");
+        } else {
+            info!(route_count = routes.len(), "라우팅 테이블 구성 완료");
         }
-        routes
+        
+        Ok(routes)
     }
 
     /// 단일 컨테이너에서 라우팅 정보를 추출합니다.
