@@ -42,6 +42,10 @@ pub enum DockerError {
         reason: String,
         context: Option<String>,
     },
+    BackendError {
+        container_id: String,
+        error: String,
+    },
 }
 
 impl fmt::Display for DockerError {
@@ -63,6 +67,8 @@ impl fmt::Display for DockerError {
             DockerError::NetworkError { container_id, network, reason, context } =>
                 write!(f, "컨테이너 {}의 네트워크 {} 설정 오류 ({}): {}", 
                     container_id, network, context.as_deref().unwrap_or("No context provided"), reason),
+            DockerError::BackendError { container_id, error } => 
+                write!(f, "백엔드 서비스 오류 (컨테이너 {}): {}", container_id, error),
         }
     }
 }
@@ -134,12 +140,14 @@ impl DockerManager {
                 let host_clone = host.clone();
                 routes.entry(host)
                     .and_modify(|service: &mut BackendService| {
-                        service.addresses.push(addr.get_next_address());
-                        info!(
-                            host = %host_clone,
-                            address = ?addr.get_next_address(),
-                            "기존 서비스에 주소 추가"
-                        );
+                        if let Ok(addr) = addr.get_next_address() {
+                            service.addresses.push(addr);
+                            info!(
+                                host = %host_clone,
+                                address = ?addr,
+                                "기존 서비스에 주소 추가"
+                            );
+                        }
                     })
                     .or_insert_with(|| {
                         info!(
