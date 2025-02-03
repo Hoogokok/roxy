@@ -111,12 +111,62 @@ impl Config {
         })
     }
 
+    fn apply_env_overrides(&mut self) {
+        // HTTP 포트 환경 변수 적용
+        if let Ok(port) = env::var("HTTP_PORT")
+            .map_err(|_| ())
+            .and_then(|p| p.parse::<u16>().map_err(|_| ()))
+        {
+            self.http_port = port;
+        }
+
+        // Docker 네트워크 환경 변수 적용
+        if let Ok(network) = env::var("PROXY_DOCKER_NETWORK") {
+            self.docker_network = network;
+        }
+
+        // 레이블 접두사 환경 변수 적용
+        if let Ok(prefix) = env::var("PROXY_LABEL_PREFIX") {
+            self.label_prefix = prefix;
+        }
+
+        // HTTPS 활성화 환경 변수 적용
+        if let Ok(enabled) = env::var("HTTPS_ENABLED") {
+            self.https_enabled = enabled.to_lowercase() == "true";
+        }
+
+        // HTTPS가 활성화된 경우에만 관련 설정 적용
+        if self.https_enabled {
+            if let Ok(port) = env::var("HTTPS_PORT")
+                .map_err(|_| ())
+                .and_then(|p| p.parse::<u16>().map_err(|_| ()))
+            {
+                self.https_port = port;
+            }
+
+            // TLS 인증서 경로 환경 변수 적용
+            if let Ok(cert_path) = env::var("TLS_CERT_PATH") {
+                self.tls_cert_path = Some(cert_path);
+            }
+
+            // TLS 키 경로 환경 변수 적용
+            if let Ok(key_path) = env::var("TLS_KEY_PATH") {
+                self.tls_key_path = Some(key_path);
+            }
+        }
+    }
+
     pub fn load() -> Result<Self, ConfigError> {
-        let config = if let Ok(config_path) = env::var("PROXY_CONFIG_FILE") {
+        let mut config = if let Ok(config_path) = env::var("PROXY_CONFIG_FILE") {
             Self::from_toml_file(config_path)?
         } else {
             Self::from_env()?
         };
+
+        // TOML에서 로드한 경우에만 환경 변수로 덮어쓰기
+        if env::var("PROXY_CONFIG_FILE").is_ok() {
+            config.apply_env_overrides();
+        }
 
         Ok(config)
     }
