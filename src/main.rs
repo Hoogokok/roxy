@@ -17,8 +17,8 @@ use routing::RoutingTable;
 use docker::{DockerManager, DockerEvent};
 use config::Config;
 use crate::logging::init_logging;
-use tracing::{info, warn, error};
-use proxy::{ProxyConfig, ProxyError};
+use tracing::{error, info};
+use proxy::ProxyConfig;
 
 async fn handle_request(
     routing_table: Arc<tokio::sync::RwLock<RoutingTable>>,
@@ -61,26 +61,25 @@ async fn handle_request(
 #[tokio::main]
 async fn main() {
     init_logging();
+    
     // 설정 로드
     let config = Config::from_env();
-    println!("Starting with config: {:?}", config);
+    info!(http_port = config.http_port, "서버 시작");
     
     // Docker 매니저 초기화
     let docker_manager = DockerManager::new(config.clone())
         .await
-        .expect("Failed to initialize Docker manager");
+        .expect("Docker 매니저 초기화 실패");
 
-    // 라우팅 테이블을 RwLock으로 감싸서 동시성 지원
     let routing_table = Arc::new(tokio::sync::RwLock::new(RoutingTable::new()));
 
     // 초기 라우팅 테이블 설정
     let initial_routes = docker_manager.get_container_routes().await
-        .expect("Failed to get initial container routes");
+        .expect("초기 컨테이너 라우트 획득 실패");
     {
         let mut table = routing_table.write().await;
         table.sync_docker_routes(initial_routes.clone());
-        println!("Initial routing table setup completed");
-        println!("Current routes: {:?}", initial_routes);
+        info!(routes = ?initial_routes, "초기 라우팅 테이블 설정 완료");
     }
 
     // Docker 이벤트 구독
@@ -94,55 +93,50 @@ async fn main() {
                 DockerEvent::ContainerStarted { container_id, host, service } => {
                     let mut table = routing_table_clone.write().await;
                     table.add_route(host.clone(), service);
-                    println!("컨테이너 {} 시작: {} 호스트 추가", container_id, host);
+                    info!(container_id = %container_id, host = %host, "컨테이너 시작");
                 }
                 DockerEvent::ContainerStopped { container_id, host } => {
                     let mut table = routing_table_clone.write().await;
                     table.remove_route(&host);
-                    println!("컨테이너 {} 중지: {} 호스트 제거", container_id, host);
+                    info!(container_id = %container_id, host = %host, "컨테이너 중지");
                 }
                 DockerEvent::RoutesUpdated(routes) => {
                     let mut table = routing_table_clone.write().await;
                     table.sync_docker_routes(routes);
-                    println!("라우팅 테이블이 업데이트되었습니다");
+                    info!("라우팅 테이블 업데이트");
                 }
                 DockerEvent::ContainerUpdated { container_id, old_host, new_host, service } => {
                     let mut table = routing_table_clone.write().await;
-                    // 이전 호스트 제거
                     if let Some(old) = old_host {
                         table.remove_route(&old);
                     }
-                    // 새 호스트 추가
                     if let Some(host) = new_host {
                         if let Some(svc) = service {
                             table.add_route(host.clone(), svc);
-                            println!("컨테이너 {} 설정 변경: {} 호스트 업데이트", container_id, host);
+                            info!(container_id = %container_id, host = %host, "컨테이너 설정 변경");
                         }
                     }
                 }
                 DockerEvent::Error(e) => {
-                    eprintln!("Docker 이벤트 처리 중 에러 발생: {}", e);
+                    error!(error = %e, "Docker 이벤트 처리 오류");
                 }
             }
         }
     });
 
     // TCP 리스너 생성
-    let listener = match TcpListener::bind(format!("0.0.0.0:{}", config.http_port)).await {
-        Ok(listener) => {
-            println!("Reverse Proxy listening on port {}", config.http_port);
-            listener
-        }
-        Err(e) => {
-            eprintln!("Failed to bind to port {}: {}", config.http_port, e);
-            return;
-        }
-    };
+    let listener = TcpListener::bind(format!("0.0.0.0:{}", config.http_port)).await
+        .unwrap_or_else(|e| {
+            error!(error = %e, port = config.http_port, "포트 바인딩 실패");
+            std::process::exit(1);
+        });
+
+    info!(port = config.http_port, "리버스 프록시 서버 시작");
 
     loop {
         match listener.accept().await {
             Ok((stream, addr)) => {
-                println!("Accepted connection from: {}", addr);
+                info!(client_addr = %addr, "클라이언트 연결 수락");
                 
                 let routing_table = routing_table.clone();
                 
@@ -152,12 +146,12 @@ async fn main() {
                         .serve_connection(io, service_fn(move |req| handle_request(routing_table.clone(), req)))
                         .await 
                     {
-                        eprintln!("Error serving connection: {}", err);
+                        error!(error = %err, "연결 처리 실패");
                     }
                 });
             }
             Err(e) => {
-                eprintln!("Error accepting connection: {}", e);
+                error!(error = %e, "연결 수락 실패");
             }
         }
     }
