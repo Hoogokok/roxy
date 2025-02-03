@@ -90,28 +90,46 @@ impl HostInfo {
     /// assert_eq!(host_info.name, "example.com");
     /// assert_eq!(host_info.port, Some(8080));
     /// ```
-    pub fn from_header_value(host: &str) -> Result<Self, RoutingError> {
-        let parse_host_parts = |s: &str| -> Result<(String, Option<u16>), RoutingError> {
-            let parts: Vec<&str> = s.split(':').collect();
-            match parts.as_slice() {
-                [name] if !name.is_empty() => 
-                    Ok((name.to_string(), None)),
-                [name, port] if !name.is_empty() => {
-                    port.parse::<u16>()
-                        .map_err(|_| RoutingError::InvalidPort { port: port.to_string(), reason: "Invalid format".to_string() })
-                        .and_then(|p| {
-                            if p > 0 {
-                                Ok((name.to_string(), Some(p)))
-                            } else {
-                                Err(RoutingError::InvalidPort { port: p.to_string(), reason: "Port must be greater than 0".to_string() })
-                            }
-                        })
-                }
-                _ => Err(RoutingError::InvalidHost { host: s.to_string(), reason: "Invalid format".to_string() }),
-            }
-        };
+    pub fn from_header_value(value: &str) -> Result<Self, RoutingError> {
+        if value.is_empty() {
+            return Err(RoutingError::InvalidHost {
+                host: value.to_string(),
+                reason: "Invalid format".to_string(),
+            });
+        }
 
-        parse_host_parts(host).map(|(name, port)| HostInfo { name, port })
+        // 호스트와 포트 분리
+        let parts: Vec<&str> = value.split(':').collect();
+        match parts.len() {
+            1 => Ok(HostInfo {
+                name: value.to_string(),
+                port: None,
+            }),
+            2 => {
+                let port = parts[1].parse::<u16>().map_err(|_| {
+                    RoutingError::InvalidPort {
+                        port: parts[1].to_string(),
+                        reason: "Invalid format".to_string(),
+                    }
+                })?;
+
+                if port == 0 {
+                    return Err(RoutingError::InvalidPort {
+                        port: parts[1].to_string(),
+                        reason: "Port must be greater than 0".to_string(),
+                    });
+                }
+
+                Ok(HostInfo {
+                    name: parts[0].to_string(),
+                    port: Some(port),
+                })
+            }
+            _ => Err(RoutingError::InvalidHost {
+                host: value.to_string(),
+                reason: "Invalid format".to_string(),
+            }),
+        }
     }
 }
 
@@ -133,6 +151,24 @@ impl Clone for BackendService {
     }
 }
 
+#[derive(Debug)]
+pub enum BackendError {
+    NoAddresses,
+    IndexOutOfBounds { index: usize, len: usize },
+}
+
+impl std::fmt::Display for BackendError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            BackendError::NoAddresses => write!(f, "백엔드 주소가 없음"),
+            BackendError::IndexOutOfBounds { index, len } => 
+                write!(f, "백엔드 주소 인덱스 범위 초과: index={}, len={}", index, len),
+        }
+    }
+}
+
+impl std::error::Error for BackendError {}
+
 impl BackendService {
     pub fn new(addr: SocketAddr) -> Self {
         Self {
@@ -141,17 +177,16 @@ impl BackendService {
         }
     }
 
-    pub fn get_next_address(&self) -> SocketAddr {
+    pub fn get_next_address(&self) -> Result<SocketAddr, BackendError> {
         let len = self.addresses.len();
+        if len == 0 {
+            return Err(BackendError::NoAddresses);
+        }
+        
         let index = self.current_index.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % len;
-        let addr = self.addresses[index];
-        debug!(
-            addresses_count = len,
-            selected_index = index,
-            selected_address = %addr,
-            "로드 밸런서 주소 선택"
-        );
-        addr
+        self.addresses.get(index)
+            .copied()
+            .ok_or_else(|| BackendError::IndexOutOfBounds { index, len })
     }
 }
 

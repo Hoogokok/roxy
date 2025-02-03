@@ -40,7 +40,15 @@ pub async fn proxy_request(
     let mut log = RequestLog::new(request_id);
     log.with_request(&req);
 
-    let address = backend.get_next_address();
+    let address = backend.get_next_address()
+        .map_err(|e| {
+            let err = ProxyError::BackendRequestFailed {
+                backend: "unknown".to_string(),
+                error: e.to_string(),
+            };
+            error!(error = %err, "백엔드 주소 획득 실패");
+            err
+        })?;
     log.with_backend(address);
     
     info!(backend = %address, "백엔드로 요청 프록시");
@@ -117,7 +125,10 @@ pub fn error_response(error: &ProxyError) -> Response<Full<Bytes>> {
     Response::builder()
         .status(status)
         .body(Full::new(Bytes::from(message)))
-        .unwrap()
+        .unwrap_or_else(|e| {
+            error!(error = %e, "에러 응답 생성 실패");
+            Response::new(Full::new(Bytes::from("Internal Server Error")))
+        })
 }
 
 #[derive(Debug)]

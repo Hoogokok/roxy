@@ -42,6 +42,10 @@ pub enum DockerError {
         reason: String,
         context: Option<String>,
     },
+    BackendError {
+        container_id: String,
+        error: String,
+    },
 }
 
 impl fmt::Display for DockerError {
@@ -63,6 +67,8 @@ impl fmt::Display for DockerError {
             DockerError::NetworkError { container_id, network, reason, context } =>
                 write!(f, "컨테이너 {}의 네트워크 {} 설정 오류 ({}): {}", 
                     container_id, network, context.as_deref().unwrap_or("No context provided"), reason),
+            DockerError::BackendError { container_id, error } => 
+                write!(f, "백엔드 서비스 오류 (컨테이너 {}): {}", container_id, error),
         }
     }
 }
@@ -119,43 +125,86 @@ impl DockerManager {
             }
         };
 
-        let routes = self.extract_routes(&containers);
+        let routes = self.extract_routes(&containers)?;
         info!(route_count = routes.len(), "라우팅 테이블 업데이트 완료");
 
         Ok(routes)
     }
 
     /// 컨테이너 목록에서 라우팅 정보를 추출합니다.
-    fn extract_routes(&self, containers: &[ContainerSummary]) -> HashMap<String, BackendService> {
+    fn extract_routes(&self, containers: &[ContainerSummary]) -> Result<HashMap<String, BackendService>, DockerError> {
         let mut routes = HashMap::new();
         
         for container in containers {
-            if let Ok((host, addr)) = self.container_to_route(container) {
-                let host_clone = host.clone();
-                routes.entry(host)
-                    .and_modify(|service: &mut BackendService| {
-                        service.addresses.push(addr.get_next_address());
-                        info!(
-                            host = %host_clone,
-                            address = ?addr.get_next_address(),
-                            "기존 서비스에 주소 추가"
-                        );
-                    })
-                    .or_insert_with(|| {
-                        info!(
-                            host = %host_clone,
-                            address = ?addr.get_next_address(),
-                            "새 서비스 생성"
-                        );
-                        addr
-                    });
+            if let Err(e) = self.process_container_route(container, &mut routes) {
+                let container_id = container.id.as_deref().unwrap_or("unknown");
+                error!(
+                    error = %e,
+                    container_id = %container_id,
+                    "컨테이너 라우팅 정보 처리 실패"
+                );
+                return Err(e);
             }
         }
         
-        if !routes.is_empty() {
-            debug!(routes = ?routes, "라우팅 테이블 구성 완료");
+        self.log_routes_status(&routes);
+        Ok(routes)
+    }
+
+    fn process_container_route(
+        &self,
+        container: &ContainerSummary,
+        routes: &mut HashMap<String, BackendService>,
+    ) -> Result<(), DockerError> {
+        let (host, service) = self.container_to_route(container)?;
+        let host_clone = host.clone();
+        
+        if let Ok(addr) = service.get_next_address() {
+            self.update_or_insert_route(routes, host, service, addr, &host_clone);
+        } else {
+            let container_id = container.id.as_deref().unwrap_or("unknown");
+            return Err(DockerError::BackendError {
+                container_id: container_id.to_string(),
+                error: "백엔드 주소 획득 실패".to_string(),
+            });
         }
-        routes
+        
+        Ok(())
+    }
+
+    fn update_or_insert_route(
+        &self,
+        routes: &mut HashMap<String, BackendService>,
+        host: String,
+        service: BackendService,
+        addr: std::net::SocketAddr,
+        host_clone: &str,
+    ) {
+        routes.entry(host)
+            .and_modify(|existing_service| {
+                existing_service.addresses.push(addr);
+                info!(
+                    host = %host_clone,
+                    address = ?addr,
+                    "기존 서비스에 주소 추가"
+                );
+            })
+            .or_insert_with(|| {
+                info!(
+                    host = %host_clone,
+                    address = ?addr,
+                    "새 서비스 생성"
+                );
+                service
+            });
+    }
+
+    fn log_routes_status(&self, routes: &HashMap<String, BackendService>) {
+        if routes.is_empty() {
+            warn!("사용 가능한 라우트가 없음");
+        } else {
+            info!(route_count = routes.len(), "라우팅 테이블 구성 완료");
+        }
     }
 
     /// 단일 컨테이너에서 라우팅 정보를 추출합니다.
