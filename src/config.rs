@@ -1,6 +1,9 @@
+use serde::Deserialize;
 use std::env;
+use std::fs;
+use std::path::Path;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     pub docker_network: String,
     pub label_prefix: String,
@@ -21,6 +24,8 @@ pub enum ConfigError {
         value: String,
         reason: String,
     },
+    TomlError { error: String },
+    FileError { path: String, error: String },
 }
 
 impl std::fmt::Display for ConfigError {
@@ -30,6 +35,10 @@ impl std::fmt::Display for ConfigError {
                 write!(f, "환경 변수 {} 누락", var_name),
             ConfigError::EnvVarInvalid { var_name, value, reason } => 
                 write!(f, "환경 변수 {} 값 {} 유효하지 않음: {}", var_name, value, reason),
+            ConfigError::TomlError { error } =>
+                write!(f, "TOML 파싱 오류: {}", error),
+            ConfigError::FileError { path, error } =>
+                write!(f, "파일 {} 읽기 오류: {}", path, error),
         }
     }
 }
@@ -37,6 +46,17 @@ impl std::fmt::Display for ConfigError {
 impl std::error::Error for ConfigError {}
 
 impl Config {
+    pub fn from_toml_file<P: AsRef<Path>>(path: P) -> Result<Self, ConfigError> {
+        let contents = fs::read_to_string(path.as_ref()).map_err(|e| ConfigError::FileError {
+            path: path.as_ref().display().to_string(),
+            error: e.to_string(),
+        })?;
+
+        toml::from_str(&contents).map_err(|e| ConfigError::TomlError {
+            error: e.to_string(),
+        })
+    }
+
     pub fn from_env() -> Result<Self, ConfigError> {
         let http_port = std::env::var("HTTP_PORT")
             .map_err(|_| ConfigError::EnvVarMissing { 
@@ -89,5 +109,15 @@ impl Config {
             tls_cert_path,
             tls_key_path,
         })
+    }
+
+    pub fn load() -> Result<Self, ConfigError> {
+        let config = if let Ok(config_path) = env::var("PROXY_CONFIG_FILE") {
+            Self::from_toml_file(config_path)?
+        } else {
+            Self::from_env()?
+        };
+
+        Ok(config)
     }
 } 

@@ -129,7 +129,7 @@ where
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
     
-    let config = Config::from_env()
+    let config = Config::load()
         .map_err(|e| {
             error!(error = %e, "설정 로드 실패");
             e
