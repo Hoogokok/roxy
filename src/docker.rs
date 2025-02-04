@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use crate::routing::BackendService;
 use crate::config::Config;
 use tracing::{debug, error, info, warn};
+use tokio::time::{sleep, Duration};
 
 #[derive(Debug)]
 pub enum DockerError {
@@ -96,9 +97,55 @@ impl DockerManager {
         Ok(DockerManager { docker, config })
     }
 
-    /// reverse-proxy.host 라벨이 있는 컨테이너를 찾고 
-    /// 호스트-백엔드 서비스 매핑을 반환합니다.
+    /// 컨테이너 라우트를 조회하고 실패 시 재시도합니다.
     pub async fn get_container_routes(&self) -> Result<HashMap<String, BackendService>, DockerError> {
+        const MAX_RETRIES: u32 = 3;
+        const RETRY_DELAY: Duration = Duration::from_secs(2);
+
+        let mut attempt = 0;
+        let mut last_error = None;
+
+        while attempt < MAX_RETRIES {
+            match self.try_get_container_routes().await {
+                Ok(routes) => {
+                    if !routes.is_empty() {
+                        return Ok(routes);
+                    }
+                    warn!(
+                        "컨테이너 라우트가 비어있음 (시도 {}/{}), 재시도 중...", 
+                        attempt + 1, 
+                        MAX_RETRIES
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        "컨테이너 라우트 조회 실패 (시도 {}/{}), 재시도 중...", 
+                        attempt + 1, 
+                        MAX_RETRIES
+                    );
+                    last_error = Some(e);
+                }
+            }
+            attempt += 1;
+            if attempt < MAX_RETRIES {
+                sleep(RETRY_DELAY).await;
+            }
+        }
+
+        Err(last_error.unwrap_or_else(|| DockerError::ListContainersError {
+            source: bollard::errors::Error::IOError {
+                err: std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "컨테이너 라우트 조회 최대 재시도 횟수 초과"
+                )
+            },
+            context: "최대 재시도 횟수 초과".to_string()
+        }))
+    }
+
+    /// 실제 컨테이너 라우트 조회 로직
+    async fn try_get_container_routes(&self) -> Result<HashMap<String, BackendService>, DockerError> {
         info!("컨테이너 라우트 조회 시작");
         
         let options = Some(ListContainersOptions::<String> {
@@ -136,14 +183,33 @@ impl DockerManager {
         let mut routes = HashMap::new();
         
         for container in containers {
-            if let Err(e) = self.process_container_route(container, &mut routes) {
-                let container_id = container.id.as_deref().unwrap_or("unknown");
-                error!(
-                    error = %e,
-                    container_id = %container_id,
-                    "컨테이너 라우팅 정보 처리 실패"
+            // 컨테이너가 running 상태이고 네트워크 설정이 있는 경우에만 처리
+            if let (Some(state), Some(networks)) = (
+                container.state.as_deref(),
+                container.network_settings.as_ref().and_then(|s| s.networks.as_ref())
+            ) {
+                if state == "running" && !networks.is_empty() {
+                    if let Err(e) = self.process_container_route(container, &mut routes) {
+                        let container_id = container.id.as_deref().unwrap_or("unknown");
+                        error!(
+                            error = %e,
+                            container_id = %container_id,
+                            "컨테이너 라우팅 정보 처리 실패"
+                        );
+                        return Err(e);
+                    }
+                } else {
+                    debug!(
+                        container_id = %container.id.as_deref().unwrap_or("unknown"),
+                        state = %state,
+                        "컨테이너가 실행 중이 아니거나 네트워크 설정이 없음"
+                    );
+                }
+            } else {
+                debug!(
+                    container_id = %container.id.as_deref().unwrap_or("unknown"),
+                    "컨테이너 상태 또는 네트워크 정보 없음"
                 );
-                return Err(e);
             }
         }
         
