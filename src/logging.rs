@@ -1,9 +1,19 @@
+use std::fs;
+use std::path::Path;
 use tracing::{info, warn, error, Level};
 use tracing_subscriber::fmt;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use super::config::{LogConfig, LogFormat, LogOutput};
 
-pub fn init_logging(config: &LogConfig) {
+fn ensure_log_directory(path: &str) -> std::io::Result<()> {
+    let log_dir = Path::new(path);
+    if !log_dir.exists() {
+        fs::create_dir_all(log_dir)?;
+    }
+    Ok(())
+}
+
+pub fn init_logging(config: &LogConfig) -> Result<(), Box<dyn std::error::Error>> {
     let subscriber = fmt::Subscriber::builder()
         .with_target(true)
         .with_thread_ids(true)
@@ -29,12 +39,12 @@ pub fn init_logging(config: &LogConfig) {
             }
         }
         LogOutput::File(path) => {
-            // 파일 appender 생성
-            let file_appender = RollingFileAppender::new(
-                Rotation::NEVER,
-                "logs",  // 로그 디렉토리
-                path,    // 로그 파일명
-            );
+            ensure_log_directory("logs")?;
+
+            let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
+                .rotation(Rotation::NEVER)
+                .filename_prefix(path)
+                .build("logs")?;
 
             match config.format {
                 LogFormat::Json => {
@@ -54,6 +64,8 @@ pub fn init_logging(config: &LogConfig) {
 
     info!("로깅 초기화 완료: format={:?}, level={:?}, output={:?}", 
         config.format, config.level, config.output);
+
+    Ok(())
 }
 
 #[derive(Debug)]
