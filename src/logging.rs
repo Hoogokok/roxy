@@ -1,6 +1,7 @@
 use tracing::{info, warn, error, Level};
 use tracing_subscriber::fmt;
-use super::config::{LogConfig, LogFormat};
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use super::config::{LogConfig, LogFormat, LogOutput};
 
 pub fn init_logging(config: &LogConfig) {
     let subscriber = fmt::Subscriber::builder()
@@ -9,21 +10,50 @@ pub fn init_logging(config: &LogConfig) {
         .with_file(true)
         .with_line_number(true)
         .with_level(true)
-        .with_ansi(true)
+        .with_ansi(match config.output {
+            LogOutput::Stdout => true,
+            LogOutput::File(_) => false,
+        })
         .with_max_level(config.level);
 
-    match config.format {
-        LogFormat::Json => {
-            subscriber
-                .json()
-                .init();
+    // 출력 대상 설정
+    match &config.output {
+        LogOutput::Stdout => {
+            match config.format {
+                LogFormat::Json => {
+                    subscriber.json().init();
+                }
+                LogFormat::Text => {
+                    subscriber.init();
+                }
+            }
         }
-        LogFormat::Text => {
-            subscriber.init();
+        LogOutput::File(path) => {
+            // 파일 appender 생성
+            let file_appender = RollingFileAppender::new(
+                Rotation::NEVER,
+                "logs",  // 로그 디렉토리
+                path,    // 로그 파일명
+            );
+
+            match config.format {
+                LogFormat::Json => {
+                    subscriber
+                        .json()
+                        .with_writer(file_appender)
+                        .init();
+                }
+                LogFormat::Text => {
+                    subscriber
+                        .with_writer(file_appender)
+                        .init();
+                }
+            }
         }
     }
 
-    info!("로깅 초기화 완료: format={:?}, level={:?}", config.format, config.level);
+    info!("로깅 초기화 완료: format={:?}, level={:?}, output={:?}", 
+        config.format, config.level, config.output);
 }
 
 #[derive(Debug)]
