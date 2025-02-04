@@ -77,33 +77,39 @@ impl DockerManager {
         let mut routes = HashMap::new();
         
         for container in containers {
-            // 컨테이너가 running 상태이고 네트워크 설정이 있는 경우에만 처리
-            if let (Some(state), Some(networks)) = (
+            let container_id = container.id.as_deref().unwrap_or("unknown");
+            
+            // 컨테이너 상태 검증
+            match (
                 container.state.as_deref(),
                 container.network_settings.as_ref().and_then(|s| s.networks.as_ref())
             ) {
-                if state == "running" && !networks.is_empty() {
-                    if let Err(e) = self.process_container_route(container, &mut routes) {
-                        let container_id = container.id.as_deref().unwrap_or("unknown");
-                        error!(
-                            error = %e,
-                            container_id = %container_id,
-                            "컨테이너 라우팅 정보 처리 실패"
-                        );
-                        return Err(e);
-                    }
-                } else {
+                (Some(state), Some(networks)) if state == "running" && !networks.is_empty() => state,
+                (Some(state), _) => {
                     debug!(
-                        container_id = %container.id.as_deref().unwrap_or("unknown"),
+                        container_id = %container_id,
                         state = %state,
                         "컨테이너가 실행 중이 아니거나 네트워크 설정이 없음"
                     );
+                    continue;
+                },
+                _ => {
+                    debug!(
+                        container_id = %container_id,
+                        "컨테이너 상태 또는 네트워크 정보 없음"
+                    );
+                    continue;
                 }
-            } else {
-                debug!(
-                    container_id = %container.id.as_deref().unwrap_or("unknown"),
-                    "컨테이너 상태 또는 네트워크 정보 없음"
+            };
+
+            // 라우팅 정보 처리
+            if let Err(e) = self.process_container_route(container, &mut routes) {
+                error!(
+                    error = %e,
+                    container_id = %container_id,
+                    "컨테이너 라우팅 정보 처리 실패"
                 );
+                return Err(e);
             }
         }
         
@@ -117,17 +123,15 @@ impl DockerManager {
         routes: &mut HashMap<String, BackendService>,
     ) -> Result<(), DockerError> {
         let (host, service) = self.container_to_route(container)?;
-        let host_clone = host.clone();
-        
-        if let Ok(addr) = service.get_next_address() {
-            self.update_or_insert_route(routes, host, service, addr, &host_clone);
-        } else {
+        let addr = service.get_next_address().map_err(|_| {
             let container_id = container.id.as_deref().unwrap_or("unknown");
-            return Err(DockerError::BackendError {
+            DockerError::BackendError {
                 container_id: container_id.to_string(),
                 error: "백엔드 주소 획득 실패".to_string(),
-            });
-        }
+            }
+        })?;
+        
+        self.update_or_insert_route(routes, host.clone(), service, addr, &host);
         
         Ok(())
     }
