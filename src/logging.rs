@@ -1,18 +1,29 @@
 use tracing::{info, warn, error, Level};
 use tracing_subscriber::fmt;
+use super::config::{LogConfig, LogFormat};
 
-pub fn init_logging() {
-    fmt::Subscriber::builder()
+pub fn init_logging(config: &LogConfig) {
+    let subscriber = fmt::Subscriber::builder()
         .with_target(true)
         .with_thread_ids(true)
         .with_file(true)
         .with_line_number(true)
         .with_level(true)
-        .with_target(true)
-        .with_thread_ids(true)
         .with_ansi(true)
-        .with_max_level(Level::DEBUG)
-        .init();
+        .with_max_level(config.level);
+
+    match config.format {
+        LogFormat::Json => {
+            subscriber
+                .json()
+                .init();
+        }
+        LogFormat::Text => {
+            subscriber.init();
+        }
+    }
+
+    info!("로깅 초기화 완료: format={:?}, level={:?}", config.format, config.level);
 }
 
 #[derive(Debug)]
