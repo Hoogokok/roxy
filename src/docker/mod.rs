@@ -1,7 +1,10 @@
 mod events_types;
 mod error_types;
+mod retry;
+
 pub use events_types::DockerEvent;
 pub use error_types::DockerError;
+pub use retry::{RetryPolicy, with_retry, ContainerRoutesRetry};
 
 use bollard::Docker;
 use bollard::container::ListContainersOptions;
@@ -13,8 +16,7 @@ use tokio::sync::mpsc;
 use crate::routing::BackendService;
 use crate::config::Config;
 use tracing::{debug, error, info, warn};
-use tokio::time::{sleep, Duration};
-
+use tokio::time::Duration;
 
 pub struct DockerManager {
     docker: Docker,
@@ -30,49 +32,10 @@ impl DockerManager {
 
     /// 컨테이너 라우트를 조회하고 실패 시 재시도합니다.
     pub async fn get_container_routes(&self) -> Result<HashMap<String, BackendService>, DockerError> {
-        const MAX_RETRIES: u32 = 3;
-        const RETRY_DELAY: Duration = Duration::from_secs(2);
-
-        let mut attempt = 0;
-        let mut last_error = None;
-
-        while attempt < MAX_RETRIES {
-            match self.try_get_container_routes().await {
-                Ok(routes) => {
-                    if !routes.is_empty() {
-                        return Ok(routes);
-                    }
-                    warn!(
-                        "컨테이너 라우트가 비어있음 (시도 {}/{}), 재시도 중...", 
-                        attempt + 1, 
-                        MAX_RETRIES
-                    );
-                }
-                Err(e) => {
-                    warn!(
-                        error = %e,
-                        "컨테이너 라우트 조회 실패 (시도 {}/{}), 재시도 중...", 
-                        attempt + 1, 
-                        MAX_RETRIES
-                    );
-                    last_error = Some(e);
-                }
-            }
-            attempt += 1;
-            if attempt < MAX_RETRIES {
-                sleep(RETRY_DELAY).await;
-            }
-        }
-
-        Err(last_error.unwrap_or_else(|| DockerError::ListContainersError {
-            source: bollard::errors::Error::IOError {
-                err: std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "컨테이너 라우트 조회 최대 재시도 횟수 초과"
-                )
-            },
-            context: "최대 재시도 횟수 초과".to_string()
-        }))
+        let retry_operation = ContainerRoutesRetry { docker_manager: self };
+        let policy = RetryPolicy::new(3, Duration::from_secs(2));
+        
+        with_retry(retry_operation, policy).await
     }
 
     /// 실제 컨테이너 라우트 조회 로직
