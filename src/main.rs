@@ -127,13 +127,15 @@ where
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    init_logging();
-    
+    // 설정을 먼저 로드
     let config = Config::load()
         .map_err(|e| {
-            error!(error = %e, "설정 로드 실패");
+            eprintln!("설정 로드 실패: {}", e);  // 로깅 초기화 전이므로 eprintln! 사용
             e
         })?;
+    
+    // 로깅 초기화
+    init_logging(&config.logging);
     
     info!(http_port = config.http_port, "서버 시작");
     
