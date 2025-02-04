@@ -20,9 +20,10 @@ bytes = "1.0"
 bollard = "0.15"
 futures-util = "0.3"
 uuid = { version = "1.0", features = ["v4"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["fmt"] }
+tracing = { version = "0.1", features = ["attributes"] }
+tracing-subscriber = { version = "0.3", features = ["fmt", "json", "time"] }
 tokio-rustls = "0.24"
 rustls-pemfile = "1.0"
 toml = "0.8"
 serde = { version = "1.0", features = ["derive"] }
+time = { version = "0.3", features = ["formatting"] }
