@@ -7,14 +7,16 @@ services:
     ports:
       - "80:80"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      - /var/run/docker.sock:/var/run/docker.sock:rw
       - cargo-cache:/usr/local/cargo/registry
       - target-cache:/app/target
     environment:
       - PROXY_DOCKER_NETWORK=reverse-proxy-network
-      - PROXY_LABEL_PREFIX=reverse-proxy.
-      - PROXY_HTTP_PORT=80
-    restart: unless-stopped
+      - HTTP_PORT=80
+      - HTTPS_ENABLED=false
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - PROXY_VERBOSE=true
+    restart: "no"
     user: root
     networks:
       - reverse-proxy-network
