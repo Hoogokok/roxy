@@ -1,5 +1,5 @@
-use hyper::{Request, Response, StatusCode, Uri};
-use hyper::body::{Incoming, Bytes};
+use hyper::{Response, StatusCode};
+use hyper::body::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper_util::client::legacy;
 use hyper_util::client::legacy::connect::HttpConnector;
@@ -7,7 +7,6 @@ use hyper_util::rt::TokioExecutor;
 use crate::logging::{RequestLog, log_request};
 use crate::routing::BackendService;
 use uuid::Uuid;
-use std::time::Instant;
 use tracing::{info, error, instrument, Level};
 
 // 프록시 요청을 위한 불변 설정 구조체
