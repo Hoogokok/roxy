@@ -1,7 +1,55 @@
 use serde::Deserialize;
+use serde::Deserializer;
+use tracing::warn;
 use std::env;
 use std::fs;
 use std::path::Path;
+use tracing::Level;
+
+#[derive(Debug, Clone, Deserialize)]
+pub enum LogFormat {
+    #[serde(rename = "text")]
+    Text,
+    #[serde(rename = "json")]
+    Json,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub enum LogOutput {
+    #[serde(rename = "stdout")]
+    Stdout,
+    #[serde(rename = "file")]
+    File(String), // 파일 경로
+}
+
+#[derive(Debug, Clone)]
+pub struct LogConfig {
+    pub format: LogFormat,
+    pub level: Level,
+    pub output: LogOutput,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            format: default_log_format(),
+            level: default_log_level(),
+            output: default_log_output(),
+        }
+    }
+}
+
+fn default_log_format() -> LogFormat {
+    LogFormat::Text
+}
+
+fn default_log_level() -> Level {
+    Level::INFO
+}
+
+fn default_log_output() -> LogOutput {
+    LogOutput::Stdout
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
@@ -12,6 +60,10 @@ pub struct Config {
     pub https_port: u16,
     pub tls_cert_path: Option<String>,
     pub tls_key_path: Option<String>,
+    
+    // 로깅 설정 추가
+    #[serde(default)]
+    pub logging: LogConfig,
 }
 
 #[derive(Debug)]
@@ -108,6 +160,9 @@ impl Config {
             https_port,
             tls_cert_path,
             tls_key_path,
+            
+            // 로깅 설정 추가
+            logging: LogConfig::default(),
         })
     }
 
@@ -154,6 +209,34 @@ impl Config {
                 self.tls_key_path = Some(key_path);
             }
         }
+
+        // 로깅 설정 환경 변수 적용
+        if let Ok(format) = env::var("LOG_FORMAT") {
+            match format.to_lowercase().as_str() {
+                "json" => self.logging.format = LogFormat::Json,
+                "text" => self.logging.format = LogFormat::Text,
+                _ => warn!("잘못된 로그 포맷 지정: {}", format),
+            }
+        }
+
+        if let Ok(level) = env::var("LOG_LEVEL") {
+            match level.to_lowercase().as_str() {
+                "error" => self.logging.level = Level::ERROR,
+                "warn" => self.logging.level = Level::WARN,
+                "info" => self.logging.level = Level::INFO,
+                "debug" => self.logging.level = Level::DEBUG,
+                "trace" => self.logging.level = Level::TRACE,
+                _ => warn!("잘못된 로그 레벨 지정: {}", level),
+            }
+        }
+
+        if let Ok(output) = env::var("LOG_OUTPUT") {
+            if output.to_lowercase() == "stdout" {
+                self.logging.output = LogOutput::Stdout;
+            } else {
+                self.logging.output = LogOutput::File(output);
+            }
+        }
     }
 
     pub fn load() -> Result<Self, ConfigError> {
@@ -170,4 +253,42 @@ impl Config {
 
         Ok(config)
     }
-} 
+}
+
+impl<'de> Deserialize<'de> for LogConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Helper {
+            #[serde(default = "default_log_format")]
+            format: LogFormat,
+            #[serde(default = "default_log_level_string")]
+            level: String,
+            #[serde(default = "default_log_output")]
+            output: LogOutput,
+        }
+
+        let helper = Helper::deserialize(deserializer)?;
+        let level = match helper.level.to_lowercase().as_str() {
+            "error" => Level::ERROR,
+            "warn" => Level::WARN,
+            "info" => Level::INFO,
+            "debug" => Level::DEBUG,
+            "trace" => Level::TRACE,
+            _ => Level::INFO,
+        };
+
+        Ok(LogConfig {
+            format: helper.format,
+            level,
+            output: helper.output,
+        })
+    }
+}
+
+fn default_log_level_string() -> String {
+    "info".to_string()
+}
+

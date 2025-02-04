@@ -26,6 +26,11 @@ label_prefix = "reverse-proxy."
 http_port = 80
 https_enabled = false
 https_port = 443
+
+[logging]
+format = "text"  # "text" 또는 "json"
+level = "info"   # "error", "warn", "info", "debug", "trace"
+output = "stdout"  # "stdout" 또는 파일 경로
 ```
 
 ### 환경 변수 설정
@@ -35,6 +40,9 @@ https_port = 443
 | 환경 변수 | 설명 | 기본값 |
 |-----------|------|--------|
 | `PROXY_CONFIG_FILE` | TOML 설정 파일 경로 | - |
+| `LOG_FORMAT` | 로그 출력 포맷 (text/json) | `text` |
+| `LOG_LEVEL` | 로그 레벨 (error/warn/info/debug/trace) | `info` |
+| `LOG_OUTPUT` | 로그 출력 대상 (stdout 또는 파일 경로) | `stdout` |
 | `PROXY_DOCKER_NETWORK` | 프록시가 모니터링할 Docker 네트워크 이름 | `proxy` |
 | `PROXY_LABEL_PREFIX` | 컨테이너 라벨 접두사 | `reverse-proxy.` |
 | `HTTP_PORT` | HTTP 리스너 포트 | `8080` |
