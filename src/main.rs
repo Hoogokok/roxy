@@ -135,7 +135,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
     
     // 로깅 초기화
-    init_logging(&config.logging);
+    init_logging(&config.logging)
+        .map_err(|e| {
+            eprintln!("로깅 초기화 실패: {}", e);
+            e
+        })?;
     
     info!(http_port = config.http_port, "서버 시작");
     
