@@ -1,89 +1,20 @@
+mod events_types;
+mod error_types;
+pub use events_types::DockerEvent;
+pub use error_types::DockerError;
+
 use bollard::Docker;
 use bollard::container::ListContainersOptions;
 use bollard::models::{ContainerSummary, EventMessage, EventMessageTypeEnum};
 use bollard::system::EventsOptions;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
-use std::fmt;
 use tokio::sync::mpsc;
 use crate::routing::BackendService;
 use crate::config::Config;
 use tracing::{debug, error, info, warn};
 use tokio::time::{sleep, Duration};
 
-#[derive(Debug)]
-pub enum DockerError {
-    /// Docker 데몬 연결 실패
-    ConnectionError {
-        source: bollard::errors::Error,
-        context: String,
-    },
-    /// 컨테이너 목록 조회 실패
-    ListContainersError {
-        source: bollard::errors::Error,
-        context: String,
-    },
-    /// 컨테이너 설정 오류
-    ContainerConfigError {
-        container_id: String,
-        reason: String,
-        context: Option<String>,
-    },
-    /// 주소 파싱 오류
-    AddressParseError {
-        container_id: String,
-        address: String,
-        network: String,
-        context: Option<String>,
-    },
-    /// 네트워크 설정 오류
-    NetworkError {
-        container_id: String,
-        network: String,
-        reason: String,
-        context: Option<String>,
-    },
-    BackendError {
-        container_id: String,
-        error: String,
-    },
-}
-
-impl fmt::Display for DockerError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DockerError::ConnectionError { source, context } => 
-                write!(f, "Docker 데몬 연결 실패 ({}): {}", context, source),
-            DockerError::ListContainersError { source, context } => 
-                write!(f, "컨테이너 목록 조회 실패 ({}): {}", context, source),
-            DockerError::ContainerConfigError { container_id, reason, context } => 
-                if let Some(ctx) = context {
-                    write!(f, "컨테이너 {} 설정 오류 ({}): {}", container_id, ctx, reason)
-                } else {
-                    write!(f, "컨테이너 {} 설정 오류: {}", container_id, reason)
-                },
-            DockerError::AddressParseError { container_id, address, network, context } => 
-                write!(f, "컨테이너 {}의 네트워크 {} 주소 {} 파싱 실패 ({})", 
-                    container_id, network, address, context.as_deref().unwrap_or("No context provided")),
-            DockerError::NetworkError { container_id, network, reason, context } =>
-                write!(f, "컨테이너 {}의 네트워크 {} 설정 오류 ({}): {}", 
-                    container_id, network, context.as_deref().unwrap_or("No context provided"), reason),
-            DockerError::BackendError { container_id, error } => 
-                write!(f, "백엔드 서비스 오류 (컨테이너 {}): {}", container_id, error),
-        }
-    }
-}
-
-impl std::error::Error for DockerError {}
-
-impl From<bollard::errors::Error> for DockerError {
-    fn from(err: bollard::errors::Error) -> Self {
-        DockerError::ConnectionError { 
-            source: err,
-            context: "기본 연결".to_string()
-        }
-    }
-}
 
 pub struct DockerManager {
     docker: Docker,
@@ -575,29 +506,3 @@ impl DockerManager {
         }
     }
 }
-
-#[derive(Debug)]
-pub enum DockerEvent {
-    /// 컨테이너 시작
-    ContainerStarted {
-        container_id: String,
-        host: String,
-        service: BackendService,
-    },
-    /// 컨테이너 중지
-    ContainerStopped {
-        container_id: String,
-        host: String,
-    },
-    /// 컨테이너 설정 변경
-    ContainerUpdated {
-        container_id: String,
-        old_host: Option<String>,
-        new_host: Option<String>,
-        service: Option<BackendService>,
-    },
-    /// 에러 상황
-    Error(DockerError),
-    /// 라우팅 테이블 업데이트
-    RoutesUpdated(HashMap<String, BackendService>),
-} 
