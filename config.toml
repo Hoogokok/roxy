@@ -1,3 +1,4 @@
+[proxy]
 docker_network = "reverse-proxy-network"
 label_prefix = "reverse-proxy."
 http_port = 80
