@@ -1,6 +1,7 @@
 mod events_types;
 mod error_types;
 mod retry;
+mod client;
 
 pub use events_types::DockerEvent;
 pub use error_types::DockerError;
