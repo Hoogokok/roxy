@@ -1,18 +1,71 @@
+use std::fs;
+use std::path::Path;
 use tracing::{info, warn, error, Level};
 use tracing_subscriber::fmt;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use super::config::{LogConfig, LogFormat, LogOutput};
 
-pub fn init_logging() {
-    fmt::Subscriber::builder()
+fn ensure_log_directory(path: &str) -> std::io::Result<()> {
+    let log_dir = Path::new(path);
+    if !log_dir.exists() {
+        fs::create_dir_all(log_dir)?;
+    }
+    Ok(())
+}
+
+pub fn init_logging(config: &LogConfig) -> Result<(), Box<dyn std::error::Error>> {
+    let subscriber = fmt::Subscriber::builder()
         .with_target(true)
         .with_thread_ids(true)
         .with_file(true)
         .with_line_number(true)
         .with_level(true)
-        .with_target(true)
-        .with_thread_ids(true)
-        .with_ansi(true)
-        .with_max_level(Level::DEBUG)
-        .init();
+        .with_ansi(match config.output {
+            LogOutput::Stdout => true,
+            LogOutput::File(_) => false,
+        })
+        .with_max_level(config.level);
+
+    // 출력 대상 설정
+    match &config.output {
+        LogOutput::Stdout => {
+            match config.format {
+                LogFormat::Json => {
+                    subscriber.json().init();
+                }
+                LogFormat::Text => {
+                    subscriber.init();
+                }
+            }
+        }
+        LogOutput::File(path) => {
+            ensure_log_directory("logs")?;
+
+            let file_appender = tracing_appender::rolling::RollingFileAppender::builder()
+                .rotation(Rotation::NEVER)
+                .filename_prefix(path)
+                .build("logs")?;
+
+            match config.format {
+                LogFormat::Json => {
+                    subscriber
+                        .json()
+                        .with_writer(file_appender)
+                        .init();
+                }
+                LogFormat::Text => {
+                    subscriber
+                        .with_writer(file_appender)
+                        .init();
+                }
+            }
+        }
+    }
+
+    info!("로깅 초기화 완료: format={:?}, level={:?}, output={:?}", 
+        config.format, config.level, config.output);
+
+    Ok(())
 }
 
 #[derive(Debug)]

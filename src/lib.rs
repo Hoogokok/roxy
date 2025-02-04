@@ -41,6 +41,7 @@
 //! table.add_route("example.com".to_string(), backend2);
 //! ```
 
+pub mod config;
 pub mod logging;
 pub mod routing;
 pub mod proxy;

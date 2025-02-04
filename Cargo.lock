@@ -152,6 +152,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "773648b94d0e5d620f64f280777445740e61fe701025087ec8b57f45c791888b"
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06ba6d68e24814cb8de6bb986db8222d3a027d15872cabc0d18817bc3c0e4471"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-utils"
+version = "0.8.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
+
+[[package]]
 name = "deranged"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -813,10 +828,12 @@ dependencies = [
  "hyper-util",
  "rustls-pemfile",
  "serde",
+ "time",
  "tokio",
  "tokio-rustls",
  "toml",
  "tracing",
+ "tracing-appender",
  "tracing-subscriber",
  "uuid",
 ]
@@ -1223,6 +1240,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-appender"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3566e8ce28cc0a3fe42519fc80e6b4c943cc4c8cef275620eb8dac2d3d4e06cf"
+dependencies = [
+ "crossbeam-channel",
+ "thiserror",
+ "time",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "tracing-attributes"
 version = "0.1.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1255,17 +1284,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-serde"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704b1aeb7be0d0a84fc9828cae51dab5970fee5088f83d1dd7ee6f6246fc6ff1"
+dependencies = [
+ "serde",
+ "tracing-core",
+]
+
+[[package]]
 name = "tracing-subscriber"
 version = "0.3.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8189decb5ac0fa7bc8b96b7cb9b2701d60d48805aca84a238004d665fcc4008"
 dependencies = [
  "nu-ansi-term",
+ "serde",
+ "serde_json",
  "sharded-slab",
  "smallvec",
  "thread_local",
+ "time",
  "tracing-core",
  "tracing-log",
+ "tracing-serde",
 ]
 
 [[package]]

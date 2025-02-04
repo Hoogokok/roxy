@@ -26,6 +26,11 @@ label_prefix = "reverse-proxy."
 http_port = 80
 https_enabled = false
 https_port = 443
+
+[logging]
+format = "text"  # "text" 또는 "json"
+level = "info"   # "error", "warn", "info", "debug", "trace"
+output = "stdout"  # "stdout" 또는 파일 경로 (예: "proxy.log")
 ```
 
 ### 환경 변수 설정
@@ -35,6 +40,9 @@ https_port = 443
 | 환경 변수 | 설명 | 기본값 |
 |-----------|------|--------|
 | `PROXY_CONFIG_FILE` | TOML 설정 파일 경로 | - |
+| `LOG_FORMAT` | 로그 출력 포맷 (text/json) | `text` |
+| `LOG_LEVEL` | 로그 레벨 (error/warn/info/debug/trace) | `info` |
+| `LOG_OUTPUT` | 로그 출력 대상 (stdout 또는 파일 경로) | `stdout` |
 | `PROXY_DOCKER_NETWORK` | 프록시가 모니터링할 Docker 네트워크 이름 | `proxy` |
 | `PROXY_LABEL_PREFIX` | 컨테이너 라벨 접두사 | `reverse-proxy.` |
 | `HTTP_PORT` | HTTP 리스너 포트 | `8080` |
@@ -117,10 +125,27 @@ networks:
 
 ## 로깅
 
-- 구조화된 JSON 로깅 지원
-- 요청/응답 정보, 라우팅 결정, 에러 등 상세 로깅
-- Docker 이벤트 및 백엔드 서비스 상태 변경 추적
-- TLS 핸드쉐이크 및 HTTPS 연결 관련 로그
+### 로그 포맷
+- Text 포맷: 사람이 읽기 쉬운 형태의 로그
+- JSON 포맷: 구조화된 데이터로 로그 수집/분석에 용이
+
+### 로그 레벨
+- ERROR: 심각한 오류 (서비스 중단 가능성)
+- WARN: 경고 (서비스는 계속되나 주의 필요)
+- INFO: 일반 정보 (서버 시작/중지, 요청 처리 등)
+- DEBUG: 디버깅 정보
+- TRACE: 상세 추적 정보
+
+### 로그 출력
+- stdout: 표준 출력으로 로그 전송
+- 파일: 지정된 파일로 로그 저장 (자동으로 logs 디렉토리 생성)
+
+### 로그 항목
+- 요청/응답 정보 (ID, 메서드, 경로, 상태 코드, 처리 시간)
+- 라우팅 결정 및 백엔드 서비스 정보
+- Docker 이벤트 (컨테이너 시작/중지/업데이트)
+- TLS 핸드쉐이크 및 HTTPS 연결
+- 에러 및 경고 메시지
 
 ## 라이선스
 
