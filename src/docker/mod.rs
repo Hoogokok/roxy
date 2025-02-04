@@ -2,6 +2,7 @@ mod events_types;
 mod error_types;
 mod retry;
 mod client;
+mod container;
 
 pub use events_types::DockerEvent;
 pub use error_types::DockerError;
@@ -9,7 +10,7 @@ pub use retry::{RetryPolicy, with_retry, ContainerRoutesRetry};
 
 use bollard::Docker;
 use bollard::container::ListContainersOptions;
-use bollard::models::{ContainerSummary, EventMessage, EventMessageTypeEnum};
+use bollard::models::{ContainerSummary, EventMessage};
 use bollard::system::EventsOptions;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
