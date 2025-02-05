@@ -208,10 +208,18 @@ impl BackendService {
     }
 }
 
+/// 라우팅 규칙을 표현하는 구조체입니다.
+#[derive(Clone, Debug)]
+pub struct RouteRule {
+    pub service: BackendService,
+    pub path: Option<String>,
+}
+
 /// 라우팅 테이블을 관리하는 구조체입니다.
 #[derive(Clone)]
 pub struct RoutingTable {
-    routes: HashMap<String, BackendService>,
+    // 호스트 이름을 키로 사용하고 라우팅 규칙을 값으로 사용
+    routes: HashMap<String, RouteRule>,
 }
 
 impl RoutingTable {
@@ -232,19 +240,16 @@ impl RoutingTable {
     }
 
     /// 라우팅 테이블에 새로운 라우트를 추가합니다.
-    /// 
-    /// # 인자
-    /// 
-    /// * `host` - 호스트 이름
-    /// * `service` - 백엔드 서비스 정보
-    pub fn add_route(&mut self, host: String, service: BackendService) {
+    pub fn add_route(&mut self, host: String, service: BackendService, path: Option<String>) {
+        let rule = RouteRule { service, path };
         match self.routes.get_mut(&host) {
             Some(existing) => {
-                let new_addresses = service.addresses.clone();
-                existing.addresses.extend(service.addresses);
+                let new_addresses = rule.service.addresses.clone();
+                existing.service.addresses.extend(new_addresses.clone());
                 info!(
                     host = %host,
-                    existing_addresses = ?existing.addresses,
+                    path = ?rule.path,
+                    existing_addresses = ?existing.service.addresses,
                     new_addresses = ?new_addresses,
                     "기존 서비스에 주소 추가"
                 );
@@ -252,10 +257,11 @@ impl RoutingTable {
             None => {
                 info!(
                     host = %host,
-                    addresses = ?service.addresses,
+                    path = ?rule.path,
+                    addresses = ?rule.service.addresses,
                     "새 라우트 추가"
                 );
-                self.routes.insert(host, service);
+                self.routes.insert(host, rule);
             }
         }
     }
@@ -273,6 +279,7 @@ impl RoutingTable {
     pub fn get_backend(&self, host: &str) -> Result<&BackendService, RoutingError> {
         self.routes
             .get(host)
+            .map(|rule| &rule.service)
             .ok_or_else(|| RoutingError::BackendNotFound {
                 host: host.to_string(),
                 available_routes: self.routes.keys().cloned().collect(),
@@ -338,13 +345,29 @@ impl RoutingTable {
     pub fn find_backend(&self, host_info: &HostInfo) -> Result<&BackendService, RoutingError> {
         // 호스트 이름으로 먼저 찾기
         match self.routes.get(&host_info.name) {
-            Some(service) => {
-                // path가 있는 경우 추가 검증 필요
-                if let Some(path) = &host_info.path {
-                    debug!(path = %path, "Path 기반 라우팅 시도");
-                    // TODO: 다음 PR에서 path 매칭 로직 구현
+            Some(rule) => {
+                // path 매칭 검사
+                if let Some(request_path) = &host_info.path {
+                    if let Some(route_path) = &rule.path {
+                        if !request_path.starts_with(route_path) {
+                            debug!(
+                                request_path = %request_path,
+                                route_path = %route_path,
+                                "Path 매칭 실패"
+                            );
+                            return Err(RoutingError::BackendNotFound {
+                                host: host_info.name.clone(),
+                                available_routes: self.routes.keys().cloned().collect(),
+                            });
+                        }
+                        debug!(
+                            request_path = %request_path,
+                            route_path = %route_path,
+                            "Path 매칭 성공"
+                        );
+                    }
                 }
-                Ok(service)
+                Ok(&rule.service)
             }
             None => Err(RoutingError::BackendNotFound {
                 host: host_info.name.clone(),
@@ -354,7 +377,7 @@ impl RoutingTable {
     }
 
     /// Docker 컨테이너로부터 라우팅 규칙을 업데이트합니다.
-    pub fn sync_docker_routes(&mut self, routes: HashMap<String, BackendService>) {
+    pub fn sync_docker_routes(&mut self, routes: HashMap<String, RouteRule>) {
         info!(
             route_count = routes.len(),
             routes = ?routes.keys().collect::<Vec<_>>(),

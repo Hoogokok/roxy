@@ -64,11 +64,12 @@ fn test_routing_table_basic() {
     let mut table = RoutingTable::new();
     let backend = BackendService::new("127.0.0.1:8080".parse().unwrap());
 
-    table.add_route("example.com".to_string(), backend);
+    table.add_route("example.com".to_string(), backend, None);
 
     let host_info = HostInfo {
         name: "example.com".to_string(),
         port: None,
+        path: None,
     };
     assert!(table.find_backend(&host_info).is_ok());
 }
@@ -87,6 +88,7 @@ fn test_routing_table_multiple_hosts() {
         table.add_route(
             host.to_string(),
             BackendService::new(addr.parse().unwrap()),
+            None,
         );
     }
 
@@ -95,6 +97,7 @@ fn test_routing_table_multiple_hosts() {
         let host_info = HostInfo {
             name: host.to_string(),
             port: None,
+            path: None,
         };
         let backend = table.find_backend(&host_info).expect("Backend not found");
         assert_eq!(
@@ -107,6 +110,7 @@ fn test_routing_table_multiple_hosts() {
     let unknown_host = HostInfo {
         name: "unknown.com".to_string(),
         port: None,
+        path: None,
     };
     assert!(matches!(
         table.find_backend(&unknown_host).unwrap_err(),
@@ -122,16 +126,19 @@ fn test_routing_table_overwrite() {
     table.add_route(
         "example.com".to_string(),
         BackendService::new("127.0.0.1:8080".parse().unwrap()),
+        None,
     );
 
     table.add_route(
         "example.com".to_string(),
         BackendService::new("127.0.0.1:9090".parse().unwrap()),
+        None,
     );
 
     let host_info = HostInfo {
         name: "example.com".to_string(),
         port: None,
+        path: None,
     };
     let backend = table.find_backend(&host_info).unwrap();
     assert_eq!(backend.get_next_address().unwrap().to_string(), "127.0.0.1:8080");
@@ -143,6 +150,7 @@ fn setup_routing_table() -> RoutingTable {
     table.add_route(
         "example.com".to_string(),
         BackendService::new("127.0.0.1:8080".parse().unwrap()),
+        None,
     );
     table
 }
@@ -233,6 +241,7 @@ fn test_routing_table_remove_route() {
     let host_info = HostInfo {
         name: "example.com".to_string(),
         port: None,
+        path: None,
     };
     assert!(matches!(
         table.find_backend(&host_info).unwrap_err(),
@@ -242,4 +251,37 @@ fn test_routing_table_remove_route() {
 
     // 존재하지 않는 라우트 제거
     table.remove_route("nonexistent.com");
+}
+
+// 새로운 테스트 추가: path 매칭 테스트
+#[test]
+fn test_routing_table_path_matching() {
+    let mut table = RoutingTable::new();
+    
+    // /api 경로에 대한 라우트 추가
+    table.add_route(
+        "example.com".to_string(),
+        BackendService::new("127.0.0.1:8080".parse().unwrap()),
+        Some("/api".to_string()),
+    );
+
+    // 매칭되는 경로 테스트
+    let host_info = HostInfo {
+        name: "example.com".to_string(),
+        port: None,
+        path: Some("/api/users".to_string()),
+    };
+    assert!(table.find_backend(&host_info).is_ok());
+
+    // 매칭되지 않는 경로 테스트
+    let host_info = HostInfo {
+        name: "example.com".to_string(),
+        port: None,
+        path: Some("/web/users".to_string()),
+    };
+    assert!(matches!(
+        table.find_backend(&host_info).unwrap_err(),
+        RoutingError::BackendNotFound { host, available_routes: _ }
+        if host == "example.com"
+    ));
 } 
