@@ -12,12 +12,20 @@ pub struct ContainerInfo {
 }
 
 // 순수 함수들의 모음
-pub trait ContainerInfoExtractor {
+pub trait ContainerInfoExtractor: Send + Sync {
+    fn clone_box(&self) -> Box<dyn ContainerInfoExtractor>;
     // 부수 효과가 없는 순수 함수들
     fn extract_info(&self, container: &ContainerSummary) -> Result<ContainerInfo, DockerError>;
     fn create_backend(&self, info: &ContainerInfo) -> Result<BackendService, DockerError>;
 }
 
+impl Clone for Box<dyn ContainerInfoExtractor> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
+#[derive(Clone)]
 pub struct DefaultExtractor {
     network_name: String,
     label_prefix: String,
@@ -55,9 +63,21 @@ impl  DefaultExtractor {
                 context: None,
             })
     }
+    
+    pub(crate) fn new(network_name: String, label_prefix: String) -> Self {
+        
+        Self {
+            network_name,
+            label_prefix,
+        }
+    }
 }
 
 impl ContainerInfoExtractor for DefaultExtractor {
+    fn clone_box(&self) -> Box<dyn ContainerInfoExtractor> {
+        Box::new(self.clone())
+    }
+
     fn extract_info(&self, container: &ContainerSummary) -> Result<ContainerInfo, DockerError> {
         let labels = &container.labels;
         let host = self.extract_host(labels)?;
