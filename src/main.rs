@@ -143,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     info!(http_port = config.http_port, "서버 시작");
     
-    let docker_manager = DockerManager::new(config.clone())
+    let docker_manager = DockerManager::with_defaults(config.clone())
         .await
         .map_err(|e| {
             error!(error = %e, "Docker 매니저 초기화 실패");

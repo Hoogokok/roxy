@@ -253,6 +253,19 @@ impl Config {
 
         Ok(config)
     }
+
+    pub fn new_for_test() -> Self {
+        Self {
+            docker_network: "reverse-proxy-network".to_string(),
+            label_prefix: "reverse-proxy.".to_string(),
+            http_port: 8080,
+            https_enabled: false,
+            https_port: 443,
+            tls_cert_path: None,
+            tls_key_path: None,
+            logging: LogConfig::default(),
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for LogConfig {

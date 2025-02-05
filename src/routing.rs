@@ -106,6 +106,14 @@ impl HostInfo {
                 port: None,
             }),
             2 => {
+                // 호스트 이름이 비어있는지 확인
+                if parts[0].is_empty() {
+                    return Err(RoutingError::InvalidHost {
+                        host: value.to_string(),
+                        reason: "Invalid format".to_string(),
+                    });
+                }
+
                 let port = parts[1].parse::<u16>().map_err(|_| {
                     RoutingError::InvalidPort {
                         port: parts[1].to_string(),
