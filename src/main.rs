@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use http_body_util::Full;
 use hyper::body::{Bytes, Incoming};
 use std::sync::Arc;
-use routing::RoutingTable;
+use routing::{RouteRule, RoutingTable};
 use docker::{DockerManager, DockerEvent};
 use config::Config;
 use crate::logging::init_logging;
@@ -65,14 +65,15 @@ async fn handle_docker_event(
     table: &mut tokio::sync::RwLockWriteGuard<'_, RoutingTable>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match event {
-        DockerEvent::ContainerStarted { container_id, host, service } => {
+        DockerEvent::ContainerStarted { container_id, host, service, path } => {
             match service.get_next_address() {
                 Ok(addr) => {
-                    table.add_route(host.clone(), service);
+                    table.add_route(host.clone(), service, path.clone());
                     info!(
                         container_id = %container_id,
                         host = %host,
                         address = ?addr,
+                        path = ?path,
                         "컨테이너 시작"
                     );
                 }
@@ -94,14 +95,19 @@ async fn handle_docker_event(
             table.sync_docker_routes(routes);
             info!("라우팅 테이블 업데이트");
         }
-        DockerEvent::ContainerUpdated { container_id, old_host, new_host, service } => {
+        DockerEvent::ContainerUpdated { container_id, old_host, new_host, service, path } => {
             if let Some(old) = old_host {
                 table.remove_route(&old);
             }
             if let Some(host) = new_host {
                 if let Some(svc) = service {
-                    table.add_route(host.clone(), svc);
-                    info!(container_id = %container_id, host = %host, "컨테이너 설정 변경");
+                    table.add_route(host.clone(), svc, path.clone());
+                    info!(
+                        container_id = %container_id,
+                        host = %host,
+                        path = ?path,
+                        "컨테이너 설정 변경"
+                    );
                 }
             }
         }
@@ -159,7 +165,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
     {
         let mut table = routing_table.write().await;
-        table.sync_docker_routes(initial_routes.clone());
+        let route_rules = initial_routes.clone().into_iter()
+            .collect();
+        table.sync_docker_routes(route_rules);
         info!(routes = ?initial_routes, "초기 라우팅 테이블 설정 완료");
     }
 

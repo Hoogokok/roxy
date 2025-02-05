@@ -19,7 +19,7 @@
 //! let backend = BackendService::new(addr);
 //! 
 //! // 라우팅 규칙 추가
-//! table.add_route("example.com".to_string(), backend);
+//! table.add_route("example.com".to_string(), backend, None);
 //! ```
 //! 
 //! # 로드 밸런싱
@@ -33,12 +33,26 @@
 //! // 첫 번째 백엔드 추가
 //! let addr1: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 //! let backend1 = BackendService::new(addr1);
-//! table.add_route("example.com".to_string(), backend1);
+//! table.add_route("example.com".to_string(), backend1, None);
 //! 
 //! // 동일 호스트에 두 번째 백엔드 추가 (자동으로 로드 밸런싱됨)
 //! let addr2: SocketAddr = "127.0.0.1:8081".parse().unwrap();
 //! let backend2 = BackendService::new(addr2);
-//! table.add_route("example.com".to_string(), backend2);
+//! table.add_route("example.com".to_string(), backend2, None);
+//! ```
+//! 
+//! # Path 기반 라우팅
+//! 
+//! ```
+//! use reverse_proxy_traefik::routing::{RoutingTable, BackendService};
+//! use std::net::SocketAddr;
+//! 
+//! let mut table = RoutingTable::new();
+//! 
+//! // /api 경로에 대한 백엔드 추가
+//! let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+//! let backend = BackendService::new(addr);
+//! table.add_route("example.com".to_string(), backend, Some("/api".to_string()));
 //! ```
 
 pub mod config;
