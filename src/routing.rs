@@ -17,10 +17,12 @@ use tracing::{debug, error, info, warn};
 /// 
 /// * `name` - 호스트 이름 (예: "example.com")
 /// * `port` - 선택적 포트 번호
+/// * `path` - 선택적 경로 정보
 #[derive(Clone, Debug)]
 pub struct HostInfo {
     pub name: String,
     pub port: Option<u16>,
+    pub path: Option<String>,
 }
 
 /// 라우팅 관련 에러를 표현하는 열거형입니다.
@@ -104,6 +106,7 @@ impl HostInfo {
             1 => Ok(HostInfo {
                 name: value.to_string(),
                 port: None,
+                path: None,
             }),
             2 => {
                 // 호스트 이름이 비어있는지 확인
@@ -131,6 +134,7 @@ impl HostInfo {
                 Ok(HostInfo {
                     name: parts[0].to_string(),
                     port: Some(port),
+                    path: None,
                 })
             }
             _ => Err(RoutingError::InvalidHost {
@@ -138,6 +142,12 @@ impl HostInfo {
                 reason: "Invalid format".to_string(),
             }),
         }
+    }
+
+    // 새로운 메서드: path 설정
+    pub fn with_path(mut self, path: String) -> Self {
+        self.path = Some(path);
+        self
     }
 }
 
@@ -326,12 +336,21 @@ impl RoutingTable {
 
     /// 호스트 정보를 기반으로 백엔드 서비스를 찾습니다.
     pub fn find_backend(&self, host_info: &HostInfo) -> Result<&BackendService, RoutingError> {
-        self.routes
-            .get(&host_info.name)
-            .ok_or_else(|| RoutingError::BackendNotFound {
+        // 호스트 이름으로 먼저 찾기
+        match self.routes.get(&host_info.name) {
+            Some(service) => {
+                // path가 있는 경우 추가 검증 필요
+                if let Some(path) = &host_info.path {
+                    debug!(path = %path, "Path 기반 라우팅 시도");
+                    // TODO: 다음 PR에서 path 매칭 로직 구현
+                }
+                Ok(service)
+            }
+            None => Err(RoutingError::BackendNotFound {
                 host: host_info.name.clone(),
                 available_routes: self.routes.keys().cloned().collect(),
             })
+        }
     }
 
     /// Docker 컨테이너로부터 라우팅 규칙을 업데이트합니다.
