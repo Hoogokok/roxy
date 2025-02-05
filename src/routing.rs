@@ -219,7 +219,7 @@ pub struct RouteRule {
 #[derive(Clone)]
 pub struct RoutingTable {
     // 호스트 이름을 키로 사용하고 라우팅 규칙을 값으로 사용
-    routes: HashMap<String, RouteRule>,
+   pub routes: HashMap<String, RouteRule>,
 }
 
 impl RoutingTable {
@@ -241,26 +241,19 @@ impl RoutingTable {
 
     /// 라우팅 테이블에 새로운 라우트를 추가합니다.
     pub fn add_route(&mut self, host: String, service: BackendService, path: Option<String>) {
-        let rule = RouteRule { service, path };
         match self.routes.get_mut(&host) {
-            Some(existing) => {
-                let new_addresses = rule.service.addresses.clone();
-                existing.service.addresses.extend(new_addresses.clone());
-                info!(
-                    host = %host,
-                    path = ?rule.path,
-                    existing_addresses = ?existing.service.addresses,
-                    new_addresses = ?new_addresses,
-                    "기존 서비스에 주소 추가"
-                );
+            Some(existing_rule) => {
+                // 기존 rule이 있으면 주소들을 병합
+                let new_addresses = service.addresses.clone();
+                existing_rule.service.addresses.extend(new_addresses);
+                // path가 다르면 업데이트
+                if existing_rule.path != path {
+                    existing_rule.path = path;
+                }
             }
             None => {
-                info!(
-                    host = %host,
-                    path = ?rule.path,
-                    addresses = ?rule.service.addresses,
-                    "새 라우트 추가"
-                );
+                // 새로운 rule 추가
+                let rule = RouteRule { service, path };
                 self.routes.insert(host, rule);
             }
         }

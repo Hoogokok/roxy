@@ -284,4 +284,37 @@ fn test_routing_table_path_matching() {
         RoutingError::BackendNotFound { host, available_routes: _ }
         if host == "example.com"
     ));
+}
+
+#[test]
+fn test_routing_table_round_robin() {
+    let mut table = RoutingTable::new();
+    
+    // 동일한 호스트에 대해 여러 백엔드 추가
+    let host = "example.com";
+    let backends = vec![
+        "127.0.0.1:8080",
+        "127.0.0.1:8081",
+        "127.0.0.1:8082",
+    ];
+
+    for addr in backends.iter() {
+        table.add_route(
+            host.to_string(),
+            BackendService::new(addr.parse().unwrap()),
+            None,
+        );
+    }
+
+    // 라운드 로빈 검증
+    let rule = table.routes.get(host).unwrap();
+    assert_eq!(rule.service.addresses.len(), 3, "모든 백엔드 주소가 병합되어야 함");
+
+    // 여러 번 요청해서 라운드 로빈 확인
+    let mut seen_addresses = std::collections::HashSet::new();
+    for _ in 0..3 {
+        let addr = rule.service.get_next_address().unwrap();
+        seen_addresses.insert(addr);
+    }
+    assert_eq!(seen_addresses.len(), 3, "모든 백엔드가 순환되어야 함");
 } 
