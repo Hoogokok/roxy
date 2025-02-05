@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use http_body_util::Full;
 use hyper::body::{Bytes, Incoming};
 use std::sync::Arc;
-use routing::RoutingTable;
+use routing::{RouteRule, RoutingTable};
 use docker::{DockerManager, DockerEvent};
 use config::Config;
 use crate::logging::init_logging;
@@ -68,7 +68,7 @@ async fn handle_docker_event(
         DockerEvent::ContainerStarted { container_id, host, service } => {
             match service.get_next_address() {
                 Ok(addr) => {
-                    table.add_route(host.clone(), service);
+                    table.add_route(host.clone(), service, None);
                     info!(
                         container_id = %container_id,
                         host = %host,
@@ -91,7 +91,12 @@ async fn handle_docker_event(
             info!(container_id = %container_id, host = %host, "컨테이너 중지");
         }
         DockerEvent::RoutesUpdated(routes) => {
-            table.sync_docker_routes(routes);
+            let route_rules = routes.into_iter()
+                .map(|(host, service)| {
+                    (host, RouteRule { service, path: None })
+                })
+                .collect();
+            table.sync_docker_routes(route_rules);
             info!("라우팅 테이블 업데이트");
         }
         DockerEvent::ContainerUpdated { container_id, old_host, new_host, service } => {
@@ -100,7 +105,7 @@ async fn handle_docker_event(
             }
             if let Some(host) = new_host {
                 if let Some(svc) = service {
-                    table.add_route(host.clone(), svc);
+                    table.add_route(host.clone(), svc, None);
                     info!(container_id = %container_id, host = %host, "컨테이너 설정 변경");
                 }
             }
@@ -159,7 +164,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         })?;
     {
         let mut table = routing_table.write().await;
-        table.sync_docker_routes(initial_routes.clone());
+        let route_rules = initial_routes.clone().into_iter()
+            .map(|(host, service)| {
+                (host, RouteRule { service, path: None })
+            })
+            .collect();
+        table.sync_docker_routes(route_rules);
         info!(routes = ?initial_routes, "초기 라우팅 테이블 설정 완료");
     }
 
