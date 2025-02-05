@@ -2,10 +2,10 @@ mod events_types;
 mod error_types;
 mod retry;
 mod client;
-mod container;
+pub mod container;
 
-use client::{BollardDockerClient, DockerClient};
-use container::{ContainerInfoExtractor, DefaultExtractor};
+pub use client::{BollardDockerClient, DockerClient};
+pub use container::{ContainerInfoExtractor, DefaultExtractor};
 pub use events_types::DockerEvent;
 pub use error_types::DockerError;
 pub use retry::{RetryPolicy, with_retry, ContainerRoutesRetry};
