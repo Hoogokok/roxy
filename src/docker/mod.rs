@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 use crate::routing::BackendService;
 use crate::config::Config;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use tokio::time::Duration;
 use std::sync::Arc;
 
@@ -83,97 +83,6 @@ impl DockerManager {
         Ok(routes)
     }
 
-    /// 컨테이너 목록에서 라우팅 정보를 추출합니다.
-    fn extract_routes(&self, containers: &[ContainerSummary]) -> Result<HashMap<String, BackendService>, DockerError> {
-        let mut routes = HashMap::new();
-        
-        for container in containers {
-            let container_id = container.id.as_deref().unwrap_or("unknown");
-            
-            // 컨테이너 상태 검증
-            match (
-                container.state.as_deref(),
-                container.network_settings.as_ref().and_then(|s| s.networks.as_ref())
-            ) {
-                (Some(state), Some(networks)) if state == "running" && !networks.is_empty() => state,
-                (Some(state), _) => {
-                    debug!(
-                        container_id = %container_id,
-                        state = %state,
-                        "컨테이너가 실행 중이 아니거나 네트워크 설정이 없음"
-                    );
-                    continue;
-                },
-                _ => {
-                    debug!(
-                        container_id = %container_id,
-                        "컨테이너 상태 또는 네트워크 정보 없음"
-                    );
-                    continue;
-                }
-            };
-
-            // 라우팅 정보 처리
-            if let Err(e) = self.process_container_route(container, &mut routes) {
-                error!(
-                    error = %e,
-                    container_id = %container_id,
-                    "컨테이너 라우팅 정보 처리 실패"
-                );
-                return Err(e);
-            }
-        }
-        
-        self.log_routes_status(&routes);
-        Ok(routes)
-    }
-
-    fn process_container_route(
-        &self,
-        container: &ContainerSummary,
-        routes: &mut HashMap<String, BackendService>,
-    ) -> Result<(), DockerError> {
-        let (host, service) = self.container_to_route(container)?;
-        let addr = service.get_next_address().map_err(|_| {
-            let container_id = container.id.as_deref().unwrap_or("unknown");
-            DockerError::BackendError {
-                container_id: container_id.to_string(),
-                error: "백엔드 주소 획득 실패".to_string(),
-            }
-        })?;
-        
-        self.update_or_insert_route(routes, host.clone(), service, addr, &host);
-        
-        Ok(())
-    }
-
-    fn update_or_insert_route(
-        &self,
-        routes: &mut HashMap<String, BackendService>,
-        host: String,
-        service: BackendService,
-        addr: std::net::SocketAddr,
-        host_clone: &str,
-    ) {
-        routes.entry(host)
-            .and_modify(|existing_service| {
-                existing_service.addresses.push(addr);
-                info!(
-                    host = %host_clone,
-                    address = ?addr,
-                    "기존 서비스에 주소 추가"
-                );
-            })
-            .or_insert_with(|| {
-                info!(
-                    host = %host_clone,
-                    address = ?addr,
-                    "새 서비스 생성"
-                );
-                service
-            });
-    }
-    
     /// 단일 컨테이너에서 라우팅 정보를 추출합니다.
     fn container_to_route(&self, container: &ContainerSummary) -> Result<(String, BackendService), DockerError> {
         let container_id = container.id.as_deref().unwrap_or("unknown").to_string();
