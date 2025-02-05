@@ -67,9 +67,9 @@ impl std::error::Error for DockerError {}
 
 impl From<bollard::errors::Error> for DockerError {
     fn from(err: bollard::errors::Error) -> Self {
-        DockerError::ConnectionError { 
+        DockerError::ConnectionError {
             source: err,
-            context: "기본 연결".to_string()
+            context: "Docker 데몬 연결 실패".to_string(),
         }
     }
 }
