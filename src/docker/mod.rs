@@ -69,7 +69,19 @@ impl DockerManager {
     /// 실제 컨테이너 라우트 조회 로직
     async fn try_get_container_routes(&self) -> Result<HashMap<String, RouteRule>, DockerError> {
         info!("컨테이너 라우트 조회 시작");
-        
+        let containers = self.get_labeled_containers().await?;
+        info!(count = containers.len(), "컨테이너 목록 조회 성공");
+
+        let mut routes: HashMap<String, RouteRule> = HashMap::new();
+        for container in containers {
+            self.process_container_route(&mut routes, &container);
+        }
+
+        info!(route_count = routes.len(), "라우팅 테이블 업데이트 완료");
+        Ok(routes)
+    }
+
+    async fn get_labeled_containers(&self) -> Result<Vec<ContainerSummary>, DockerError> {
         let options = Some(ListContainersOptions::<String> {
             all: true,
             filters: {
@@ -80,18 +92,29 @@ impl DockerManager {
             ..Default::default()
         });
 
-        let containers = self.client.list_containers(options).await?;
-        info!(count = containers.len(), "컨테이너 목록 조회 성공");
+        self.client.list_containers(options).await
+    }
 
-        let mut routes = HashMap::new();
-        for container in containers {
-            if let Ok((host, service, path)) = self.container_to_route(&container) {
-                routes.insert(host, RouteRule { service, path });
+    fn process_container_route(&self, routes: &mut HashMap<String, RouteRule>, container: &ContainerSummary) {
+        if let Ok(info) = self.extractor.extract_info(container) {
+            if let Ok(service) = self.extractor.create_backend(&info) {
+                self.update_or_insert_route(routes, info.host, service);
             }
         }
+    }
 
-        info!(route_count = routes.len(), "라우팅 테이블 업데이트 완료");
-        Ok(routes)
+    fn update_or_insert_route(&self, routes: &mut HashMap<String, RouteRule>, host: String, service: BackendService) {
+        match routes.get_mut(&host) {
+            Some(rule) => {
+                rule.service.addresses.extend(service.addresses);
+            }
+            None => {
+                routes.insert(host, RouteRule {
+                    service,
+                    path: None,
+                });
+            }
+        }
     }
 
     /// 컨테이너에서 라우팅 정보를 추출합니다.
@@ -188,7 +211,7 @@ impl DockerManager {
     }
 
     fn create_event_filters() -> HashMap<String, Vec<String>> {
-        let mut filters = HashMap::new();
+        let mut filters: HashMap<String, Vec<String>> = HashMap::new();
         filters.insert(
             "type".to_string(),
             vec!["container".to_string()]
