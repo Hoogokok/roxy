@@ -9,6 +9,8 @@ use crate::docker::DockerError;
 
 #[async_trait]
 pub trait DockerClient: Send + Sync {
+    fn clone_box(&self) -> Box<dyn DockerClient>;
+
     async fn list_containers(
         &self, 
         options: Option<ListContainersOptions<String>>
@@ -20,6 +22,13 @@ pub trait DockerClient: Send + Sync {
     ) -> Pin<Box<dyn Stream<Item = Result<EventMessage, DockerError>> + Send>>;
 }
 
+impl Clone for Box<dyn DockerClient> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
+}
+
+#[derive(Clone)]
 pub struct BollardDockerClient {
     inner: bollard::Docker,
 }
@@ -38,6 +47,10 @@ impl BollardDockerClient {
 
 #[async_trait]
 impl DockerClient for BollardDockerClient {
+    fn clone_box(&self) -> Box<dyn DockerClient> {
+        Box::new(self.clone())
+    }
+
     async fn list_containers(
         &self, 
         options: Option<ListContainersOptions<String>>
