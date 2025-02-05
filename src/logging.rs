@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 use tracing::{info, warn, error, Level};
 use tracing_subscriber::fmt;
-use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_appender::rolling::Rotation;
 use super::config::{LogConfig, LogFormat, LogOutput};
 
 fn ensure_log_directory(path: &str) -> std::io::Result<()> {

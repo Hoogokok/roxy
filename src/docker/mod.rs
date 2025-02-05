@@ -16,7 +16,7 @@ use bollard::system::EventsOptions;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
-use crate::routing::BackendService;
+use crate::routing::{BackendService, RouteRule};
 use crate::config::Config;
 use tracing::{debug, info, warn};
 use tokio::time::Duration;
@@ -59,7 +59,7 @@ impl DockerManager {
     }
 
     /// 컨테이너 라우트를 조회하고 실패 시 재시도합니다.
-    pub async fn get_container_routes(&self) -> Result<HashMap<String, BackendService>, DockerError> {
+    pub async fn get_container_routes(&self) -> Result<HashMap<String, RouteRule>, DockerError> {
         let retry_operation = ContainerRoutesRetry { docker_manager: self };
         let policy = RetryPolicy::new(3, Duration::from_secs(2));
         
@@ -67,9 +67,21 @@ impl DockerManager {
     }
 
     /// 실제 컨테이너 라우트 조회 로직
-    async fn try_get_container_routes(&self) -> Result<HashMap<String, BackendService>, DockerError> {
+    async fn try_get_container_routes(&self) -> Result<HashMap<String, RouteRule>, DockerError> {
         info!("컨테이너 라우트 조회 시작");
-        
+        let containers = self.get_labeled_containers().await?;
+        info!(count = containers.len(), "컨테이너 목록 조회 성공");
+
+        let mut routes: HashMap<String, RouteRule> = HashMap::new();
+        for container in containers {
+            self.process_container_route(&mut routes, &container);
+        }
+
+        info!(route_count = routes.len(), "라우팅 테이블 업데이트 완료");
+        Ok(routes)
+    }
+
+    async fn get_labeled_containers(&self) -> Result<Vec<ContainerSummary>, DockerError> {
         let options = Some(ListContainersOptions::<String> {
             all: true,
             filters: {
@@ -80,24 +92,33 @@ impl DockerManager {
             ..Default::default()
         });
 
-        let containers = self.client.list_containers(options).await?;
-        info!(count = containers.len(), "컨테이너 목록 조회 성공");
-
-        let mut routes = HashMap::new();
-        for container in containers {
-            if let Ok(info) = self.extractor.extract_info(&container) {
-                if let Ok(backend) = self.extractor.create_backend(&info) {
-                    routes.insert(info.host, backend);
-                }
-            }
-        }
-
-        info!(route_count = routes.len(), "라우팅 테이블 업데이트 완료");
-        Ok(routes)
+        self.client.list_containers(options).await
     }
 
-    /// 단일 컨테이너에서 라우팅 정보를 추출합니다.
-    fn container_to_route(&self, container: &ContainerSummary) -> Result<(String, BackendService), DockerError> {
+    fn process_container_route(&self, routes: &mut HashMap<String, RouteRule>, container: &ContainerSummary) {
+        if let Ok(info) = self.extractor.extract_info(container) {
+            if let Ok(service) = self.extractor.create_backend(&info) {
+                self.update_or_insert_route(routes, info.host, service);
+            }
+        }
+    }
+
+    fn update_or_insert_route(&self, routes: &mut HashMap<String, RouteRule>, host: String, service: BackendService) {
+        match routes.get_mut(&host) {
+            Some(rule) => {
+                rule.service.addresses.extend(service.addresses);
+            }
+            None => {
+                routes.insert(host, RouteRule {
+                    service,
+                    path: None,
+                });
+            }
+        }
+    }
+
+    /// 컨테이너에서 라우팅 정보를 추출합니다.
+    fn container_to_route(&self, container: &ContainerSummary) -> Result<(String, BackendService, Option<String>), DockerError> {
         let container_id = container.id.as_deref().unwrap_or("unknown").to_string();
         
         // IP 주소 가져오기
@@ -158,15 +179,21 @@ impl DockerManager {
             context: None,
         })?;
 
+        // path 레이블 가져오기
+        let path = container.labels.as_ref()
+            .and_then(|labels| labels.get(&format!("{}path", self.config.label_prefix)))
+            .map(|s| s.to_string());
+
         info!(
             container_id = %container_id,
             ip = %ip,
             port = %port,
             host = %host,
+            path = ?path,
             "컨테이너 라우팅 정보 추출"
         );
         
-        Ok((host, BackendService::new(addr)))
+        Ok((host, BackendService::new(addr), path))
     }
 
     /// 컨테이너에서 호스트 라벨을 추출합니다.
@@ -184,7 +211,7 @@ impl DockerManager {
     }
 
     fn create_event_filters() -> HashMap<String, Vec<String>> {
-        let mut filters = HashMap::new();
+        let mut filters: HashMap<String, Vec<String>> = HashMap::new();
         filters.insert(
             "type".to_string(),
             vec!["container".to_string()]
@@ -209,7 +236,7 @@ impl DockerManager {
         let config = self.config.clone();
 
         // 초기 라우트 전송
-        if let Ok(routes) = self.get_container_routes().await {
+        if let Ok(routes) = self.try_get_container_routes().await {
             let _ = tx.send(DockerEvent::RoutesUpdated(routes)).await;
         }
 
@@ -285,16 +312,18 @@ impl DockerManager {
         info!(container_id = %container_id, "컨테이너 시작 이벤트 수신");
         
         match manager.get_container_info(container_id).await? {
-            Some((host, service)) => {
+            Some((host, service, path)) => {
                 info!(
                     container_id = %container_id,
                     host = %host,
+                    path = ?path,
                     "컨테이너 시작 처리 완료"
                 );
                 tx.send(DockerEvent::ContainerStarted { 
                     container_id: container_id.to_string(),
                     host,
                     service,
+                    path,
                 }).await.map_err(|_| Self::channel_send_error())?;
                 Ok(())
             }
@@ -316,7 +345,7 @@ impl DockerManager {
         );
 
         match manager.get_container_info(container_id).await? {
-            Some((host, _)) => {
+            Some((host, _, _)) => {  // path 정보는 무시하고 호스트만 사용
                 tx.send(DockerEvent::ContainerStopped { 
                     container_id: container_id.to_string(),
                     host,
@@ -340,19 +369,21 @@ impl DockerManager {
         let old_info = manager.get_container_info(container_id).await?;
         let new_info = manager.get_container_info(container_id).await?;
         
-        if let Some((host, service)) = new_info {
+        if let Some((host, service, path)) = new_info {
             info!(
                 container_id = %container_id,
-                old_host = ?old_info.as_ref().map(|(h, _)| h),
+                old_host = ?old_info.as_ref().map(|(h, _, _)| h),
                 new_host = %host,
+                path = ?path,
                 "컨테이너 설정 변경 처리"
             );
             
             tx.send(DockerEvent::ContainerUpdated { 
                 container_id: container_id.to_string(),
-                old_host: old_info.map(|(h, _)| h),
+                old_host: old_info.map(|(h, _, _)| h),
                 new_host: Some(host),
                 service: Some(service),
+                path,
             }).await.map_err(|_| Self::channel_send_error())?;
         }
         
@@ -372,7 +403,7 @@ impl DockerManager {
     }
 
     /// 단일 컨테이너의 라우팅 정보를 가져옵니다.
-    async fn get_container_info(&self, container_id: &str) -> Result<Option<(String, BackendService)>, DockerError> {
+    async fn get_container_info(&self, container_id: &str) -> Result<Option<(String, BackendService, Option<String>)>, DockerError> {
         let options = Some(ListContainersOptions::<String> {
             all: true,
             filters: {
