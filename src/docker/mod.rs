@@ -31,18 +31,31 @@ pub struct DockerManager {
 
 impl DockerManager {
     /// Docker 클라이언트를 초기화합니다.
-    pub async fn new(config: Config) -> Result<Self, DockerError> {
+    pub async fn new(
+        client: Box<dyn DockerClient>,
+        extractor: Box<dyn ContainerInfoExtractor>,
+        config: Config,
+    ) -> Self {
+        Self {
+            client: Arc::new(client),
+            extractor,
+            config,
+        }
+    }
+
+    /// 기본 구현을 사용하는 팩토리 메서드
+    pub async fn with_defaults(config: Config) -> Result<Self, DockerError> {
         let client = BollardDockerClient::new().await?;
         let extractor = DefaultExtractor::new(
             config.docker_network.clone(),
             config.label_prefix.clone(),
         );
 
-        Ok(Self {
-            client: Arc::new(Box::new(client)),
-            extractor: Box::new(extractor),
+        Ok(Self::new(
+            Box::new(client),
+            Box::new(extractor),
             config,
-        })
+        ).await)
     }
 
     /// 컨테이너 라우트를 조회하고 실패 시 재시도합니다.
