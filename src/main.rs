@@ -47,6 +47,7 @@ async fn handle_request(
                 routing::RoutingError::InvalidPort { .. } | 
                 routing::RoutingError::HeaderParseError { .. } => StatusCode::BAD_REQUEST,
                 routing::RoutingError::BackendNotFound { .. } => StatusCode::NOT_FOUND,
+                routing::RoutingError::InvalidPathPattern { .. } => StatusCode::NOT_FOUND,
             };
             
             Ok(Response::builder()
