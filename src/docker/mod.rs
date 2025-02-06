@@ -110,20 +110,6 @@ impl DockerManager {
         Ok((info.host, service, path_matcher))
     }
 
-    /// 컨테이너에서 호스트 라벨을 추출합니다.
-    fn extract_host_label(&self, container: &ContainerSummary, container_id: &str) -> Result<String, DockerError> {
-        container
-            .labels
-            .as_ref()
-            .and_then(|labels| labels.get(&format!("{}host", self.config.label_prefix)))
-            .map(|s| s.to_string())
-            .ok_or_else(|| DockerError::ContainerConfigError {
-                container_id: container_id.to_string(),
-                reason: format!("{}host label missing", self.config.label_prefix),
-                context: None,
-            })
-    }
-
     fn create_event_filters() -> HashMap<String, Vec<String>> {
         let mut filters: HashMap<String, Vec<String>> = HashMap::new();
         filters.insert(
