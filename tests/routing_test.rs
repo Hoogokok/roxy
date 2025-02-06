@@ -411,42 +411,48 @@ fn test_path_prefix_matching() {
 #[test]
 fn test_path_matcher_creation() {
     let test_cases = vec![
-        // (입력, 예상 결과)
-        ("/api", Ok(PathMatcher::Exact("/api".to_string()))),
-        ("/api/*", Ok(PathMatcher::Prefix("/api/".to_string()))),
-        ("^/api/.*", Ok(PathMatcher::Regex("^/api/.*".to_string()))),
-        // 특수 케이스
-        ("", Ok(PathMatcher::Exact("".to_string()))),
-        ("*", Ok(PathMatcher::Prefix("".to_string()))),
+        // (입력, 매칭 여부)
+        ("/api", true),
+        ("/api/*", true),
+        ("^/api/.*", true),
+        ("^[invalid", false),  // 잘못된 정규식
     ];
 
-    for (input, expected) in test_cases {
+    for (input, should_succeed) in test_cases {
         let result = PathMatcher::from_str(input);
-        assert_eq!(result, expected, "입력: {}", input);
+        assert_eq!(
+            result.is_ok(), 
+            should_succeed,
+            "입력: {}, 결과: {:?}", 
+            input, 
+            result
+        );
     }
 }
 
 #[test]
 fn test_path_matcher_matching() {
     let test_cases = vec![
-        // (매처, 테스트 경로, 예상 결과)
-        (PathMatcher::Exact("/api".to_string()), "/api", true),
-        (PathMatcher::Exact("/api".to_string()), "/api/", false),
-        (PathMatcher::Exact("/api".to_string()), "/api/users", false),
+        // (패턴, 테스트 경로, 예상 결과)
+        ("/api", "/api", true),
+        ("/api", "/api/", false),
+        ("/api", "/api/users", false),
         
-        (PathMatcher::Prefix("/api/".to_string()), "/api", false),
-        (PathMatcher::Prefix("/api/".to_string()), "/api/", true),
-        (PathMatcher::Prefix("/api/".to_string()), "/api/users", true),
+        ("/api/*", "/api", false),
+        ("/api/*", "/api/", true),
+        ("/api/*", "/api/users", true),
         
-        // 정규식은 아직 구현되지 않았으므로 항상 false 반환
-        (PathMatcher::Regex("^/api/.*".to_string()), "/api/users", false),
+        ("^/api/.*", "/api/users", true),
+        ("^/api/.*", "/api/", true),
+        ("^/api/.*", "/web/api", false),
     ];
 
-    for (matcher, path, expected) in test_cases {
+    for (pattern, path, expected) in test_cases {
+        let matcher = PathMatcher::from_str(pattern).unwrap();
         assert_eq!(
             matcher.matches(path), 
             expected,
-            "매처: {:?}, 경로: {}", matcher, path
+            "패턴: {}, 경로: {}", pattern, path
         );
     }
 }

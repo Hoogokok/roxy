@@ -10,6 +10,7 @@ use std::net::SocketAddr;
 use hyper::header;
 use std::fmt;
 use tracing::{debug, error, info, warn};
+use regex_lite as regex;
 
 /// 호스트 정보를 담는 불변 데이터 구조입니다.
 /// 
@@ -374,25 +375,32 @@ impl RoutingTable {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum PathMatcher {
-    Exact(String),    // 정확한 경로 매칭 (예: "/api")
-    Prefix(String),   // 접두사 매칭 (예: "/api/*")
-    Regex(String),    // 정규식 매칭 (예: "^/api/.*")
+    Exact(String),
+    Prefix(String),
+    Regex(String, regex::Regex),  // 원본 패턴 문자열도 저장
 }
 
 impl PathMatcher {
     /// 문자열로부터 PathMatcher를 생성합니다.
     /// 
     /// # 예시
-    /// ```
-    /// "/api" -> Exact("/api")
-    /// "/api/*" -> Prefix("/api/")
-    /// "^/api/.*" -> Regex("^/api/.*")
+    /// ```rust
+    /// use reverse_proxy_traefik::routing::PathMatcher;
+    /// 
+    /// let exact = PathMatcher::from_str("/api").unwrap();
+    /// let prefix = PathMatcher::from_str("/api/*").unwrap();
+    /// let regex = PathMatcher::from_str("^/api/.*").unwrap();
     /// ```
     pub fn from_str(pattern: &str) -> Result<Self, RoutingError> {
         if pattern.starts_with("^") {
-            Ok(PathMatcher::Regex(pattern.to_string()))
+            let re = regex::Regex::new(pattern)
+                .map_err(|e| RoutingError::InvalidPathPattern {
+                    pattern: pattern.to_string(),
+                    reason: e.to_string(),
+                })?;
+            Ok(PathMatcher::Regex(pattern.to_string(), re))
         } else if pattern.ends_with("*") {
             let prefix = pattern.trim_end_matches('*').to_string();
             Ok(PathMatcher::Prefix(prefix))
@@ -406,7 +414,7 @@ impl PathMatcher {
         match self {
             Self::Exact(p) => p == path,
             Self::Prefix(p) => path.starts_with(p),
-            Self::Regex(_) => false, // 정규식 지원은 나중에 구현
+            Self::Regex(_, r) => r.is_match(path),
         }
     }
 } 
