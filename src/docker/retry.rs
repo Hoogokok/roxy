@@ -3,7 +3,7 @@ use tokio::time::{sleep, Duration};
 use crate::docker::DockerManager;
 use std::collections::HashMap;
 use tracing::warn;
-use crate::routing::RouteRule;
+use crate::routing::BackendService;
 use crate::docker::DockerError;
 
 #[derive(Debug, Clone)]
@@ -63,7 +63,7 @@ pub struct ContainerRoutesRetry<'a> {
 
 #[async_trait]
 impl<'a> Retryable for ContainerRoutesRetry<'a> {
-    type Output = HashMap<String, RouteRule>;
+    type Output = HashMap<(String, Option<String>), BackendService>;
     type Error = DockerError;
 
     async fn execute(&self) -> Result<Self::Output, Self::Error> {

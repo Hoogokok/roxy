@@ -16,7 +16,7 @@ use bollard::system::EventsOptions;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
-use crate::routing::{BackendService, RouteRule};
+use crate::routing::BackendService;
 use crate::config::Config;
 use tracing::{debug, info, warn};
 use tokio::time::Duration;
@@ -59,7 +59,7 @@ impl DockerManager {
     }
 
     /// 컨테이너 라우트를 조회하고 실패 시 재시도합니다.
-    pub async fn get_container_routes(&self) -> Result<HashMap<String, RouteRule>, DockerError> {
+    pub async fn get_container_routes(&self) -> Result< HashMap<(String, Option<String>), BackendService>, DockerError> {
         let retry_operation = ContainerRoutesRetry { docker_manager: self };
         let policy = RetryPolicy::new(3, Duration::from_secs(2));
         
@@ -67,14 +67,16 @@ impl DockerManager {
     }
 
     /// 실제 컨테이너 라우트 조회 로직
-    async fn try_get_container_routes(&self) -> Result<HashMap<String, RouteRule>, DockerError> {
+    async fn try_get_container_routes(&self) -> Result<HashMap<(String, Option<String>), BackendService>, DockerError> {
         info!("컨테이너 라우트 조회 시작");
         let containers = self.get_labeled_containers().await?;
         info!(count = containers.len(), "컨테이너 목록 조회 성공");
 
-        let mut routes: HashMap<String, RouteRule> = HashMap::new();
+        let mut routes = HashMap::new();
         for container in containers {
-            self.process_container_route(&mut routes, &container);
+            if let Ok((host, service, path)) = self.container_to_route(&container) {
+                routes.insert((host, path), service);
+            }
         }
 
         info!(route_count = routes.len(), "라우팅 테이블 업데이트 완료");
@@ -95,27 +97,6 @@ impl DockerManager {
         self.client.list_containers(options).await
     }
 
-    fn process_container_route(&self, routes: &mut HashMap<String, RouteRule>, container: &ContainerSummary) {
-        if let Ok(info) = self.extractor.extract_info(container) {
-            if let Ok(service) = self.extractor.create_backend(&info) {
-                self.update_or_insert_route(routes, info.host, service);
-            }
-        }
-    }
-
-    fn update_or_insert_route(&self, routes: &mut HashMap<String, RouteRule>, host: String, service: BackendService) {
-        match routes.get_mut(&host) {
-            Some(rule) => {
-                rule.service.addresses.extend(service.addresses);
-            }
-            None => {
-                routes.insert(host, RouteRule {
-                    service,
-                    path: None,
-                });
-            }
-        }
-    }
 
     /// 컨테이너에서 라우팅 정보를 추출합니다.
     fn container_to_route(&self, container: &ContainerSummary) -> Result<(String, BackendService, Option<String>), DockerError> {

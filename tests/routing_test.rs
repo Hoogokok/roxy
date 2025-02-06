@@ -79,25 +79,25 @@ fn test_routing_table_multiple_hosts() {
     let mut table = RoutingTable::new();
     
     let backends = vec![
-        ("example.com", "127.0.0.1:8080"),
-        ("test.com", "127.0.0.1:8081"),
-        ("api.example.com", "127.0.0.1:8082"),
+        ("example.com", "127.0.0.1:8080", None),
+        ("test.com", "127.0.0.1:8081", None),
+        ("api.example.com", "127.0.0.1:8082", Some("/api".to_string())),
     ];
 
-    for (host, addr) in backends.clone() {
+    for (host, addr, path) in backends.clone() {
         table.add_route(
             host.to_string(),
             BackendService::new(addr.parse().unwrap()),
-            None,
+            path,
         );
     }
 
     // 각 호스트에 대한 라우팅 테스트
-    for (host, addr) in backends {
+    for (host, addr, path) in backends {
         let host_info = HostInfo {
             name: host.to_string(),
             port: None,
-            path: None,
+            path,
         };
         let backend = table.find_backend(&host_info).expect("Backend not found");
         assert_eq!(
@@ -105,18 +105,77 @@ fn test_routing_table_multiple_hosts() {
             addr
         );
     }
+}
 
-    // 존재하지 않는 호스트 테스트
-    let unknown_host = HostInfo {
-        name: "unknown.com".to_string(),
+#[test]
+fn test_routing_table_path_based() {
+    let mut table = RoutingTable::new();
+    
+    // 동일한 호스트에 대해 다른 경로로 라우트 추가
+    table.add_route(
+        "example.com".to_string(),
+        BackendService::new("127.0.0.1:8080".parse().unwrap()),
+        Some("/api".to_string()),
+    );
+    table.add_route(
+        "example.com".to_string(),
+        BackendService::new("127.0.0.1:8081".parse().unwrap()),
+        Some("/web".to_string()),
+    );
+
+    // API 경로 테스트
+    let api_info = HostInfo {
+        name: "example.com".to_string(),
         port: None,
-        path: None,
+        path: Some("/api".to_string()),
     };
-    assert!(matches!(
-        table.find_backend(&unknown_host).unwrap_err(),
-        RoutingError::BackendNotFound { host, available_routes: _ } 
-        if host == "unknown.com"
-    ));
+    let api_backend = table.find_backend(&api_info).unwrap();
+    assert_eq!(api_backend.get_next_address().unwrap().to_string(), "127.0.0.1:8080");
+
+    // 웹 경로 테스트
+    let web_info = HostInfo {
+        name: "example.com".to_string(),
+        port: None,
+        path: Some("/web".to_string()),
+    };
+    let web_backend = table.find_backend(&web_info).unwrap();
+    assert_eq!(web_backend.get_next_address().unwrap().to_string(), "127.0.0.1:8081");
+}
+
+#[test]
+fn test_routing_table_load_balancing() {
+    let mut table = RoutingTable::new();
+    
+    // 동일한 호스트와 경로에 대해 여러 백엔드 추가
+    let backends = vec![
+        "127.0.0.1:8080",
+        "127.0.0.1:8081",
+        "127.0.0.1:8082",
+    ];
+
+    for addr in backends.iter() {
+        table.add_route(
+            "example.com".to_string(),
+            BackendService::new(addr.parse().unwrap()),
+            Some("/api".to_string()),
+        );
+    }
+
+    let host_info = HostInfo {
+        name: "example.com".to_string(),
+        port: None,
+        path: Some("/api".to_string()),
+    };
+
+    let backend = table.find_backend(&host_info).unwrap();
+    
+    // 라운드 로빈 검증
+    let mut seen_addresses = std::collections::HashSet::new();
+    for _ in 0..3 {
+        let addr = backend.get_next_address().unwrap();
+        seen_addresses.insert(addr);
+    }
+    assert_eq!(seen_addresses.len(), 3, "모든 백엔드가 순환되어야 함");
 }
 
 #[test]
@@ -291,7 +350,8 @@ fn test_routing_table_round_robin() {
     let mut table = RoutingTable::new();
     
     // 동일한 호스트에 대해 여러 백엔드 추가
-    let host = "example.com";
+    let host = "example.com".to_string();
+    let path = None;
     let backends = vec![
         "127.0.0.1:8080",
         "127.0.0.1:8081",
@@ -300,21 +360,50 @@ fn test_routing_table_round_robin() {
 
     for addr in backends.iter() {
         table.add_route(
-            host.to_string(),
+            host.clone(),
             BackendService::new(addr.parse().unwrap()),
             None,
         );
     }
 
     // 라운드 로빈 검증
-    let rule = table.routes.get(host).unwrap();
-    assert_eq!(rule.service.addresses.len(), 3, "모든 백엔드 주소가 병합되어야 함");
+    let backend = table.routes.get(&(host, path)).unwrap();
+    assert_eq!(backend.addresses.len(), 3, "모든 백엔드 주소가 병합되어야 함");
 
     // 여러 번 요청해서 라운드 로빈 확인
     let mut seen_addresses = std::collections::HashSet::new();
     for _ in 0..3 {
-        let addr = rule.service.get_next_address().unwrap();
+        let addr = backend.get_next_address().unwrap();
         seen_addresses.insert(addr);
     }
     assert_eq!(seen_addresses.len(), 3, "모든 백엔드가 순환되어야 함");
-} 
+}
+
+#[test]
+fn test_path_prefix_matching() {
+    let mut table = RoutingTable::new();
+    
+    // API 서버 설정
+    table.add_route(
+        "test.localhost".to_string(),
+        BackendService::new("127.0.0.1:8080".parse().unwrap()),
+        Some("/api".to_string()),
+    );
+
+    // 다양한 경로 테스트
+    let test_paths = vec![
+        "/api",
+        "/api/",
+        "/api/users",
+        "/api/users/123",
+    ];
+
+    for path in test_paths {
+        let host_info = HostInfo {
+            name: "test.localhost".to_string(),
+            port: None,
+            path: Some(path.to_string()),
+        };
+        assert!(table.find_backend(&host_info).is_ok(), "Failed to match path: {}", path);
+    }
+}

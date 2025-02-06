@@ -208,18 +208,12 @@ impl BackendService {
     }
 }
 
-/// 라우팅 규칙을 표현하는 구조체입니다.
-#[derive(Clone, Debug)]
-pub struct RouteRule {
-    pub service: BackendService,
-    pub path: Option<String>,
-}
 
 /// 라우팅 테이블을 관리하는 구조체입니다.
 #[derive(Clone)]
 pub struct RoutingTable {
-    // 호스트 이름을 키로 사용하고 라우팅 규칙을 값으로 사용
-   pub routes: HashMap<String, RouteRule>,
+    // (host, path)를 키로 사용하여 여러 path 지원
+    pub routes: HashMap<(String, Option<String>), BackendService>,
 }
 
 impl RoutingTable {
@@ -232,29 +226,20 @@ impl RoutingTable {
 
     /// 라우팅 테이블에서 호스트를 제거합니다.
     pub fn remove_route(&mut self, host: &str) {
-        if self.routes.remove(host).is_some() {
-            info!(host = %host, "라우트 제거됨");
-        } else {
-            debug!(host = %host, "존재하지 않는 라우트 제거 시도");
-        }
+        self.routes.retain(|k, _| k.0 != host);
     }
 
     /// 라우팅 테이블에 새로운 라우트를 추가합니다.
     pub fn add_route(&mut self, host: String, service: BackendService, path: Option<String>) {
-        match self.routes.get_mut(&host) {
-            Some(existing_rule) => {
-                // 기존 rule이 있으면 주소들을 병합
-                let new_addresses = service.addresses.clone();
-                existing_rule.service.addresses.extend(new_addresses);
-                // path가 다르면 업데이트
-                if existing_rule.path != path {
-                    existing_rule.path = path;
-                }
+        let key = (host, path);
+        match self.routes.get_mut(&key) {
+            Some(existing_service) => {
+                // 기존 서비스가 있으면 주소들을 병합
+                existing_service.addresses.extend(service.addresses);
             }
             None => {
-                // 새로운 rule 추가
-                let rule = RouteRule { service, path };
-                self.routes.insert(host, rule);
+                // 새로운 서비스 추가
+                self.routes.insert(key, service);
             }
         }
     }
@@ -270,13 +255,13 @@ impl RoutingTable {
     /// 성공 시 `BackendService`에 대한 참조를 포함한 `Ok`를 반환하고,
     /// 실패 시 `BackendNotFound` 에러를 포함한 `Err`를 반환합니다.
     pub fn get_backend(&self, host: &str) -> Result<&BackendService, RoutingError> {
-        self.routes
-            .get(host)
-            .map(|rule| &rule.service)
-            .ok_or_else(|| RoutingError::BackendNotFound {
-                host: host.to_string(),
-                available_routes: self.routes.keys().cloned().collect(),
-            })
+        let key = (host.to_string(), None);
+        self.routes.get(&key).ok_or_else(|| RoutingError::BackendNotFound {
+            host: host.to_string(),
+            available_routes: self.routes.keys()
+                .map(|(host, path)| format!("{}:{:?}", host, path))
+                .collect(),
+        })
     }
 
     /// HTTP 요청에서 호스트 정보를 추출하고 해당하는 백엔드 서비스를 찾습니다.
@@ -309,73 +294,75 @@ impl RoutingTable {
     /// HTTP 요청에서 호스트 정보를 추출합니다.
     pub fn extract_host<B>(req: &hyper::Request<B>) -> Result<HostInfo, RoutingError> {
         let host = match req.headers().get(header::HOST) {
-            Some(value) => {
-                debug!("Host 헤더 발견");
-                value
-            }
-            None => {
-                warn!("Host 헤더 누락");
-                return Err(RoutingError::MissingHost);
-            }
+            Some(value) => value,
+            None => return Err(RoutingError::MissingHost),
         };
 
-        match host.to_str() {
-            Ok(host_str) => {
-                debug!(host = %host_str, "Host 헤더 파싱 성공");
-                HostInfo::from_header_value(host_str)
-            }
-            Err(e) => {
-                error!(error = %e, "Host 헤더 파싱 실패");
-                Err(RoutingError::HeaderParseError { 
-                    header_name: "Host".to_string(), 
-                    error: e.to_string() 
-                })
-            }
-        }
+        let host_str = host.to_str().map_err(|e| RoutingError::HeaderParseError { 
+            header_name: "Host".to_string(), 
+            error: e.to_string() 
+        })?;
+
+        // 호스트에서 경로 부분 제거하고 포트 파싱
+        let host_name = host_str.split('/').next().unwrap_or(host_str);
+        let mut host_info = HostInfo::from_header_value(host_name)?;
+        
+        // URI에서 경로 추출
+        let path = req.uri().path();
+        host_info.path = if path == "/" { None } else { Some(path.to_string()) };
+
+        Ok(host_info)
     }
 
     /// 호스트 정보를 기반으로 백엔드 서비스를 찾습니다.
     pub fn find_backend(&self, host_info: &HostInfo) -> Result<&BackendService, RoutingError> {
-        // 호스트 이름으로 먼저 찾기
-        match self.routes.get(&host_info.name) {
-            Some(rule) => {
-                // path 매칭 검사
-                if let Some(request_path) = &host_info.path {
-                    if let Some(route_path) = &rule.path {
-                        if !request_path.starts_with(route_path) {
-                            debug!(
-                                request_path = %request_path,
-                                route_path = %route_path,
-                                "Path 매칭 실패"
-                            );
-                            return Err(RoutingError::BackendNotFound {
-                                host: host_info.name.clone(),
-                                available_routes: self.routes.keys().cloned().collect(),
-                            });
-                        }
-                        debug!(
-                            request_path = %request_path,
-                            route_path = %route_path,
-                            "Path 매칭 성공"
-                        );
-                    }
-                }
-                Ok(&rule.service)
-            }
-            None => Err(RoutingError::BackendNotFound {
-                host: host_info.name.clone(),
-                available_routes: self.routes.keys().cloned().collect(),
-            })
+        // 요청 경로에서 후행 슬래시 제거
+        let request_path = host_info.path.as_ref()
+            .map(|p| p.trim_end_matches('/'))
+            .filter(|p| !p.is_empty());  // 빈 경로는 None으로 처리
+
+        // 먼저 정확한 매칭 시도
+        if let Some(backend) = self.routes.get(&(host_info.name.clone(), request_path.map(String::from))) {
+            debug!(
+                host = %host_info.name,
+                path = ?request_path,
+                "정확한 경로 매칭 성공"
+            );
+            return Ok(backend);
         }
+
+        // prefix 매칭 시도
+        if let Some(request_path) = request_path {
+            let matched_backend = self.routes.iter()
+                .find(|((host, route_path), _)| {
+                    if host != &host_info.name {
+                        return false;
+                    }
+                    route_path.as_ref()
+                        .map(|p| {
+                            let p = p.trim_end_matches('/');
+                            request_path == p || request_path.starts_with(&format!("{}/", p))
+                        })
+                        .unwrap_or(false)
+                })
+                .map(|(_, backend)| backend);
+
+            if let Some(backend) = matched_backend {
+                debug!(
+                    host = %host_info.name,
+                    path = %request_path,
+                    "prefix 매칭 성공"
+                );
+                return Ok(backend);
+            }
+        }
+
+        // 경로가 없는 기본 라우트 시도
+        self.get_backend(&host_info.name)
     }
 
     /// Docker 컨테이너로부터 라우팅 규칙을 업데이트합니다.
-    pub fn sync_docker_routes(&mut self, routes: HashMap<String, RouteRule>) {
-        info!(
-            route_count = routes.len(),
-            routes = ?routes.keys().collect::<Vec<_>>(),
-            "Docker 라우트 동기화"
-        );
+    pub fn sync_docker_routes(&mut self, routes: HashMap<(String, Option<String>), BackendService>) {
         self.routes = routes;
     }
 } 
