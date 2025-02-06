@@ -124,22 +124,28 @@ fn test_routing_table_path_based() {
     );
 
     // API 경로 테스트
-    let api_info = HostInfo {
+    let host_info = HostInfo {
         name: "example.com".to_string(),
         port: None,
         path: Some("/api".to_string()),
     };
-    let api_backend = table.find_backend(&api_info).unwrap();
-    assert_eq!(api_backend.get_next_address().unwrap().to_string(), "127.0.0.1:8080");
+    let backend = table.find_backend(&host_info).unwrap();
+    assert_eq!(
+        backend.get_next_address().unwrap().to_string(),
+        "127.0.0.1:8080"
+    );
 
     // 웹 경로 테스트
-    let web_info = HostInfo {
+    let host_info = HostInfo {
         name: "example.com".to_string(),
         port: None,
         path: Some("/web".to_string()),
     };
-    let web_backend = table.find_backend(&web_info).unwrap();
-    assert_eq!(web_backend.get_next_address().unwrap().to_string(), "127.0.0.1:8081");
+    let backend = table.find_backend(&host_info).unwrap();
+    assert_eq!(
+        backend.get_next_address().unwrap().to_string(),
+        "127.0.0.1:8081"
+    );
 }
 
 #[test]
@@ -351,7 +357,7 @@ fn test_routing_table_round_robin() {
     
     // 동일한 호스트에 대해 여러 백엔드 추가
     let host = "example.com".to_string();
-    let path = None;
+    let default_matcher = PathMatcher::from_str("/").unwrap();
     let backends = vec![
         "127.0.0.1:8080",
         "127.0.0.1:8081",
@@ -367,7 +373,7 @@ fn test_routing_table_round_robin() {
     }
 
     // 라운드 로빈 검증
-    let backend = table.routes.get(&(host, path)).unwrap();
+    let backend = table.routes.get(&(host, default_matcher)).unwrap();
     assert_eq!(backend.addresses.len(), 3, "모든 백엔드 주소가 병합되어야 함");
 
     // 여러 번 요청해서 라운드 로빈 확인
@@ -411,20 +417,20 @@ fn test_path_prefix_matching() {
 #[test]
 fn test_path_matcher_creation() {
     let test_cases = vec![
-        // (입력, 매칭 여부)
+        // (패턴, 매칭 성공 여부)
         ("/api", true),
         ("/api/*", true),
         ("^/api/.*", true),
         ("^[invalid", false),  // 잘못된 정규식
     ];
 
-    for (input, should_succeed) in test_cases {
-        let result = PathMatcher::from_str(input);
+    for (pattern, should_succeed) in test_cases {
+        let result = PathMatcher::from_str(pattern);
         assert_eq!(
             result.is_ok(), 
             should_succeed,
-            "입력: {}, 결과: {:?}", 
-            input, 
+            "패턴: {}, 결과: {:?}", 
+            pattern, 
             result
         );
     }
@@ -452,7 +458,9 @@ fn test_path_matcher_matching() {
         assert_eq!(
             matcher.matches(path), 
             expected,
-            "패턴: {}, 경로: {}", pattern, path
+            "패턴: {}, 경로: {}", 
+            pattern, 
+            path
         );
     }
 }
