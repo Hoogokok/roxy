@@ -3,7 +3,9 @@
 mod error;
 mod host;
 mod backend;
+mod matcher;
 
 pub use error::{RoutingError, BackendError};
 pub use host::HostInfo;
-pub use backend::BackendService; 
+pub use backend::BackendService;
+pub use matcher::{PathMatcher, PathMatcherKind}; 
