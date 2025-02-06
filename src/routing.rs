@@ -367,6 +367,7 @@ pub struct PathMatcher {
 impl PathMatcher {
     pub fn from_str(pattern: &str) -> Result<Self, RoutingError> {
         if pattern.starts_with("^") {
+            // 정규식 매칭
             let re = regex::Regex::new(pattern)
                 .map_err(|e| RoutingError::InvalidPathPattern {
                     pattern: pattern.to_string(),
@@ -377,25 +378,33 @@ impl PathMatcher {
                 pattern: pattern.to_string(),
                 regex: Some(re),
             })
-        } else if pattern.ends_with("*") {
-            Ok(PathMatcher {
-                kind: PathMatcherKind::Prefix,
-                pattern: pattern.trim_end_matches('*').to_string(),
-                regex: None,
-            })
         } else {
+            // '*' 패턴을 제거하고 모두 Prefix로 처리
             Ok(PathMatcher {
-                kind: PathMatcherKind::Exact,
-                pattern: pattern.to_string(),
+                kind: if pattern.ends_with("*") {
+                    PathMatcherKind::Prefix
+                } else {
+                    PathMatcherKind::Exact
+                },
+                pattern: pattern.trim_end_matches('*').to_string(),
                 regex: None,
             })
         }
     }
 
     pub fn matches(&self, path: &str) -> bool {
+        if self.pattern == "/" {
+            return true;
+        }
+
         match self.kind {
             PathMatcherKind::Exact => self.pattern == path,
-            PathMatcherKind::Prefix => path.starts_with(&self.pattern),
+            PathMatcherKind::Prefix => {
+                // Traefik 스타일: 접두사 매칭에서는 trailing slash 무시
+                let pattern = self.pattern.trim_end_matches('/');
+                let path = path.trim_end_matches('/');
+                path == pattern || path.starts_with(&format!("{}/", pattern))
+            },
             PathMatcherKind::Regex => self.regex.as_ref()
                 .map(|r| r.is_match(path))
                 .unwrap_or(false),

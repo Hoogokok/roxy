@@ -99,11 +99,15 @@ impl DockerManager {
 
 
     /// 컨테이너에서 라우팅 정보를 추출합니다.
-    fn container_to_route(&self, container: &ContainerSummary) -> Result<(String, BackendService, PathMatcher), DockerError>  {
+    fn container_to_route(&self, container: &ContainerSummary) -> Result<(String, BackendService, PathMatcher), DockerError> {
         let info = self.extractor.extract_info(container)?;
         let service = self.extractor.create_backend(&info)?;
         
-        Ok((info.host, service, info.path_matcher.unwrap()))  // 현재는 Option<String>으로 path 반환
+        // None일 경우 기본 경로 매처("/") 사용
+        let path_matcher = info.path_matcher
+            .unwrap_or_else(|| PathMatcher::from_str("/").unwrap());
+        
+        Ok((info.host, service, path_matcher))
     }
 
     /// 컨테이너에서 호스트 라벨을 추출합니다.
