@@ -251,29 +251,6 @@ impl RoutingTable {
         }
     }
 
-    /// 주어진 호스트에 대한 백엔드 서비스를 찾습니다.
-    /// 
-    /// # 인자
-    /// 
-    /// * `host` - 찾을 호스트 이름
-    /// 
-    /// # 반환
-    /// 
-    /// 성공 시 `BackendService`에 대한 참조를 포함한 `Ok`를 반환하고,
-    /// 실패 시 `BackendNotFound` 에러를 포함한 `Err`를 반환합니다.
-    pub fn get_backend(&self, host: &str) -> Result<&BackendService, RoutingError> {
-        // 기본 경로 "/"에 대한 PathMatcher 생성
-        let default_matcher = PathMatcher::from_str("/").unwrap();
-        let key = (host.to_string(), default_matcher);
-        
-        self.routes.get(&key).ok_or_else(|| RoutingError::BackendNotFound {
-            host: host.to_string(),
-            available_routes: self.routes.keys()
-                .map(|(host, matcher)| format!("{}:{:?}", host, matcher))
-                .collect(),
-        })
-    }
-
     /// HTTP 요청에서 호스트 정보를 추출하고 해당하는 백엔드 서비스를 찾습니다.
     /// 
     /// # 인자
