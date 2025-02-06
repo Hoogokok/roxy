@@ -9,7 +9,7 @@
 //! # 예제
 //! 
 //! ```
-//! use reverse_proxy_traefik::routing::{RoutingTable, BackendService};
+//! use reverse_proxy_traefik::routing::{RoutingTable, BackendService, PathMatcher};
 //! use std::net::SocketAddr;
 //! 
 //! let mut table = RoutingTable::new();
@@ -18,8 +18,12 @@
 //! let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 //! let backend = BackendService::new(addr);
 //! 
-//! // 라우팅 규칙 추가
-//! table.add_route("example.com".to_string(), backend, None);
+//! // 라우팅 규칙 추가 - API 서비스 (PathPrefix 매칭)
+//! table.add_route(
+//!     "example.com".to_string(), 
+//!     backend,
+//!     Some(PathMatcher::from_str("/api*").unwrap())  // PathPrefix 매칭 사용
+//! );
 //! ```
 //! 
 //! # 로드 밸런싱
@@ -44,7 +48,7 @@
 //! # Path 기반 라우팅
 //! 
 //! ```
-//! use reverse_proxy_traefik::routing::{RoutingTable, BackendService};
+//! use reverse_proxy_traefik::routing::{RoutingTable, BackendService, PathMatcher};
 //! use std::net::SocketAddr;
 //! 
 //! let mut table = RoutingTable::new();
@@ -52,7 +56,7 @@
 //! // /api 경로에 대한 백엔드 추가
 //! let addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
 //! let backend = BackendService::new(addr);
-//! table.add_route("example.com".to_string(), backend, Some("/api".to_string()));
+//! table.add_route("example.com".to_string(), backend, Some(PathMatcher::from_str("/api").unwrap()));
 //! ```
 
 pub mod config;
