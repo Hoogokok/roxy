@@ -10,7 +10,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::collections::HashMap;
-use std::str::FromStr;
 use reverse_proxy_traefik::routing::PathMatcher;
 
 // Mock Docker Client
@@ -171,7 +170,8 @@ async fn test_container_routes() {
 
     let routes = manager.get_container_routes().await.unwrap();
     assert_eq!(routes.len(), 1);
-    assert!(routes.contains_key(&("test.localhost".to_string(), None)));
+    let default_matcher = PathMatcher::from_str("/").unwrap();
+    assert!(routes.contains_key(&("test.localhost".to_string(), default_matcher)));
 }
 
 #[tokio::test]
@@ -303,11 +303,13 @@ async fn test_path_based_routing() {
     assert_eq!(routes.len(), 2);
     
     // API 경로 검증
-    let api_backend = routes.get(&("test.localhost".to_string(), Some("/api".to_string()))).unwrap();
+    let api_matcher = PathMatcher::from_str("/api").unwrap();
+    let api_backend = routes.get(&("test.localhost".to_string(), api_matcher)).unwrap();
     assert_eq!(api_backend.get_next_address().unwrap().to_string(), "172.17.0.2:80");
     
     // 웹 경로 검증
-    let web_backend = routes.get(&("test.localhost".to_string(), Some("/web".to_string()))).unwrap();
+    let web_matcher = PathMatcher::from_str("/web").unwrap();
+    let web_backend = routes.get(&("test.localhost".to_string(), web_matcher)).unwrap();
     assert_eq!(web_backend.get_next_address().unwrap().to_string(), "172.17.0.3:80");
 }
 
