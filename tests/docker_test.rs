@@ -10,6 +10,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::collections::HashMap;
+use std::str::FromStr;
+use reverse_proxy_traefik::routing::PathMatcher;
 
 // Mock Docker Client
 #[derive(Clone)]
@@ -60,8 +62,10 @@ impl ContainerInfoExtractor for MockExtractor {
     }
 
     fn extract_info(&self, container: &ContainerSummary) -> Result<ContainerInfo, DockerError> {
-        // 실제 DefaultExtractor와 유사한 로직 구현
-        let host = container.labels.as_ref()
+        let labels = container.labels.as_ref();
+        
+        // 호스트 추출
+        let host = labels
             .and_then(|l| l.get(&format!("{}host", self.label_prefix)))
             .map(String::from)
             .ok_or_else(|| DockerError::ContainerConfigError {
@@ -70,6 +74,7 @@ impl ContainerInfoExtractor for MockExtractor {
                 context: None,
             })?;
 
+        // IP 주소 추출
         let ip = container.network_settings.as_ref()
             .and_then(|s| s.networks.as_ref())
             .and_then(|n| n.get(&self.network_name))
@@ -81,10 +86,28 @@ impl ContainerInfoExtractor for MockExtractor {
                 context: None,
             })?;
 
+        // 포트 추출 (기본값 80)
+        let port = labels
+            .and_then(|l| l.get(&format!("{}port", self.label_prefix)))
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(80);
+
+        // 경로 패턴 추출
+        let path_matcher = labels.and_then(|l| {
+            let path = l.get(&format!("{}path", self.label_prefix))?;
+            let pattern = match l.get(&format!("{}path.type", self.label_prefix)).map(String::as_str) {
+                Some("regex") => format!("^{}", path),
+                Some("prefix") => format!("{}*", path),
+                _ => path.to_string(),
+            };
+            PathMatcher::from_str(&pattern).ok()
+        });
+
         Ok(ContainerInfo {
             host,
             ip: ip.clone(),
-            port: 80,
+            port,
+            path_matcher,
         })
     }
 
@@ -286,4 +309,89 @@ async fn test_path_based_routing() {
     // 웹 경로 검증
     let web_backend = routes.get(&("test.localhost".to_string(), Some("/web".to_string()))).unwrap();
     assert_eq!(web_backend.get_next_address().unwrap().to_string(), "172.17.0.3:80");
+}
+
+#[test]
+fn test_container_path_patterns() {
+    let container = ContainerSummary {
+        id: Some("test_container".to_string()),
+        labels: Some({
+            let mut labels = HashMap::new();
+            labels.insert("traefik.host".to_string(), "example.com".to_string());
+            labels.insert("traefik.port".to_string(), "8080".to_string());
+            labels.insert("traefik.path".to_string(), "/api".to_string());
+            labels.insert("traefik.path.type".to_string(), "prefix".to_string());
+            labels
+        }),
+        network_settings: Some(ContainerSummaryNetworkSettings {
+            networks: Some({
+                let mut networks = HashMap::new();
+                networks.insert(
+                    "test_network".to_string(),
+                    EndpointSettings {
+                        ip_address: Some("172.17.0.2".to_string()),
+                        ..Default::default()
+                    },
+                );
+                networks
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let extractor = MockExtractor::new("test_network".to_string(), "traefik.".to_string());
+
+    let info = extractor.extract_info(&container).unwrap();
+    
+    // 기본 정보 확인
+    assert_eq!(info.host, "example.com");
+    assert_eq!(info.port, 8080);
+    assert_eq!(info.ip, "172.17.0.2");
+
+    // 경로 매처 확인
+    let path_matcher = info.path_matcher.unwrap();
+    assert!(path_matcher.matches("/api"));
+    assert!(path_matcher.matches("/api/users"));
+    assert!(!path_matcher.matches("/web"));
+}
+
+#[test]
+fn test_container_path_patterns_regex() {
+    let container = ContainerSummary {
+        id: Some("test_container".to_string()),
+        labels: Some({
+            let mut labels = HashMap::new();
+            labels.insert("traefik.host".to_string(), "example.com".to_string());
+            labels.insert("traefik.port".to_string(), "8080".to_string());
+            labels.insert("traefik.path".to_string(), "/api/.*".to_string());
+            labels.insert("traefik.path.type".to_string(), "regex".to_string());
+            labels
+        }),
+        network_settings: Some(ContainerSummaryNetworkSettings {
+            networks: Some({
+                let mut networks = HashMap::new();
+                networks.insert(
+                    "test_network".to_string(),
+                    EndpointSettings {
+                        ip_address: Some("172.17.0.2".to_string()),
+                        ..Default::default()
+                    },
+                );
+                networks
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    let extractor = MockExtractor::new("test_network".to_string(), "traefik.".to_string());
+
+    let info = extractor.extract_info(&container).unwrap();
+    let path_matcher = info.path_matcher.unwrap();
+    
+    // 정규식 매칭 확인
+    assert!(path_matcher.matches("/api/users"));
+    assert!(path_matcher.matches("/api/123"));
+    assert!(!path_matcher.matches("/web/api"));
 } 
