@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use hyper::header;
 use std::fmt;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use regex_lite as regex;
 
 /// 호스트 정보를 담는 불변 데이터 구조입니다.
@@ -238,13 +238,9 @@ impl RoutingTable {
     }
 
     /// 라우팅 테이블에 새로운 라우트를 추가합니다.
-    pub fn add_route(&mut self, host: String, service: BackendService, path: Option<String>) {
-        let path_matcher = path
-            .map(|p| PathMatcher::from_str(&p))
-            .unwrap_or_else(|| PathMatcher::from_str("/"))
-            .unwrap_or_else(|_| PathMatcher::from_str("/").unwrap());
-
-        let key = (host, path_matcher);
+    pub fn add_route(&mut self, host: String, service: BackendService, path_matcher: Option<PathMatcher>) {
+        let matcher = path_matcher.unwrap_or_else(|| PathMatcher::from_str("/").unwrap());
+        let key = (host, matcher);
         match self.routes.get_mut(&key) {
             Some(existing_service) => {
                 existing_service.addresses.extend(service.addresses);
@@ -364,7 +360,7 @@ pub enum PathMatcherKind {
 #[derive(Debug, Clone)]
 pub struct PathMatcher {
     kind: PathMatcherKind,
-    pattern: String,
+    pub pattern: String,
     regex: Option<regex::Regex>,
 }
 
