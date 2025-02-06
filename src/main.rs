@@ -66,15 +66,15 @@ async fn handle_docker_event(
     table: &mut tokio::sync::RwLockWriteGuard<'_, RoutingTable>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match event {
-        DockerEvent::ContainerStarted { container_id, host, service, path } => {
+        DockerEvent::ContainerStarted { container_id, host, service, path_matcher } => {
             match service.get_next_address() {
                 Ok(addr) => {
-                    table.add_route(host.clone(), service, path.clone());
+                    table.add_route(host.clone(), service, path_matcher.clone());
                     info!(
                         container_id = %container_id,
                         host = %host,
                         address = ?addr,
-                        path = ?path,
+                        path_matcher = ?path_matcher,
                         "컨테이너 시작"
                     );
                 }
@@ -96,17 +96,17 @@ async fn handle_docker_event(
             table.sync_docker_routes(routes);
             info!("라우팅 테이블 업데이트");
         }
-        DockerEvent::ContainerUpdated { container_id, old_host, new_host, service, path } => {
+        DockerEvent::ContainerUpdated { container_id, old_host, new_host, service, path_matcher } => {
             if let Some(old) = old_host {
                 table.remove_route(&old);
             }
             if let Some(host) = new_host {
                 if let Some(svc) = service {
-                    table.add_route(host.clone(), svc, path.clone());
+                    table.add_route(host.clone(), svc, path_matcher.clone());
                     info!(
                         container_id = %container_id,
                         host = %host,
-                        path = ?path,
+                        path_matcher = ?path_matcher,
                         "컨테이너 설정 변경"
                     );
                 }
