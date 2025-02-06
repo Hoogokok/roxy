@@ -1,4 +1,4 @@
-use reverse_proxy_traefik::routing::{HostInfo, RoutingTable, BackendService, RoutingError};
+use reverse_proxy_traefik::routing::{BackendService, HostInfo, PathMatcher, RoutingError, RoutingTable};
 use std::net::SocketAddr;
 use hyper::{Request, Method};
 use http_body_util::Empty;
@@ -81,7 +81,7 @@ fn test_routing_table_multiple_hosts() {
     let backends = vec![
         ("example.com", "127.0.0.1:8080", None),
         ("test.com", "127.0.0.1:8081", None),
-        ("api.example.com", "127.0.0.1:8082", Some("/api".to_string())),
+        ("api.example.com", "127.0.0.1:8082", Some(PathMatcher::from_str("/api").unwrap())),
     ];
 
     for (host, addr, path) in backends.clone() {
@@ -97,7 +97,7 @@ fn test_routing_table_multiple_hosts() {
         let host_info = HostInfo {
             name: host.to_string(),
             port: None,
-            path,
+            path: path.map(|p| p.pattern.clone()),
         };
         let backend = table.find_backend(&host_info).expect("Backend not found");
         assert_eq!(
@@ -115,31 +115,37 @@ fn test_routing_table_path_based() {
     table.add_route(
         "example.com".to_string(),
         BackendService::new("127.0.0.1:8080".parse().unwrap()),
-        Some("/api".to_string()),
+        Some(PathMatcher::from_str("/api").unwrap()),
     );
     table.add_route(
         "example.com".to_string(),
         BackendService::new("127.0.0.1:8081".parse().unwrap()),
-        Some("/web".to_string()),
+        Some(PathMatcher::from_str("/web").unwrap()),
     );
 
     // API 경로 테스트
-    let api_info = HostInfo {
+    let host_info = HostInfo {
         name: "example.com".to_string(),
         port: None,
         path: Some("/api".to_string()),
     };
-    let api_backend = table.find_backend(&api_info).unwrap();
-    assert_eq!(api_backend.get_next_address().unwrap().to_string(), "127.0.0.1:8080");
+    let backend = table.find_backend(&host_info).unwrap();
+    assert_eq!(
+        backend.get_next_address().unwrap().to_string(),
+        "127.0.0.1:8080"
+    );
 
     // 웹 경로 테스트
-    let web_info = HostInfo {
+    let host_info = HostInfo {
         name: "example.com".to_string(),
         port: None,
         path: Some("/web".to_string()),
     };
-    let web_backend = table.find_backend(&web_info).unwrap();
-    assert_eq!(web_backend.get_next_address().unwrap().to_string(), "127.0.0.1:8081");
+    let backend = table.find_backend(&host_info).unwrap();
+    assert_eq!(
+        backend.get_next_address().unwrap().to_string(),
+        "127.0.0.1:8081"
+    );
 }
 
 #[test]
@@ -157,7 +163,7 @@ fn test_routing_table_load_balancing() {
         table.add_route(
             "example.com".to_string(),
             BackendService::new(addr.parse().unwrap()),
-            Some("/api".to_string()),
+            Some(PathMatcher::from_str("/api").unwrap()),
         );
     }
 
@@ -317,20 +323,32 @@ fn test_routing_table_remove_route() {
 fn test_routing_table_path_matching() {
     let mut table = RoutingTable::new();
     
-    // /api 경로에 대한 라우트 추가
+    // PathPrefix 매칭 사용
     table.add_route(
         "example.com".to_string(),
         BackendService::new("127.0.0.1:8080".parse().unwrap()),
-        Some("/api".to_string()),
+        Some(PathMatcher::from_str("/api*").unwrap()),  // PathPrefix 사용
     );
 
-    // 매칭되는 경로 테스트
-    let host_info = HostInfo {
-        name: "example.com".to_string(),
-        port: None,
-        path: Some("/api/users".to_string()),
-    };
-    assert!(table.find_backend(&host_info).is_ok());
+    // 매칭되는 경로들 테스트
+    let test_paths = vec![
+        "/api",      // 기본 경로
+        "/api/",     // trailing slash
+        "/api/users" // 하위 경로
+    ];
+
+    for path in test_paths {
+        let host_info = HostInfo {
+            name: "example.com".to_string(),
+            port: None,
+            path: Some(path.to_string()),
+        };
+        assert!(
+            table.find_backend(&host_info).is_ok(),
+            "경로 매칭 실패: {}", 
+            path
+        );
+    }
 
     // 매칭되지 않는 경로 테스트
     let host_info = HostInfo {
@@ -340,7 +358,7 @@ fn test_routing_table_path_matching() {
     };
     assert!(matches!(
         table.find_backend(&host_info).unwrap_err(),
-        RoutingError::BackendNotFound { host, available_routes: _ }
+        RoutingError::BackendNotFound { host, .. }
         if host == "example.com"
     ));
 }
@@ -351,7 +369,7 @@ fn test_routing_table_round_robin() {
     
     // 동일한 호스트에 대해 여러 백엔드 추가
     let host = "example.com".to_string();
-    let path = None;
+    let default_matcher = PathMatcher::from_str("/").unwrap();
     let backends = vec![
         "127.0.0.1:8080",
         "127.0.0.1:8081",
@@ -367,7 +385,7 @@ fn test_routing_table_round_robin() {
     }
 
     // 라운드 로빈 검증
-    let backend = table.routes.get(&(host, path)).unwrap();
+    let backend = table.routes.get(&(host, default_matcher)).unwrap();
     assert_eq!(backend.addresses.len(), 3, "모든 백엔드 주소가 병합되어야 함");
 
     // 여러 번 요청해서 라운드 로빈 확인
@@ -383,11 +401,11 @@ fn test_routing_table_round_robin() {
 fn test_path_prefix_matching() {
     let mut table = RoutingTable::new();
     
-    // API 서버 설정
+    // API 서버 설정 - PathPrefix 사용
     table.add_route(
         "test.localhost".to_string(),
         BackendService::new("127.0.0.1:8080".parse().unwrap()),
-        Some("/api".to_string()),
+        Some(PathMatcher::from_str("/api*").unwrap()),  // PathPrefix 표시를 위해 * 사용
     );
 
     // 다양한 경로 테스트
@@ -405,5 +423,60 @@ fn test_path_prefix_matching() {
             path: Some(path.to_string()),
         };
         assert!(table.find_backend(&host_info).is_ok(), "Failed to match path: {}", path);
+    }
+}
+
+#[test]
+fn test_path_matcher_creation() {
+    let test_cases = vec![
+        // (패턴, 매칭 성공 여부)
+        ("/api", true),
+        ("/api/*", true),
+        ("^/api/.*", true),
+        ("^[invalid", false),  // 잘못된 정규식
+    ];
+
+    for (pattern, should_succeed) in test_cases {
+        let result = PathMatcher::from_str(pattern);
+        assert_eq!(
+            result.is_ok(), 
+            should_succeed,
+            "패턴: {}, 결과: {:?}", 
+            pattern, 
+            result
+        );
+    }
+}
+
+#[test]
+fn test_path_matcher_matching() {
+    let test_cases = vec![
+        // (패턴, 경로, 예상 결과)
+        // Path 매칭 (Exact)
+        ("/api", "/api", true),
+        ("/api", "/api/", false),     // trailing slash는 다른 경로
+        ("/api", "/api/users", false), // 하위 경로는 매칭되지 않음
+        
+        // PathPrefix 매칭
+        ("/api*", "/api", true),      // 기본 경로 매칭
+        ("/api*", "/api/", true),     // trailing slash 매칭
+        ("/api*", "/api/users", true), // 하위 경로 매칭
+        ("/api*", "/apis", false),    // 다른 경로는 매칭되지 않음
+        
+        // PathRegexp 매칭
+        ("^/api/.*", "/api/users", true),
+        ("^/api/.*", "/api/", true),
+        ("^/api/.*", "/web/api", false),
+    ];
+
+    for (pattern, path, expected) in test_cases {
+        let matcher = PathMatcher::from_str(pattern).unwrap();
+        assert_eq!(
+            matcher.matches(path), 
+            expected,
+            "패턴: {}, 경로: {}", 
+            pattern, 
+            path
+        );
     }
 }

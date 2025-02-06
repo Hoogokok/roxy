@@ -1,5 +1,5 @@
 use bollard::models::ContainerSummary;
-use crate::routing::BackendService;
+use crate::routing::{BackendService, PathMatcher};
 use crate::docker::DockerError;
 use std::net::SocketAddr;
 
@@ -9,6 +9,7 @@ pub struct ContainerInfo {
     pub host: String,
     pub ip: String,
     pub port: u16,
+    pub path_matcher: Option<PathMatcher>,
 }
 
 // 순수 함수들의 모음
@@ -71,6 +72,20 @@ impl  DefaultExtractor {
             label_prefix,
         }
     }
+
+    fn extract_path_matcher(&self, labels: &Option<std::collections::HashMap<String, String>>) -> Option<PathMatcher> {
+        let labels = labels.as_ref()?;
+        let path = labels.get(&format!("{}path", self.label_prefix))?;
+        
+        // 경로 패턴 타입 확인
+        let pattern = match labels.get(&format!("{}path.type", self.label_prefix)).map(String::as_str) {
+            Some("regex") => format!("^{}", path),
+            Some("prefix") => format!("{}*", path),
+            _ => path.to_string(),
+        };
+
+        PathMatcher::from_str(&pattern).ok()
+    }
 }
 
 impl ContainerInfoExtractor for DefaultExtractor {
@@ -100,6 +115,7 @@ impl ContainerInfoExtractor for DefaultExtractor {
             host,
             ip: ip.clone(),
             port,
+            path_matcher: self.extract_path_matcher(labels),
         })
     }
 

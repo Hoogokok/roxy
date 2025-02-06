@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use tracing::warn;
 use crate::routing::BackendService;
 use crate::docker::DockerError;
+use crate::routing::PathMatcher;
 
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
@@ -63,7 +64,7 @@ pub struct ContainerRoutesRetry<'a> {
 
 #[async_trait]
 impl<'a> Retryable for ContainerRoutesRetry<'a> {
-    type Output = HashMap<(String, Option<String>), BackendService>;
+    type Output = HashMap<(String, PathMatcher), BackendService>;
     type Error = DockerError;
 
     async fn execute(&self) -> Result<Self::Output, Self::Error> {
@@ -85,5 +86,5 @@ impl<'a> Retryable for ContainerRoutesRetry<'a> {
             3
         );
     }
-} 
+}
 

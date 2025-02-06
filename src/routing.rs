@@ -9,7 +9,8 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use hyper::header;
 use std::fmt;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
+use regex_lite as regex;
 
 /// 호스트 정보를 담는 불변 데이터 구조입니다.
 /// 
@@ -26,7 +27,7 @@ pub struct HostInfo {
 }
 
 /// 라우팅 관련 에러를 표현하는 열거형입니다.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum RoutingError {
     /// 유효하지 않은 호스트 이름
     InvalidHost {
@@ -50,6 +51,11 @@ pub enum RoutingError {
         header_name: String,
         error: String,
     },
+    /// 잘못된 경로 패턴
+    InvalidPathPattern {
+        pattern: String,
+        reason: String,
+    },
 }
 
 impl fmt::Display for RoutingError {
@@ -65,6 +71,8 @@ impl fmt::Display for RoutingError {
                 write!(f, "호스트 {}에 대한 백엔드를 찾을 수 없음 (사용 가능한 라우트: {:?})", host, available_routes),
             RoutingError::HeaderParseError { header_name, error } => 
                 write!(f, "{} 헤더 파싱 실패: {}", header_name, error),
+            RoutingError::InvalidPathPattern { pattern, reason } => 
+                write!(f, "잘못된 경로 패턴: {} ({})", pattern, reason),
         }
     }
 }
@@ -212,8 +220,8 @@ impl BackendService {
 /// 라우팅 테이블을 관리하는 구조체입니다.
 #[derive(Clone)]
 pub struct RoutingTable {
-    // (host, path)를 키로 사용하여 여러 path 지원
-    pub routes: HashMap<(String, Option<String>), BackendService>,
+    // (host, PathMatcher)를 키로 사용
+    pub routes: HashMap<(String, PathMatcher), BackendService>,
 }
 
 impl RoutingTable {
@@ -230,38 +238,17 @@ impl RoutingTable {
     }
 
     /// 라우팅 테이블에 새로운 라우트를 추가합니다.
-    pub fn add_route(&mut self, host: String, service: BackendService, path: Option<String>) {
-        let key = (host, path);
+    pub fn add_route(&mut self, host: String, service: BackendService, path_matcher: Option<PathMatcher>) {
+        let matcher = path_matcher.unwrap_or_else(|| PathMatcher::from_str("/").unwrap());
+        let key = (host, matcher);
         match self.routes.get_mut(&key) {
             Some(existing_service) => {
-                // 기존 서비스가 있으면 주소들을 병합
                 existing_service.addresses.extend(service.addresses);
             }
             None => {
-                // 새로운 서비스 추가
                 self.routes.insert(key, service);
             }
         }
-    }
-
-    /// 주어진 호스트에 대한 백엔드 서비스를 찾습니다.
-    /// 
-    /// # 인자
-    /// 
-    /// * `host` - 찾을 호스트 이름
-    /// 
-    /// # 반환
-    /// 
-    /// 성공 시 `BackendService`에 대한 참조를 포함한 `Ok`를 반환하고,
-    /// 실패 시 `BackendNotFound` 에러를 포함한 `Err`를 반환합니다.
-    pub fn get_backend(&self, host: &str) -> Result<&BackendService, RoutingError> {
-        let key = (host.to_string(), None);
-        self.routes.get(&key).ok_or_else(|| RoutingError::BackendNotFound {
-            host: host.to_string(),
-            available_routes: self.routes.keys()
-                .map(|(host, path)| format!("{}:{:?}", host, path))
-                .collect(),
-        })
     }
 
     /// HTTP 요청에서 호스트 정보를 추출하고 해당하는 백엔드 서비스를 찾습니다.
@@ -316,53 +303,103 @@ impl RoutingTable {
 
     /// 호스트 정보를 기반으로 백엔드 서비스를 찾습니다.
     pub fn find_backend(&self, host_info: &HostInfo) -> Result<&BackendService, RoutingError> {
-        // 요청 경로에서 후행 슬래시 제거
-        let request_path = host_info.path.as_ref()
-            .map(|p| p.trim_end_matches('/'))
-            .filter(|p| !p.is_empty());  // 빈 경로는 None으로 처리
+        let request_path = host_info.path.as_deref().unwrap_or("/");
 
-        // 먼저 정확한 매칭 시도
-        if let Some(backend) = self.routes.get(&(host_info.name.clone(), request_path.map(String::from))) {
-            debug!(
-                host = %host_info.name,
-                path = ?request_path,
-                "정확한 경로 매칭 성공"
-            );
-            return Ok(backend);
-        }
-
-        // prefix 매칭 시도
-        if let Some(request_path) = request_path {
-            let matched_backend = self.routes.iter()
-                .find(|((host, route_path), _)| {
-                    if host != &host_info.name {
-                        return false;
-                    }
-                    route_path.as_ref()
-                        .map(|p| {
-                            let p = p.trim_end_matches('/');
-                            request_path == p || request_path.starts_with(&format!("{}/", p))
-                        })
-                        .unwrap_or(false)
-                })
-                .map(|(_, backend)| backend);
-
-            if let Some(backend) = matched_backend {
-                debug!(
-                    host = %host_info.name,
-                    path = %request_path,
-                    "prefix 매칭 성공"
-                );
+        // 모든 라우트를 순회하면서 매칭 확인
+        for ((host, matcher), backend) in &self.routes {
+            if host == &host_info.name && matcher.matches(request_path) {
                 return Ok(backend);
             }
         }
 
-        // 경로가 없는 기본 라우트 시도
-        self.get_backend(&host_info.name)
+        // 매칭되는 라우트를 찾지 못한 경우
+        Err(RoutingError::BackendNotFound {
+            host: host_info.name.clone(),
+            available_routes: self.routes.keys()
+                .map(|(host, matcher)| format!("{}:{:?}", host, matcher))
+                .collect(),
+        })
     }
 
     /// Docker 컨테이너로부터 라우팅 규칙을 업데이트합니다.
-    pub fn sync_docker_routes(&mut self, routes: HashMap<(String, Option<String>), BackendService>) {
+    pub fn sync_docker_routes(&mut self, routes: HashMap<(String, PathMatcher), BackendService>) {
         self.routes = routes;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PathMatcherKind {
+    Exact,
+    Prefix,
+    Regex,
+}
+
+#[derive(Debug, Clone)]
+pub struct PathMatcher {
+    kind: PathMatcherKind,
+    pub pattern: String,
+    regex: Option<regex::Regex>,
+}
+
+impl PathMatcher {
+    pub fn from_str(pattern: &str) -> Result<Self, RoutingError> {
+        if pattern.starts_with("^") {
+            // 정규식 매칭
+            let re = regex::Regex::new(pattern)
+                .map_err(|e| RoutingError::InvalidPathPattern {
+                    pattern: pattern.to_string(),
+                    reason: e.to_string(),
+                })?;
+            Ok(PathMatcher {
+                kind: PathMatcherKind::Regex,
+                pattern: pattern.to_string(),
+                regex: Some(re),
+            })
+        } else {
+            // '*' 패턴을 제거하고 모두 Prefix로 처리
+            Ok(PathMatcher {
+                kind: if pattern.ends_with("*") {
+                    PathMatcherKind::Prefix
+                } else {
+                    PathMatcherKind::Exact
+                },
+                pattern: pattern.trim_end_matches('*').to_string(),
+                regex: None,
+            })
+        }
+    }
+
+    pub fn matches(&self, path: &str) -> bool {
+        if self.pattern == "/" {
+            return true;
+        }
+
+        match self.kind {
+            PathMatcherKind::Exact => self.pattern == path,
+            PathMatcherKind::Prefix => {
+                // Traefik 스타일: 접두사 매칭에서는 trailing slash 무시
+                let pattern = self.pattern.trim_end_matches('/');
+                let path = path.trim_end_matches('/');
+                path == pattern || path.starts_with(&format!("{}/", pattern))
+            },
+            PathMatcherKind::Regex => self.regex.as_ref()
+                .map(|r| r.is_match(path))
+                .unwrap_or(false),
+        }
+    }
+}
+
+impl PartialEq for PathMatcher {
+    fn eq(&self, other: &Self) -> bool {
+        self.kind == other.kind && self.pattern == other.pattern
+    }
+}
+
+impl Eq for PathMatcher {}
+
+impl std::hash::Hash for PathMatcher {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.kind.hash(state);
+        self.pattern.hash(state);
     }
 } 
