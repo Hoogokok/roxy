@@ -13,7 +13,7 @@ use tokio::net::TcpListener;
 use http_body_util::Full;
 use hyper::body::{Bytes, Incoming};
 use std::sync::Arc;
-use routing::{RouteRule, RoutingTable};
+use routing::RoutingTable;
 use docker::{DockerManager, DockerEvent};
 use config::Config;
 use crate::logging::init_logging;
