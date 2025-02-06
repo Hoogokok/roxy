@@ -1,4 +1,4 @@
-use reverse_proxy_traefik::routing::{HostInfo, RoutingTable, BackendService, RoutingError};
+use reverse_proxy_traefik::routing::{BackendService, HostInfo, PathMatcher, RoutingError, RoutingTable};
 use std::net::SocketAddr;
 use hyper::{Request, Method};
 use http_body_util::Empty;
@@ -405,5 +405,48 @@ fn test_path_prefix_matching() {
             path: Some(path.to_string()),
         };
         assert!(table.find_backend(&host_info).is_ok(), "Failed to match path: {}", path);
+    }
+}
+
+#[test]
+fn test_path_matcher_creation() {
+    let test_cases = vec![
+        // (입력, 예상 결과)
+        ("/api", Ok(PathMatcher::Exact("/api".to_string()))),
+        ("/api/*", Ok(PathMatcher::Prefix("/api/".to_string()))),
+        ("^/api/.*", Ok(PathMatcher::Regex("^/api/.*".to_string()))),
+        // 특수 케이스
+        ("", Ok(PathMatcher::Exact("".to_string()))),
+        ("*", Ok(PathMatcher::Prefix("".to_string()))),
+    ];
+
+    for (input, expected) in test_cases {
+        let result = PathMatcher::from_str(input);
+        assert_eq!(result, expected, "입력: {}", input);
+    }
+}
+
+#[test]
+fn test_path_matcher_matching() {
+    let test_cases = vec![
+        // (매처, 테스트 경로, 예상 결과)
+        (PathMatcher::Exact("/api".to_string()), "/api", true),
+        (PathMatcher::Exact("/api".to_string()), "/api/", false),
+        (PathMatcher::Exact("/api".to_string()), "/api/users", false),
+        
+        (PathMatcher::Prefix("/api/".to_string()), "/api", false),
+        (PathMatcher::Prefix("/api/".to_string()), "/api/", true),
+        (PathMatcher::Prefix("/api/".to_string()), "/api/users", true),
+        
+        // 정규식은 아직 구현되지 않았으므로 항상 false 반환
+        (PathMatcher::Regex("^/api/.*".to_string()), "/api/users", false),
+    ];
+
+    for (matcher, path, expected) in test_cases {
+        assert_eq!(
+            matcher.matches(path), 
+            expected,
+            "매처: {:?}, 경로: {}", matcher, path
+        );
     }
 }
