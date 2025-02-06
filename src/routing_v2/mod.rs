@@ -4,8 +4,10 @@ mod error;
 mod host;
 mod backend;
 mod matcher;
+mod table;
 
 pub use error::{RoutingError, BackendError};
 pub use host::HostInfo;
 pub use backend::BackendService;
-pub use matcher::{PathMatcher, PathMatcherKind}; 
+pub use matcher::{PathMatcher, PathMatcherKind};
+pub use table::RoutingTable; 
