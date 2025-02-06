@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::routing::{BackendService, RouteRule};
+use crate::routing::BackendService;
 use crate::docker::DockerError; // DockerError가 정의된 경로에 맞게 수정하세요.
 
 #[derive(Debug)]
@@ -27,5 +27,5 @@ pub enum DockerEvent {
     /// 에러 상황
     Error(DockerError),
     /// 라우팅 테이블 업데이트
-    RoutesUpdated(HashMap<String, RouteRule>),
+    RoutesUpdated( HashMap<(String, Option<String>), BackendService>),
 }

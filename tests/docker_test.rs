@@ -148,7 +148,7 @@ async fn test_container_routes() {
 
     let routes = manager.get_container_routes().await.unwrap();
     assert_eq!(routes.len(), 1);
-    assert!(routes.contains_key("test.localhost"));
+    assert!(routes.contains_key(&("test.localhost".to_string(), None)));
 }
 
 #[tokio::test]
@@ -215,4 +215,75 @@ async fn test_container_routes_with_missing_network() {
 
     let routes = manager.get_container_routes().await.unwrap();
     assert_eq!(routes.len(), 0);  // 네트워크 정보가 없으므로 라우트가 없어야 함
+}
+
+#[tokio::test]
+async fn test_path_based_routing() {
+    let config = Config::new_for_test();
+    let containers = vec![
+        ContainerSummary {
+            id: Some("api-container".to_string()),
+            labels: Some({
+                let mut labels = HashMap::new();
+                labels.insert("reverse-proxy.host".to_string(), "test.localhost".to_string());
+                labels.insert("reverse-proxy.path".to_string(), "/api".to_string());
+                labels
+            }),
+            network_settings: Some(ContainerSummaryNetworkSettings {
+                networks: Some(HashMap::from([(
+                    "reverse-proxy-network".to_string(),
+                    EndpointSettings {
+                        ip_address: Some("172.17.0.2".to_string()),
+                        ..Default::default()
+                    },
+                )])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ContainerSummary {
+            id: Some("web-container".to_string()),
+            labels: Some({
+                let mut labels = HashMap::new();
+                labels.insert("reverse-proxy.host".to_string(), "test.localhost".to_string());
+                labels.insert("reverse-proxy.path".to_string(), "/web".to_string());
+                labels
+            }),
+            network_settings: Some(ContainerSummaryNetworkSettings {
+                networks: Some(HashMap::from([(
+                    "reverse-proxy-network".to_string(),
+                    EndpointSettings {
+                        ip_address: Some("172.17.0.3".to_string()),
+                        ..Default::default()
+                    },
+                )])),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+    ];
+
+    let client = MockDockerClient {
+        containers: Arc::new(Mutex::new(containers)),
+    };
+    let extractor = MockExtractor::new("reverse-proxy-network".to_string(), "reverse-proxy.".to_string());
+
+    let manager = DockerManager::new(
+        Box::new(client),
+        Box::new(extractor),
+        config,
+    ).await;
+
+    let routes = manager.get_container_routes().await.unwrap();
+    
+    // 라우트 검증
+    assert_eq!(routes.len(), 2);
+    
+    // API 경로 검증
+    let api_backend = routes.get(&("test.localhost".to_string(), Some("/api".to_string()))).unwrap();
+    assert_eq!(api_backend.get_next_address().unwrap().to_string(), "172.17.0.2:80");
+    
+    // 웹 경로 검증
+    let web_backend = routes.get(&("test.localhost".to_string(), Some("/web".to_string()))).unwrap();
+    assert_eq!(web_backend.get_next_address().unwrap().to_string(), "172.17.0.3:80");
 } 
