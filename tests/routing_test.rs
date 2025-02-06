@@ -377,4 +377,33 @@ fn test_routing_table_round_robin() {
         seen_addresses.insert(addr);
     }
     assert_eq!(seen_addresses.len(), 3, "모든 백엔드가 순환되어야 함");
-} 
+}
+
+#[test]
+fn test_path_prefix_matching() {
+    let mut table = RoutingTable::new();
+    
+    // API 서버 설정
+    table.add_route(
+        "test.localhost".to_string(),
+        BackendService::new("127.0.0.1:8080".parse().unwrap()),
+        Some("/api".to_string()),
+    );
+
+    // 다양한 경로 테스트
+    let test_paths = vec![
+        "/api",
+        "/api/",
+        "/api/users",
+        "/api/users/123",
+    ];
+
+    for path in test_paths {
+        let host_info = HostInfo {
+            name: "test.localhost".to_string(),
+            port: None,
+            path: Some(path.to_string()),
+        };
+        assert!(table.find_backend(&host_info).is_ok(), "Failed to match path: {}", path);
+    }
+}
