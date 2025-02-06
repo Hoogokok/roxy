@@ -26,7 +26,7 @@ pub struct HostInfo {
 }
 
 /// 라우팅 관련 에러를 표현하는 열거형입니다.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum RoutingError {
     /// 유효하지 않은 호스트 이름
     InvalidHost {
@@ -50,6 +50,11 @@ pub enum RoutingError {
         header_name: String,
         error: String,
     },
+    /// 잘못된 경로 패턴
+    InvalidPathPattern {
+        pattern: String,
+        reason: String,
+    },
 }
 
 impl fmt::Display for RoutingError {
@@ -65,6 +70,8 @@ impl fmt::Display for RoutingError {
                 write!(f, "호스트 {}에 대한 백엔드를 찾을 수 없음 (사용 가능한 라우트: {:?})", host, available_routes),
             RoutingError::HeaderParseError { header_name, error } => 
                 write!(f, "{} 헤더 파싱 실패: {}", header_name, error),
+            RoutingError::InvalidPathPattern { pattern, reason } => 
+                write!(f, "잘못된 경로 패턴: {} ({})", pattern, reason),
         }
     }
 }
@@ -364,5 +371,42 @@ impl RoutingTable {
     /// Docker 컨테이너로부터 라우팅 규칙을 업데이트합니다.
     pub fn sync_docker_routes(&mut self, routes: HashMap<(String, Option<String>), BackendService>) {
         self.routes = routes;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum PathMatcher {
+    Exact(String),    // 정확한 경로 매칭 (예: "/api")
+    Prefix(String),   // 접두사 매칭 (예: "/api/*")
+    Regex(String),    // 정규식 매칭 (예: "^/api/.*")
+}
+
+impl PathMatcher {
+    /// 문자열로부터 PathMatcher를 생성합니다.
+    /// 
+    /// # 예시
+    /// ```
+    /// "/api" -> Exact("/api")
+    /// "/api/*" -> Prefix("/api/")
+    /// "^/api/.*" -> Regex("^/api/.*")
+    /// ```
+    pub fn from_str(pattern: &str) -> Result<Self, RoutingError> {
+        if pattern.starts_with("^") {
+            Ok(PathMatcher::Regex(pattern.to_string()))
+        } else if pattern.ends_with("*") {
+            let prefix = pattern.trim_end_matches('*').to_string();
+            Ok(PathMatcher::Prefix(prefix))
+        } else {
+            Ok(PathMatcher::Exact(pattern.to_string()))
+        }
+    }
+
+    /// 주어진 경로가 이 매처와 일치하는지 확인합니다.
+    pub fn matches(&self, path: &str) -> bool {
+        match self {
+            Self::Exact(p) => p == path,
+            Self::Prefix(p) => path.starts_with(p),
+            Self::Regex(_) => false, // 정규식 지원은 나중에 구현
+        }
     }
 } 
