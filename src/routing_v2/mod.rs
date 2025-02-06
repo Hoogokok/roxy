@@ -2,6 +2,8 @@
 
 mod error;
 mod host;
+mod backend;
 
 pub use error::{RoutingError, BackendError};
-pub use host::HostInfo; 
+pub use host::HostInfo;
+pub use backend::BackendService; 
