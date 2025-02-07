@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use crate::routing::{BackendService, RouteRule};
-use crate::docker::DockerError; // DockerError가 정의된 경로에 맞게 수정하세요.
+use crate::docker::DockerError;
+use crate::routing_v2::{BackendService, PathMatcher};
 
 #[derive(Debug)]
 pub enum DockerEvent {
@@ -9,7 +9,7 @@ pub enum DockerEvent {
         container_id: String,
         host: String,
         service: BackendService,
-        path: Option<String>,
+        path_matcher: Option<PathMatcher>,
     },
     /// 컨테이너 중지
     ContainerStopped {
@@ -22,10 +22,10 @@ pub enum DockerEvent {
         old_host: Option<String>,
         new_host: Option<String>,
         service: Option<BackendService>,
-        path: Option<String>,
+        path_matcher: Option<PathMatcher>,
     },
     /// 에러 상황
     Error(DockerError),
     /// 라우팅 테이블 업데이트
-    RoutesUpdated(HashMap<String, RouteRule>),
+    RoutesUpdated(HashMap<(String, PathMatcher), BackendService>),
 }

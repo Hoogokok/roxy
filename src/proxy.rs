@@ -5,7 +5,7 @@ use hyper_util::client::legacy;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 use crate::logging::{RequestLog, log_request};
-use crate::routing::BackendService;
+use crate::routing_v2::BackendService;
 use uuid::Uuid;
 use tracing::{info, error, instrument, Level};
 

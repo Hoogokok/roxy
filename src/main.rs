@@ -1,9 +1,9 @@
-mod routing;
 mod docker;
 mod proxy;
 mod config;
 mod logging;
 mod tls;
+mod routing_v2;
 
 use std::convert::Infallible;
 use hyper::{Request, Response, StatusCode};
@@ -13,7 +13,6 @@ use tokio::net::TcpListener;
 use http_body_util::Full;
 use hyper::body::{Bytes, Incoming};
 use std::sync::Arc;
-use routing::{RouteRule, RoutingTable};
 use docker::{DockerManager, DockerEvent};
 use config::Config;
 use crate::logging::init_logging;
@@ -21,6 +20,7 @@ use tracing::{error, info, warn};
 use proxy::ProxyConfig;
 use hyper_util::rt::TokioIo;
 use crate::tls::TlsConfig;
+use routing_v2::{RoutingTable, RoutingError};
 
 async fn handle_request(
     routing_table: Arc<tokio::sync::RwLock<RoutingTable>>,
@@ -42,11 +42,12 @@ async fn handle_request(
         Err(e) => {
             error!(error = %e, "라우팅 실패");
             let status = match e {
-                routing::RoutingError::MissingHost | 
-                routing::RoutingError::InvalidHost { .. } | 
-                routing::RoutingError::InvalidPort { .. } | 
-                routing::RoutingError::HeaderParseError { .. } => StatusCode::BAD_REQUEST,
-                routing::RoutingError::BackendNotFound { .. } => StatusCode::NOT_FOUND,
+               RoutingError::MissingHost | 
+               RoutingError::InvalidHost { .. } | 
+                RoutingError::InvalidPort { .. } | 
+                RoutingError::HeaderParseError { .. } => StatusCode::BAD_REQUEST,
+                RoutingError::BackendNotFound { .. } => StatusCode::NOT_FOUND,
+                RoutingError::InvalidPathPattern { .. } => StatusCode::NOT_FOUND,
             };
             
             Ok(Response::builder()
@@ -65,15 +66,15 @@ async fn handle_docker_event(
     table: &mut tokio::sync::RwLockWriteGuard<'_, RoutingTable>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match event {
-        DockerEvent::ContainerStarted { container_id, host, service, path } => {
+        DockerEvent::ContainerStarted { container_id, host, service, path_matcher } => {
             match service.get_next_address() {
                 Ok(addr) => {
-                    table.add_route(host.clone(), service, path.clone());
+                    table.add_route(host.clone(), service, path_matcher.clone());
                     info!(
                         container_id = %container_id,
                         host = %host,
                         address = ?addr,
-                        path = ?path,
+                        path_matcher = ?path_matcher,
                         "컨테이너 시작"
                     );
                 }
@@ -95,17 +96,17 @@ async fn handle_docker_event(
             table.sync_docker_routes(routes);
             info!("라우팅 테이블 업데이트");
         }
-        DockerEvent::ContainerUpdated { container_id, old_host, new_host, service, path } => {
+        DockerEvent::ContainerUpdated { container_id, old_host, new_host, service, path_matcher } => {
             if let Some(old) = old_host {
                 table.remove_route(&old);
             }
             if let Some(host) = new_host {
                 if let Some(svc) = service {
-                    table.add_route(host.clone(), svc, path.clone());
+                    table.add_route(host.clone(), svc, path_matcher.clone());
                     info!(
                         container_id = %container_id,
                         host = %host,
-                        path = ?path,
+                        path_matcher = ?path_matcher,
                         "컨테이너 설정 변경"
                     );
                 }
