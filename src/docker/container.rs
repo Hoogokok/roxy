@@ -1,6 +1,5 @@
 use bollard::models::ContainerSummary;
-use crate::routing::{BackendService, PathMatcher};
-use crate::docker::DockerError;
+use crate::{docker::DockerError, routing_v2::{BackendService, PathMatcher}};
 use std::net::SocketAddr;
 
 // 불변 데이터 구조
