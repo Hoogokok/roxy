@@ -93,11 +93,11 @@ mod tests {
     fn test_parse_docker_labels() {
         let mut labels = HashMap::new();
         labels.insert(
-            "rproxy.middleware.my-headers.type".to_string(),
+            "rproxy.http.middlewares.my-headers.type".to_string(),
             "headers".to_string(),
         );
         labels.insert(
-            "rproxy.middleware.my-headers.headers.customResponseHeaders.X-Custom-Header".to_string(),
+            "rproxy.http.middlewares.my-headers.headers.customResponseHeaders.X-Custom-Header".to_string(),
             "value".to_string(),
         );
 
@@ -115,20 +115,20 @@ mod tests {
     #[test]
     fn test_parse_toml_config() {
         let toml_str = r#"
-            [middlewares.my-headers]
-            middleware_type = "headers"
+            [middlewares.cors]
+            middleware_type = "cors"
             enabled = true
             order = 1
             
-            [middlewares.my-headers.settings]
-            "headers.customResponseHeaders.X-Custom-Header" = "value"
+            [middlewares.cors.settings]
+            headers.customResponseHeaders.X-Custom-Header = "value"
         "#;
 
         let configs = MiddlewareConfig::from_toml(toml_str).unwrap();
         assert_eq!(configs.len(), 1);
         
-        let config = configs.get("my-headers").unwrap();
-        assert_eq!(config.middleware_type, "headers");
+        let config = configs.get("cors").unwrap();
+        assert_eq!(config.middleware_type, "cors");
         assert!(config.enabled);
         assert_eq!(config.order, 1);
         assert!(config.settings.contains_key("headers.customResponseHeaders.X-Custom-Header"));
