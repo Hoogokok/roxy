@@ -2,15 +2,14 @@ use bollard::secret::{ContainerSummaryNetworkSettings, EndpointSettings};
 use reverse_proxy_traefik::docker::container::ContainerInfo;
 use reverse_proxy_traefik::docker::{DockerManager, DockerError, DockerClient, ContainerInfoExtractor};
 use reverse_proxy_traefik::config::Config;
-use reverse_proxy_traefik::routing::BackendService;
 use bollard::container::ListContainersOptions;
 use bollard::models::{ContainerSummary, EventMessage};
 use futures_util::Stream;
+use reverse_proxy_traefik::routing_v2::{BackendService, PathMatcher};
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::collections::HashMap;
-use reverse_proxy_traefik::routing::PathMatcher;
 
 // Mock Docker Client
 #[derive(Clone)]
