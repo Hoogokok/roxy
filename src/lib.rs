@@ -9,7 +9,7 @@
 //! # 예제
 //! 
 //! ```
-//! use reverse_proxy_traefik::routing::{RoutingTable, BackendService, PathMatcher};
+//! use reverse_proxy_traefik::routing_v2::{RoutingTable, BackendService, PathMatcher};
 //! use std::net::SocketAddr;
 //! 
 //! let mut table = RoutingTable::new();
@@ -29,7 +29,7 @@
 //! # 로드 밸런싱
 //! 
 //! ```
-//! use reverse_proxy_traefik::routing::{RoutingTable, BackendService};
+//! use reverse_proxy_traefik::routing_v2::{RoutingTable, BackendService};
 //! use std::net::SocketAddr;
 //! 
 //! let mut table = RoutingTable::new();
@@ -48,7 +48,7 @@
 //! # Path 기반 라우팅
 //! 
 //! ```
-//! use reverse_proxy_traefik::routing::{RoutingTable, BackendService, PathMatcher};
+//! use reverse_proxy_traefik::routing_v2::{RoutingTable, BackendService, PathMatcher};
 //! use std::net::SocketAddr;
 //! 
 //! let mut table = RoutingTable::new();
@@ -61,7 +61,6 @@
 
 pub mod config;
 pub mod logging;
-pub mod routing;
 pub mod proxy;
 pub mod tls;
 pub mod docker;
