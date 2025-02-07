@@ -5,6 +5,9 @@ use std::env;
 use std::fs;
 use std::path::Path;
 use tracing::Level;
+use std::collections::HashMap;
+use serde_json;
+use crate::middleware::MiddlewareConfig;
 
 #[derive(Debug, Clone, Deserialize)]
 pub enum LogFormat {
@@ -64,6 +67,10 @@ pub struct Config {
     // 로깅 설정 추가
     #[serde(default)]
     pub logging: LogConfig,
+
+    /// 미들웨어 설정
+    #[serde(default)]
+    pub middlewares: HashMap<String, MiddlewareConfig>,
 }
 
 #[derive(Debug)]
@@ -163,6 +170,9 @@ impl Config {
             
             // 로깅 설정 추가
             logging: LogConfig::default(),
+
+            /// 미들웨어 설정
+            middlewares: HashMap::new(), // 환경 변수에서는 기본값으로 빈 맵 사용
         })
     }
 
@@ -237,6 +247,39 @@ impl Config {
                 self.logging.output = LogOutput::File(output);
             }
         }
+
+        // 미들웨어 환경 변수 처리
+        // RPROXY_MIDDLEWARE_<NAME>_<KEY>=<VALUE> 형식 지원
+        let middleware_prefix = "RPROXY_MIDDLEWARE_";
+        for (key, value) in env::vars() {
+            if let Some(rest) = key.strip_prefix(middleware_prefix) {
+                let parts: Vec<&str> = rest.split('_').collect();
+                if parts.len() >= 2 {
+                    let name = parts[0].to_lowercase();
+                    let config = self.middlewares.entry(name).or_insert_with(|| MiddlewareConfig {
+                        middleware_type: "unknown".to_string(),
+                        enabled: true,
+                        order: 0,
+                        settings: HashMap::new(),
+                    });
+
+                    match parts[1] {
+                        "TYPE" => config.middleware_type = value,
+                        "ENABLED" => config.enabled = value.to_lowercase() == "true",
+                        "ORDER" => if let Ok(order) = value.parse() {
+                            config.order = order;
+                        },
+                        _ => {
+                            let setting_key = parts[1..].join("_").to_lowercase();
+                            config.settings.insert(
+                                setting_key,
+                                serde_json::Value::String(value),
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     pub fn load() -> Result<Self, ConfigError> {
@@ -246,7 +289,17 @@ impl Config {
             Self::from_env()?
         };
 
-        // TOML에서 로드한 경우에만 환경 변수로 덮어쓰기
+        // Docker 라벨에서 미들웨어 설정 로드
+        if let Ok(labels) = env::var("DOCKER_LABELS") {
+            if let Ok(labels_map) = serde_json::from_str::<HashMap<String, String>>(&labels) {
+                let middleware_configs = MiddlewareConfig::from_labels(&labels_map);
+                for (name, middleware_config) in middleware_configs {
+                    config.middlewares.insert(name, middleware_config);
+                }
+            }
+        }
+
+        // 환경 변수로 설정 오버라이드
         if env::var("PROXY_CONFIG_FILE").is_ok() {
             config.apply_env_overrides();
         }
@@ -264,6 +317,7 @@ impl Config {
             tls_cert_path: None,
             tls_key_path: None,
             logging: LogConfig::default(),
+            middlewares: HashMap::new(),
         }
     }
 }
