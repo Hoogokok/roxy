@@ -1,18 +1,40 @@
+use std::fmt;
 
-#[derive(Debug, thiserror::Error)]
+use super::BoxError;
+
+#[derive(Debug)]
 pub enum MiddlewareError {
-    #[error("설정 오류: {0}")]
-    Config(String),
-
-    #[error("처리 오류: {0}")]
-    Processing(String),
-
-    #[error("미들웨어 {middleware} 실행 실패: {message}")]
-    Execution {
+    /// 미들웨어 설정 오류
+    Config {
         middleware: String,
         message: String,
     },
-
-    #[error(transparent)]
-    Hyper(#[from] hyper::Error),
+    /// 미들웨어 실행 중 오류
+    Runtime {
+        middleware: String,
+        message: String,
+        source: Option<BoxError>,
+    },
 }
+
+impl fmt::Display for MiddlewareError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Config { middleware, message } => {
+                write!(f, "미들웨어 {} 설정 오류: {}", middleware, message)
+            }
+            Self::Runtime { middleware, message, .. } => {
+                write!(f, "미들웨어 {} 실행 오류: {}", middleware, message)
+            }
+        }
+    }
+}
+
+impl std::error::Error for MiddlewareError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Runtime { source: Some(err), .. } => Some(err.as_ref()),
+            _ => None,
+        }
+    }
+} 
