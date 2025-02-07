@@ -160,3 +160,64 @@ networks:
 
 MIT License
 
+## 미들웨어 프레임워크
+
+HTTP 요청/응답을 처리하는 미들웨어 체인을 지원합니다.
+
+### 미들웨어 설정
+
+미들웨어는 Docker 라벨이나 TOML 파일을 통해 설정할 수 있습니다.
+
+#### Docker 라벨 설정
+```
+# 기본 설정
+rproxy.http.middlewares.cors.type=cors
+rproxy.http.middlewares.cors.enabled=true
+rproxy.http.middlewares.cors.order=1
+
+# CORS 설정
+rproxy.http.middlewares.cors.headers.access-control-allow-origin=*
+rproxy.http.middlewares.cors.headers.access-control-allow-methods=GET,POST,PUT,DELETE
+```
+
+#### TOML 설정
+```toml
+[middlewares.cors]
+middleware_type = "cors"
+enabled = true
+order = 1
+
+[middlewares.cors.settings]
+"headers.access-control-allow-origin" = "*"
+"headers.access-control-allow-methods" = "GET,POST,PUT,DELETE"
+```
+
+### 미들웨어 구현
+
+커스텀 미들웨어 구현 예시:
+```rust
+use async_trait::async_trait;
+use crate::middleware::{Middleware, Request, Response, MiddlewareError};
+
+pub struct MyMiddleware {
+    name: String,
+}
+
+#[async_trait]
+impl Middleware for MyMiddleware {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn handle_request(&self, req: Request) -> Result<Request, MiddlewareError> {
+        // 요청 처리 로직
+        Ok(req)
+    }
+
+    async fn handle_response(&self, res: Response) -> Result<Response, MiddlewareError> {
+        // 응답 처리 로직
+        Ok(res)
+    }
+}
+```
+

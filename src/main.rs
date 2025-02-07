@@ -4,6 +4,7 @@ mod config;
 mod logging;
 mod tls;
 mod routing_v2;
+mod middleware;
 
 use std::convert::Infallible;
 use hyper::{Request, Response, StatusCode};
