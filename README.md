@@ -1,11 +1,15 @@
 # Rust Reverse Proxy with Docker Integration
 
-Docker 컨테이너를 위한 동적 리버스 프록시 서버입니다. 호스트 기반 라우팅을 지원하며, Docker 이벤트를 모니터링하여 백엔드 서비스를 자동으로 관리합니다.
+Docker 컨테이너를 위한 동적 리버스 프록시 서버입니다. 호스트 및 경로 기반 라우팅을 지원하며, Docker 이벤트를 모니터링하여 백엔드 서비스를 자동으로 관리합니다.
 
 ## 주요 기능
 
-### 호스트 기반 라우팅
+### 호스트 및 경로 기반 라우팅
 - HTTP Host 헤더를 기반으로 요청을 적절한 백엔드 서비스로 라우팅
+- 다양한 경로 매칭 방식 지원:
+  - 정확한 경로 매칭 (예: `/api`)
+  - 프리픽스 매칭 (예: `/api/*`)
+  - 정규식 매칭 (예: `^/api/v[0-9]+/.*`)
 - 동일한 호스트에 대해 여러 백엔드 서버 지원 (라운드 로빈 방식)
 - HTTP 및 HTTPS 프로토콜 지원
 
@@ -57,12 +61,17 @@ output = "stdout"  # "stdout" 또는 파일 경로 (예: "proxy.log")
 
 - `reverse-proxy.host`: 서비스의 호스트 이름 (필수)
 - `reverse-proxy.port`: 서비스의 포트 번호 (선택, 기본값: 80)
+- `reverse-proxy.path`: 서비스의 경로 패턴 (선택, 기본값: "/")
+  - 정확한 경로: `/api`
+  - 프리픽스: `/api/*`
+  - 정규식: `^/api/v[0-9]+/.*`
 
 예시:
 ```yaml
 labels:
   reverse-proxy.host: "api.example.com"
   reverse-proxy.port: "3000"
+  reverse-proxy.path: "/api/*"  # /api로 시작하는 모든 요청을 이 서비스로 라우팅
 ```
 
 ## 실행 방법
