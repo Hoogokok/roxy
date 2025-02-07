@@ -16,7 +16,6 @@ pub struct MiddlewareConfig {
     pub order: i32,
     
     /// 미들웨어별 설정
-    #[serde(flatten)]
     pub settings: HashMap<String, serde_json::Value>,
 }
 
@@ -121,7 +120,7 @@ mod tests {
             order = 1
             
             [middlewares.cors.settings]
-            headers.customResponseHeaders.X-Custom-Header = "value"
+            "headers.customResponseHeaders.X-Custom-Header" = "value"
         "#;
 
         let configs = MiddlewareConfig::from_toml(toml_str).unwrap();
