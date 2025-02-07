@@ -1,11 +1,9 @@
 use async_trait::async_trait;
 use tokio::time::{sleep, Duration};
-use crate::docker::DockerManager;
+use crate::{docker::DockerManager, routing_v2::{BackendService, PathMatcher}};
 use std::collections::HashMap;
 use tracing::warn;
-use crate::routing::BackendService;
 use crate::docker::DockerError;
-use crate::routing::PathMatcher;
 
 #[derive(Debug, Clone)]
 pub struct RetryPolicy {
