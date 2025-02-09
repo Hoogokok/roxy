@@ -13,6 +13,7 @@ use hyper::service::service_fn;
 use tokio::net::TcpListener;
 use http_body_util::Full;
 use hyper::body::{Bytes, Incoming};
+use tokio::sync::RwLock;
 use std::sync::Arc;
 use docker::{DockerManager, DockerEvent};
 use config::Config;
@@ -24,7 +25,7 @@ use crate::tls::TlsConfig;
 use routing_v2::{RoutingTable, RoutingError};
 
 async fn handle_request(
-    routing_table: Arc<tokio::sync::RwLock<RoutingTable>>,
+    routing_table: Arc<RwLock<RoutingTable>>,
     req: Request<Incoming>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
     let table = routing_table.read().await;
