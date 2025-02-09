@@ -6,6 +6,7 @@ mod chain;
 mod config;
 mod error;
 mod traits;
+pub mod headers;
 
 pub use chain::MiddlewareChain;
 pub use config::MiddlewareConfig;
