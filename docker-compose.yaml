@@ -8,7 +8,7 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/run/docker.sock:/var/run/docker.sock:rw
       - cargo-cache:/usr/local/cargo/registry
       - target-cache:/app/target
       - ./certs:/app/certs:ro
@@ -21,9 +21,13 @@ services:
       - TLS_CERT_PATH=/app/certs/cert.pem
       - TLS_KEY_PATH=/app/certs/key.pem
       - HTTPS_PORT=443
+    user: root
     restart: "no"
     networks:
       - reverse-proxy-network
+    depends_on:
+      - api
+      - web
 
   # API 서비스
   api:
@@ -32,8 +36,8 @@ services:
     expose:
       - "80"
     labels:
-      - "rproxy.http.services.api.loadbalancer.server.port=80"
       - "rproxy.http.routers.api.rule=Host(`test.localhost`) && PathPrefix(`/api`)"
+      - "rproxy.http.services.api.loadbalancer.server.port=80"
       - "rproxy.http.middlewares.api-headers.headers.request.add.X-Request-ID=123"
       - "rproxy.http.middlewares.api-headers.headers.response.add.X-Custom-Header=value"
       - "rproxy.http.middlewares.api-headers.headers.response.remove=Server"
@@ -41,7 +45,7 @@ services:
       - reverse-proxy-network
     volumes:
       - ./test/api:/usr/share/nginx/html
-      - ./nginx/api.conf:/etc/nginx/conf.d/default.conf  # nginx 설정 추가
+      - ./nginx/api.conf:/etc/nginx/conf.d/default.conf
 
   # 웹 서비스
   web:
@@ -58,7 +62,7 @@ services:
       - reverse-proxy-network
     volumes:
       - ./test/web:/usr/share/nginx/html
-      - ./nginx/web.conf:/etc/nginx/conf.d/default.conf  # nginx 설정 추가
+      - ./nginx/web.conf:/etc/nginx/conf.d/default.conf
 
 # 테스트를 위한 네트워크 설정
 networks:
