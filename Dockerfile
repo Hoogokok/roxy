@@ -1,3 +1,4 @@
+
 # 빌드 스테이지
 FROM rust:latest AS builder
 
@@ -18,13 +19,17 @@ RUN apt-get update && \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# proxy 사용자 및 그룹 생성
-RUN groupadd -r proxy && \
-    useradd -r -g proxy -s /sbin/nologin -c "Proxy user" proxy
+# proxy 그룹과 사용자를 조건부로 생성합니다.
+RUN if ! getent group proxy > /dev/null 2>&1; then \
+      groupadd -r proxy; \
+    fi && \
+    if ! getent passwd proxy > /dev/null 2>&1; then \
+      useradd -r -g proxy -s /sbin/nologin -c "Proxy user" proxy; \
+    fi
 
-# 필요한 디렉토리 생성 및 권한 설정
-RUN mkdir -p /var/run/proxy /app/certs && \
-    chown -R proxy:proxy /var/run/proxy /app
+# Docker 소켓 접근을 위한 설정
+RUN mkdir -p /var/run/proxy /app/certs /var/run/docker && \
+    chown -R proxy:proxy /var/run/proxy /app /var/run/docker
 
 # 실행 파일 복사 및 권한 설정
 COPY --from=builder /usr/src/app/target/release/reverse_proxy_traefik /app/
@@ -33,6 +38,7 @@ RUN chown proxy:proxy /app/reverse_proxy_traefik && \
 
 # 작업 디렉토리 설정
 WORKDIR /app
+
 
 # proxy 사용자로 전환
 USER proxy
