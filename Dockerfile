@@ -10,19 +10,33 @@ COPY . .
 RUN cargo build --release
 
 # 실행 스테이지
-FROM debian:bookworm-slim  
-# 기본 설정
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/* && \
-    mkdir -p /var/run && \
-    chown -R proxy:proxy /var/run
+FROM debian:bookworm-slim
 
+# 시스템 업데이트 및 필요한 패키지 설치
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# proxy 사용자 및 그룹 생성
+RUN groupadd -r proxy && \
+    useradd -r -g proxy -s /sbin/nologin -c "Proxy user" proxy
+
+# 필요한 디렉토리 생성 및 권한 설정
+RUN mkdir -p /var/run/proxy /app/certs && \
+    chown -R proxy:proxy /var/run/proxy /app
+
+# 실행 파일 복사 및 권한 설정
+COPY --from=builder /usr/src/app/target/release/reverse_proxy_traefik /app/
+RUN chown proxy:proxy /app/reverse_proxy_traefik && \
+    chmod 500 /app/reverse_proxy_traefik
+
+# 작업 디렉토리 설정
+WORKDIR /app
+
+# proxy 사용자로 전환
 USER proxy
 
-# 빌드된 바이너리 복사
-COPY --from=builder /usr/src/app/target/release/reverse_proxy_traefik /usr/local/bin/
+EXPOSE 80 443
 
-EXPOSE 80
-
-CMD ["reverse_proxy_traefik"]
+CMD ["/app/reverse_proxy_traefik"]
