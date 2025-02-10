@@ -14,6 +14,6 @@ pub use error::MiddlewareError;
 pub use traits::Middleware;
 
 // 재사용 가능한 타입 별칭
-pub type Request = hyper::Request<hyper::body::Incoming>;
-pub type Response = hyper::Response<http_body_util::Full<bytes::Bytes>>;
+pub type Request<B = hyper::body::Incoming> = hyper::Request<B>;
+pub type Response<B = http_body_util::Full<bytes::Bytes>> = hyper::Response<B>;
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
