@@ -33,9 +33,11 @@ services:
     expose:
       - "80"
     labels:
-      - "reverse-proxy.host=test.localhost"
-      - "reverse-proxy.port=80"
-      - "reverse-proxy.path=/api"  # API 경로 설정
+      - "rproxy.http.services.api.loadbalancer.server.port=80"
+      - "rproxy.http.routers.api.rule=Host(`test.localhost`) && PathPrefix(`/api`)"
+      - "rproxy.http.middlewares.api-headers.headers.request.add.X-Request-ID=123"
+      - "rproxy.http.middlewares.api-headers.headers.response.add.X-Custom-Header=value"
+      - "rproxy.http.middlewares.api-headers.headers.response.remove=Server"
     networks:
       - reverse-proxy-network
     volumes:
@@ -49,9 +51,10 @@ services:
     expose:
       - "80"
     labels:
-      - "reverse-proxy.host=test.localhost"
-      - "reverse-proxy.port=80"
-      - "reverse-proxy.path=/web"  # 웹 경로 설정
+      - "rproxy.http.services.web.loadbalancer.server.port=80"
+      - "rproxy.http.routers.web.rule=Host(`test.localhost`) && PathPrefix(`/web`)"
+      - "rproxy.http.middlewares.web-headers.headers.request.add.X-Real-IP=true"
+      - "rproxy.http.middlewares.web-headers.headers.response.set.Content-Security-Policy=default-src 'self'"
     networks:
       - reverse-proxy-network
     volumes:
