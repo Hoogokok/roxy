@@ -11,20 +11,23 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock:rw
       - cargo-cache:/usr/local/cargo/registry
       - target-cache:/app/target
-      - ./certs:/certs
+      - ./certs:/app/certs:ro
     environment:
       - PROXY_DOCKER_NETWORK=reverse-proxy-network
       - HTTP_PORT=80
       - HTTPS_ENABLED=true
       - DOCKER_HOST=unix:///var/run/docker.sock
       - PROXY_VERBOSE=true
-      - TLS_CERT_PATH=/certs/cert.pem
-      - TLS_KEY_PATH=/certs/key.pem
+      - TLS_CERT_PATH=/app/certs/cert.pem
+      - TLS_KEY_PATH=/app/certs/key.pem
       - HTTPS_PORT=443
-    restart: "no"
     user: root
+    restart: "no"
     networks:
       - reverse-proxy-network
+    depends_on:
+      - api
+      - web
 
   # API 서비스
   api:
@@ -33,14 +36,16 @@ services:
     expose:
       - "80"
     labels:
-      - "reverse-proxy.host=test.localhost"
-      - "reverse-proxy.port=80"
-      - "reverse-proxy.path=/api"  # API 경로 설정
+      - "rproxy.http.routers.api.rule=Host(`test.localhost`) && PathPrefix(`/api`)"
+      - "rproxy.http.services.api.loadbalancer.server.port=80"
+      - "rproxy.http.middlewares.api-headers.headers.request.add.X-Request-ID=123"
+      - "rproxy.http.middlewares.api-headers.headers.response.add.X-Custom-Header=value"
+      - "rproxy.http.middlewares.api-headers.headers.response.remove=Server"
     networks:
       - reverse-proxy-network
     volumes:
       - ./test/api:/usr/share/nginx/html
-      - ./nginx/api.conf:/etc/nginx/conf.d/default.conf  # nginx 설정 추가
+      - ./nginx/api.conf:/etc/nginx/conf.d/default.conf
 
   # 웹 서비스
   web:
@@ -49,14 +54,15 @@ services:
     expose:
       - "80"
     labels:
-      - "reverse-proxy.host=test.localhost"
-      - "reverse-proxy.port=80"
-      - "reverse-proxy.path=/web"  # 웹 경로 설정
+      - "rproxy.http.services.web.loadbalancer.server.port=80"
+      - "rproxy.http.routers.web.rule=Host(`test.localhost`) && PathPrefix(`/web`)"
+      - "rproxy.http.middlewares.web-headers.headers.request.add.X-Real-IP=true"
+      - "rproxy.http.middlewares.web-headers.headers.response.set.Content-Security-Policy=default-src 'self'"
     networks:
       - reverse-proxy-network
     volumes:
       - ./test/web:/usr/share/nginx/html
-      - ./nginx/web.conf:/etc/nginx/conf.d/default.conf  # nginx 설정 추가
+      - ./nginx/web.conf:/etc/nginx/conf.d/default.conf
 
 # 테스트를 위한 네트워크 설정
 networks:

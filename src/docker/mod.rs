@@ -86,11 +86,7 @@ impl DockerManager {
     async fn get_labeled_containers(&self) -> Result<Vec<ContainerSummary>, DockerError> {
         let options = Some(ListContainersOptions::<String> {
             all: true,
-            filters: {
-                let mut filters = HashMap::new();
-                filters.insert("label".to_string(), vec![format!("{}host", self.config.label_prefix)]);
-                filters
-            },
+            filters: HashMap::new(),  // 모든 컨테이너를 조회합니다.
             ..Default::default()
         });
 
