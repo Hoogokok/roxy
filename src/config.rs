@@ -54,11 +54,20 @@ fn default_log_output() -> LogOutput {
     LogOutput::Stdout
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct Config {
-    pub docker_network: String,
-    pub label_prefix: String,
+    /// HTTP 포트
+    #[serde(default = "default_http_port")]
     pub http_port: u16,
+
+    /// Docker 네트워크 이름
+    #[serde(default = "default_docker_network")]
+    pub docker_network: String,
+
+    /// Docker 레이블 접두사
+    #[serde(default = "default_label_prefix")]
+    pub label_prefix: String,
+
     pub https_enabled: bool,
     pub https_port: u16,
     pub tls_cert_path: Option<String>,
@@ -160,7 +169,7 @@ impl Config {
                 .unwrap_or_else(|_| "reverse-proxy-network".to_string()),
             
             label_prefix: env::var("PROXY_LABEL_PREFIX")
-                .unwrap_or_else(|_| "reverse-proxy.".to_string()),
+                .unwrap_or_else(|_| "rproxy.".to_string()),
             
             http_port,
             https_enabled,
@@ -310,7 +319,7 @@ impl Config {
     pub fn new_for_test() -> Self {
         Self {
             docker_network: "reverse-proxy-network".to_string(),
-            label_prefix: "reverse-proxy.".to_string(),
+            label_prefix: "rproxy.".to_string(),
             http_port: 8080,
             https_enabled: false,
             https_port: 443,
@@ -357,5 +366,17 @@ impl<'de> Deserialize<'de> for LogConfig {
 
 fn default_log_level_string() -> String {
     "info".to_string()
+}
+
+fn default_http_port() -> u16 {
+    8080
+}
+
+fn default_docker_network() -> String {
+    "reverse-proxy-network".to_string()
+}
+
+fn default_label_prefix() -> String {
+    "rproxy.".to_string()
 }
 
