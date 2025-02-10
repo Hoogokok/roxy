@@ -34,22 +34,61 @@ pub struct DefaultExtractor {
 impl  DefaultExtractor {
     // 순수 함수들
     fn extract_host(&self, labels: &Option<std::collections::HashMap<String, String>>) -> Result<String, DockerError> {
-        labels
-            .as_ref()
-            .and_then(|l| l.get(&format!("{}host", self.label_prefix)))
-            .map(String::from)
+        let router_rule = self.find_router_rule(labels)?;
+        self.parse_host_from_rule(router_rule)
             .ok_or_else(|| DockerError::ContainerConfigError {
                 container_id: "unknown".to_string(),
-                reason: "host label missing".to_string(),
+                reason: "host rule missing or invalid".to_string(),
                 context: None,
             })
+    }
+
+    fn find_router_rule<'a>(&self, labels: &'a Option<std::collections::HashMap<String, String>>) -> Result<&'a String, DockerError> {
+        labels
+            .as_ref()
+            .and_then(|l| l.iter()
+                .find(|(k, _)| k.starts_with(&format!("{}http.routers.", self.label_prefix)) && k.ends_with(".rule"))
+                .map(|(_, v)| v))
+            .ok_or_else(|| DockerError::ContainerConfigError {
+                container_id: "unknown".to_string(),
+                reason: "router rule not found".to_string(),
+                context: None,
+            })
+    }
+
+    fn parse_host_from_rule(&self, rule: &str) -> Option<String> {
+        let host_pattern = "Host(`";
+        rule.find(host_pattern)
+            .map(|start| start + host_pattern.len())
+            .and_then(|start| {
+                rule[start..].find('`')
+                    .map(|end| rule[start..start+end].to_string())
+            })
+    }
+
+    fn extract_path_matcher(&self, labels: &Option<std::collections::HashMap<String, String>>) -> Option<PathMatcher> {
+        let rule = self.find_router_rule(labels).ok()?;
+        self.parse_path_prefix(rule)
+            .or_else(|| Some(PathMatcher::from_str("/").unwrap()))
+    }
+
+    fn parse_path_prefix(&self, rule: &str) -> Option<PathMatcher> {
+        let prefix_pattern = "PathPrefix(`";
+        rule.find(prefix_pattern)
+            .map(|start| start + prefix_pattern.len())
+            .and_then(|start| {
+                rule[start..].find('`')
+                    .map(|end| &rule[start..start+end])
+            })
+            .and_then(|path| PathMatcher::from_str(&format!("{}*", path)).ok())
     }
 
     fn extract_port(&self, labels: &Option<std::collections::HashMap<String, String>>) -> u16 {
         labels
             .as_ref()
-            .and_then(|l| l.get(&format!("{}port", self.label_prefix)))
-            .and_then(|p| p.parse().ok())
+            .and_then(|l| l.iter()
+                .find(|(k, _)| k.contains(".loadbalancer.server.port"))
+                .and_then(|(_, v)| v.parse().ok()))
             .unwrap_or(80)
     }
 
@@ -70,20 +109,6 @@ impl  DefaultExtractor {
             network_name,
             label_prefix,
         }
-    }
-
-    fn extract_path_matcher(&self, labels: &Option<std::collections::HashMap<String, String>>) -> Option<PathMatcher> {
-        let labels = labels.as_ref()?;
-        let path = labels.get(&format!("{}path", self.label_prefix))?;
-        
-        // 경로 패턴 타입 확인
-        let pattern = match labels.get(&format!("{}path.type", self.label_prefix)).map(String::as_str) {
-            Some("regex") => format!("^{}", path),
-            Some("prefix") => format!("{}*", path),
-            _ => path.to_string(),
-        };
-
-        PathMatcher::from_str(&pattern).ok()
     }
 }
 
