@@ -6,4 +6,5 @@ mod config;
 mod middleware;
 
 pub use config::HeadersConfig;
-pub use middleware::HeadersMiddleware; 
+pub use middleware::HeadersMiddleware;
+pub use config::HeaderModification;
