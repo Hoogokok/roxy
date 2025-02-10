@@ -8,21 +8,20 @@ services:
       - "80:80"
       - "443:443"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:rw
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - cargo-cache:/usr/local/cargo/registry
       - target-cache:/app/target
-      - ./certs:/certs
+      - ./certs:/app/certs:ro
     environment:
       - PROXY_DOCKER_NETWORK=reverse-proxy-network
       - HTTP_PORT=80
       - HTTPS_ENABLED=true
       - DOCKER_HOST=unix:///var/run/docker.sock
       - PROXY_VERBOSE=true
-      - TLS_CERT_PATH=/certs/cert.pem
-      - TLS_KEY_PATH=/certs/key.pem
+      - TLS_CERT_PATH=/app/certs/cert.pem
+      - TLS_KEY_PATH=/app/certs/key.pem
       - HTTPS_PORT=443
     restart: "no"
-    user: root
     networks:
       - reverse-proxy-network
 
