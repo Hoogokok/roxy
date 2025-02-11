@@ -202,11 +202,6 @@ pub fn create_authenticator(config: &BasicAuthConfig) -> Result<Box<dyn Authenti
             authenticator.load_credentials()?;
             Ok(Box::new(authenticator))
         }
-        // TODO: 다른 인증 소스 구현
-        _ => Err(MiddlewareError::Config {
-            middleware: "basic-auth".to_string(),
-            message: "Unsupported auth source".to_string(),
-        }),
     }
 }
 
