@@ -221,3 +221,51 @@ impl Middleware for MyMiddleware {
 }
 ```
 
+# Basic 인증 미들웨어
+
+HTTP Basic 인증을 제공하는 미들웨어입니다.
+
+## 기능
+- Basic 인증 프로토콜 지원
+- bcrypt 해시 알고리즘 ($2a$, $2b$, $2y$)
+- 다양한 인증 소스 지원
+
+## 인증 소스
+### 1. Docker 라벨
+직접 사용자와 해시된 비밀번호를 라벨에 지정합니다.
+```yaml
+labels:
+  - "rproxy.http.middlewares.my-auth.type=basic-auth"
+  - "rproxy.http.middlewares.my-auth.basicAuth.users=admin:$2y$05$..."
+```
+
+### 2. .htpasswd 파일
+Apache 스타일의 .htpasswd 파일을 사용합니다.
+```yaml
+labels:
+  - "rproxy.http.middlewares.my-auth.basicAuth.source=htpasswd"
+  - "rproxy.http.middlewares.my-auth.basicAuth.htpasswd.path=/etc/nginx/.htpasswd"
+```
+
+### 3. 환경 변수
+환경 변수에서 사용자 정보를 로드합니다.
+```yaml
+labels:
+  - "rproxy.http.middlewares.my-auth.basicAuth.source=env"
+  - "rproxy.http.middlewares.my-auth.basicAuth.env.prefix=BASIC_AUTH_USER_"
+```
+
+### 4. Docker Secrets
+Docker secrets에서 사용자 정보를 로드합니다.
+```yaml
+labels:
+  - "rproxy.http.middlewares.my-auth.basicAuth.source=docker-secret"
+  - "rproxy.http.middlewares.my-auth.basicAuth.secret.path=/run/secrets/basic-auth"
+```
+
+## 비밀번호 해시 생성
+```bash
+# bcrypt 해시 생성
+htpasswd -nbB admin "my-password"
+```
+
