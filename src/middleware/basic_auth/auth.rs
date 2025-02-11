@@ -3,9 +3,7 @@ use crate::middleware::MiddlewareError;
 use super::config::{AuthSource, BasicAuthConfig};
 use std::fs;
 use std::env;
-use apr1_hash;
 use bcrypt;
-use rust_htpasswd::Hash;
 
 /// 인증 처리를 위한 트레이트
 pub trait Authenticator: Send + Sync {
@@ -83,9 +81,14 @@ impl Authenticator for HtpasswdAuthenticator {
 
 /// 비밀번호 검증 함수
 fn verify_password(password: &str, hash: &str) -> bool {
-    Hash::from_str(hash)
-        .map(|h| h.verify(password))
-        .unwrap_or(false)
+    if hash.starts_with("$apr1$") {
+        // TODO: APR1 해시 검증은 나중에 구현
+        false
+    } else if hash.starts_with("$2y$") || hash.starts_with("$2b$") {
+        bcrypt::verify(password, hash).unwrap_or(false)
+    } else {
+        false
+    }
 }
 
 /// 인증기 팩토리
@@ -110,14 +113,14 @@ pub fn create_authenticator(config: &BasicAuthConfig) -> Result<Box<dyn Authenti
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bcrypt::DEFAULT_COST;
 
     #[test]
     fn test_label_authenticator() {
         let mut users = HashMap::new();
-        users.insert(
-            "test".to_string(),
-            "$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/".to_string(),
-        );
+        // bcrypt 해시로 테스트
+        let hash = bcrypt::hash("test-password", DEFAULT_COST).unwrap();
+        users.insert("test".to_string(), hash);
 
         let config = BasicAuthConfig {
             users,
@@ -126,6 +129,14 @@ mod tests {
         };
 
         let authenticator = LabelAuthenticator::new(&config);
+        assert!(authenticator.verify_credentials("test", "test-password"));
         assert!(!authenticator.verify_credentials("test", "wrong-password"));
+    }
+
+    #[test]
+    fn test_bcrypt_verify() {
+        let hash = bcrypt::hash("password", DEFAULT_COST).unwrap();
+        assert!(verify_password("password", &hash));
+        assert!(!verify_password("wrong", &hash));
     }
 }
