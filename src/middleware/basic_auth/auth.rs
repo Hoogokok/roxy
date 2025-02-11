@@ -2,9 +2,7 @@ use std::collections::HashMap;
 use crate::middleware::MiddlewareError;
 use super::config::{AuthSource, BasicAuthConfig};
 use std::fs;
-use std::env;
 use bcrypt;
-
 /// 인증 처리를 위한 트레이트
 pub trait Authenticator: Send + Sync {
     /// 사용자 자격증명을 검증합니다.
@@ -56,10 +54,11 @@ impl HtpasswdAuthenticator {
 
 impl Authenticator for HtpasswdAuthenticator {
     fn verify_credentials(&self, username: &str, password: &str) -> bool {
-        self.users
-            .get(username)
-            .map(|hash| verify_password(password, hash))
-            .unwrap_or(false)
+        if let Some(hash) = self.users.get(username) {
+            verify_password(password, hash)
+        } else {
+            false
+        }
     }
 
     fn load_credentials(&mut self) -> Result<(), MiddlewareError> {
@@ -70,23 +69,24 @@ impl Authenticator for HtpasswdAuthenticator {
         })?;
 
         self.users.clear();
+        
+        // 직접 파일 파싱
         for line in content.lines() {
             if let Some((username, hash)) = line.split_once(':') {
                 self.users.insert(username.to_string(), hash.to_string());
             }
         }
+
         Ok(())
     }
 }
 
 /// 비밀번호 검증 함수
 fn verify_password(password: &str, hash: &str) -> bool {
-    if hash.starts_with("$apr1$") {
-        // TODO: APR1 해시 검증은 나중에 구현
-        false
-    } else if hash.starts_with("$2y$") || hash.starts_with("$2b$") {
+    if hash.starts_with("$2") {
         bcrypt::verify(password, hash).unwrap_or(false)
     } else {
+        // bcrypt가 아닌 해시는 지원하지 않음
         false
     }
 }
