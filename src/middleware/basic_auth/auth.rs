@@ -3,7 +3,10 @@ use crate::middleware::MiddlewareError;
 use super::config::{AuthSource, BasicAuthConfig};
 use std::fs;
 use bcrypt;
-/// 인증 처리를 위한 트레이트
+/// Basic 인증을 위한 인증기 트레이트
+/// 
+/// # 지원하는 해시 알고리즘
+/// - bcrypt ($2a$, $2b$, $2y$ 접두사)
 pub trait Authenticator: Send + Sync {
     /// 사용자 자격증명을 검증합니다.
     fn verify_credentials(&self, username: &str, password: &str) -> bool;
@@ -38,6 +41,13 @@ impl Authenticator for LabelAuthenticator {
 }
 
 /// .htpasswd 파일 기반 인증기
+/// 
+/// # 예시
+/// ```text
+/// # .htpasswd 파일 형식
+/// user1:$2y$05$c4WoMPo3SXsafkva.HHa6uXQZWr7oboPiC2bT/r7q1BB8I2s0BRqC
+/// user2:$2b$05$LgzK4lXJzxGHVoJ0KhO1E.eQE9L5.H4TD/w0Nz8cP6b/U.ik2M0FW
+/// ```
 pub struct HtpasswdAuthenticator {
     path: String,
     users: HashMap<String, String>,
