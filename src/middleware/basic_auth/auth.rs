@@ -101,6 +101,44 @@ fn verify_password(password: &str, hash: &str) -> bool {
     }
 }
 
+/// 환경 변수 기반 인증기
+pub struct EnvAuthenticator {
+    users: HashMap<String, String>,
+    env_prefix: String,
+}
+
+impl EnvAuthenticator {
+    pub fn new(prefix: String) -> Self {
+        Self {
+            users: HashMap::new(),
+            env_prefix: prefix,
+        }
+    }
+}
+
+impl Authenticator for EnvAuthenticator {
+    fn verify_credentials(&self, username: &str, password: &str) -> bool {
+        if let Some(hash) = self.users.get(username) {
+            verify_password(password, hash)
+        } else {
+            false
+        }
+    }
+
+    fn load_credentials(&mut self) -> Result<(), MiddlewareError> {
+        self.users.clear();
+        
+        // BASIC_AUTH_USER_<name>=<bcrypt_hash> 형식의 환경 변수 로드
+        for (key, value) in std::env::vars() {
+            if key.starts_with(&self.env_prefix) {
+                let username = key.trim_start_matches(&self.env_prefix);
+                self.users.insert(username.to_string(), value);
+            }
+        }
+        Ok(())
+    }
+}
+
 /// 인증기 팩토리
 pub fn create_authenticator(config: &BasicAuthConfig) -> Result<Box<dyn Authenticator>, MiddlewareError> {
     match &config.source {
@@ -109,6 +147,11 @@ pub fn create_authenticator(config: &BasicAuthConfig) -> Result<Box<dyn Authenti
         }
         AuthSource::HtpasswdFile(path) => {
             let mut authenticator = HtpasswdAuthenticator::new(path.clone());
+            authenticator.load_credentials()?;
+            Ok(Box::new(authenticator))
+        }
+        AuthSource::EnvVar (prefix) => {
+            let mut authenticator = EnvAuthenticator::new(prefix.clone());
             authenticator.load_credentials()?;
             Ok(Box::new(authenticator))
         }
@@ -174,6 +217,25 @@ mod tests {
         // 지원하지 않는 해시는 항상 false 반환
         assert!(!authenticator.verify_credentials("md5-user", "any-password"));
 
+        Ok(())
+    }
+
+    #[test]
+    fn test_env_authenticator() -> Result<(), Box<dyn std::error::Error>> {
+        // 테스트용 환경 변수 설정
+        let hash = bcrypt::hash("test-password", DEFAULT_COST)?;
+        std::env::set_var("BASIC_AUTH_USER_admin", &hash);
+
+        let mut authenticator = EnvAuthenticator::new("BASIC_AUTH_USER_".to_string());
+        authenticator.load_credentials()?;
+
+        // 검증
+        assert!(authenticator.verify_credentials("admin", "test-password"));
+        assert!(!authenticator.verify_credentials("admin", "wrong-password"));
+        assert!(!authenticator.verify_credentials("non-existent", "any-password"));
+
+        // 환경 변수 정리
+        std::env::remove_var("BASIC_AUTH_USER_admin");
         Ok(())
     }
 }
