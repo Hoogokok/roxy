@@ -114,6 +114,8 @@ pub fn create_authenticator(config: &BasicAuthConfig) -> Result<Box<dyn Authenti
 mod tests {
     use super::*;
     use bcrypt::DEFAULT_COST;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn test_label_authenticator() {
@@ -138,5 +140,30 @@ mod tests {
         let hash = bcrypt::hash("password", DEFAULT_COST).unwrap();
         assert!(verify_password("password", &hash));
         assert!(!verify_password("wrong", &hash));
+    }
+
+    #[test]
+    fn test_htpasswd_authenticator() -> Result<(), Box<dyn std::error::Error>> {
+        // 임시 .htpasswd 파일 생성
+        let mut temp_file = NamedTempFile::new()?;
+        
+        // bcrypt 해시 생성 및 파일에 쓰기
+        let hash = bcrypt::hash("test-password", DEFAULT_COST)?;
+        writeln!(temp_file, "test-user:{}", hash)?;
+        
+        // 지원하지 않는 해시 형식 추가
+        writeln!(temp_file, "md5-user:$apr1$fHxP13Ee$Gu9.3RxLfGHvw2NpjQPyX1")?;
+
+        let mut authenticator = HtpasswdAuthenticator::new(temp_file.path().to_str().unwrap().to_string());
+        authenticator.load_credentials()?;
+
+        // bcrypt 해시 검증
+        assert!(authenticator.verify_credentials("test-user", "test-password"));
+        assert!(!authenticator.verify_credentials("test-user", "wrong-password"));
+
+        // 지원하지 않는 해시는 항상 false 반환
+        assert!(!authenticator.verify_credentials("md5-user", "any-password"));
+
+        Ok(())
     }
 }
