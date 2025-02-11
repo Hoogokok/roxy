@@ -139,19 +139,66 @@ impl Authenticator for EnvAuthenticator {
     }
 }
 
+/// Docker secrets 기반 인증기
+pub struct DockerSecretsAuthenticator {
+    users: HashMap<String, String>,
+    secrets_path: String,
+}
+
+impl DockerSecretsAuthenticator {
+    pub fn new(path: String) -> Self {
+        Self {
+            users: HashMap::new(),
+            secrets_path: path,
+        }
+    }
+}
+
+impl Authenticator for DockerSecretsAuthenticator {
+    fn verify_credentials(&self, username: &str, password: &str) -> bool {
+        if let Some(hash) = self.users.get(username) {
+            verify_password(password, hash)
+        } else {
+            false
+        }
+    }
+
+    fn load_credentials(&mut self) -> Result<(), MiddlewareError> {
+        self.users.clear();
+        
+        // /run/secrets/<secret_name> 파일에서 자격증명 로드
+        let content = fs::read_to_string(&self.secrets_path).map_err(|e| MiddlewareError::Runtime {
+            middleware: "basic-auth".to_string(),
+            message: format!("Failed to read Docker secret file: {}", e),
+            source: None,
+        })?;
+
+        // username:hash 형식의 라인 파싱
+        for line in content.lines() {
+            if let Some((username, hash)) = line.split_once(':') {
+                self.users.insert(username.to_string(), hash.to_string());
+            }
+        }
+        Ok(())
+    }
+}
+
 /// 인증기 팩토리
 pub fn create_authenticator(config: &BasicAuthConfig) -> Result<Box<dyn Authenticator>, MiddlewareError> {
     match &config.source {
-        AuthSource::Labels => {
-            Ok(Box::new(LabelAuthenticator::new(config)))
-        }
+        AuthSource::Labels => Ok(Box::new(LabelAuthenticator::new(config))),
         AuthSource::HtpasswdFile(path) => {
             let mut authenticator = HtpasswdAuthenticator::new(path.clone());
             authenticator.load_credentials()?;
             Ok(Box::new(authenticator))
         }
-        AuthSource::EnvVar (prefix) => {
+        AuthSource::EnvVar(prefix) => {
             let mut authenticator = EnvAuthenticator::new(prefix.clone());
+            authenticator.load_credentials()?;
+            Ok(Box::new(authenticator))
+        }
+        AuthSource::DockerSecret(path) => {
+            let mut authenticator = DockerSecretsAuthenticator::new(path.clone());
             authenticator.load_credentials()?;
             Ok(Box::new(authenticator))
         }
@@ -236,6 +283,55 @@ mod tests {
 
         // 환경 변수 정리
         std::env::remove_var("BASIC_AUTH_USER_admin");
+        Ok(())
+    }
+
+    #[test]
+    fn test_docker_secrets_authenticator() -> Result<(), Box<dyn std::error::Error>> {
+        // 임시 secret 파일 생성
+        let mut temp_file = NamedTempFile::new()?;
+        
+        // bcrypt 해시 생성
+        let hash = bcrypt::hash("secret-password", DEFAULT_COST)?;
+        writeln!(temp_file, "admin:{}", hash)?;
+        
+        // 인증기 생성 및 테스트
+        let mut authenticator = DockerSecretsAuthenticator::new(
+            temp_file.path().to_str().unwrap().to_string()
+        );
+        authenticator.load_credentials()?;
+
+        // 정상 케이스
+        assert!(authenticator.verify_credentials("admin", "secret-password"));
+        
+        // 실패 케이스
+        assert!(!authenticator.verify_credentials("admin", "wrong-password"));
+        assert!(!authenticator.verify_credentials("non-existent", "any-password"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_docker_secrets_file_not_found() {
+        let mut authenticator = DockerSecretsAuthenticator::new(
+            "/non/existent/path".to_string()
+        );
+        assert!(authenticator.load_credentials().is_err());
+    }
+
+    #[test]
+    fn test_docker_secrets_invalid_format() -> Result<(), Box<dyn std::error::Error>> {
+        let mut temp_file = NamedTempFile::new()?;
+        writeln!(temp_file, "invalid-format-line")?;
+
+        let mut authenticator = DockerSecretsAuthenticator::new(
+            temp_file.path().to_str().unwrap().to_string()
+        );
+        authenticator.load_credentials()?;
+
+        // 잘못된 형식은 무시되어야 함
+        assert!(!authenticator.verify_credentials("invalid-format-line", "any-password"));
+
         Ok(())
     }
 }
