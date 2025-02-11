@@ -1,6 +1,7 @@
+mod auth;
 mod config;
 mod middleware;
-mod auth;
 
+pub use auth::{Authenticator, create_authenticator};
 pub use config::{BasicAuthConfig, AuthSource};
 pub use middleware::BasicAuthMiddleware;

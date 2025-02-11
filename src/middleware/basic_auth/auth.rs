@@ -3,6 +3,9 @@ use crate::middleware::MiddlewareError;
 use super::config::{AuthSource, BasicAuthConfig};
 use std::fs;
 use std::env;
+use apr1_hash;
+use bcrypt;
+use rust_htpasswd::Hash;
 
 /// 인증 처리를 위한 트레이트
 pub trait Authenticator: Send + Sync {
@@ -80,15 +83,9 @@ impl Authenticator for HtpasswdAuthenticator {
 
 /// 비밀번호 검증 함수
 fn verify_password(password: &str, hash: &str) -> bool {
-    if hash.starts_with("$apr1$") {
-        // TODO: APR1 해시 검증 구현
-        false
-    } else if hash.starts_with("$2y$") || hash.starts_with("$2b$") {
-        // TODO: bcrypt 해시 검증 구현
-        false
-    } else {
-        false
-    }
+    Hash::from_str(hash)
+        .map(|h| h.verify(password))
+        .unwrap_or(false)
 }
 
 /// 인증기 팩토리
