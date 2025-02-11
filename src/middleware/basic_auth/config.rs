@@ -2,7 +2,44 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use crate::middleware::MiddlewareError;
 
-/// Basic 인증 소스 타입
+/// Basic 인증 소스 설정
+/// 
+/// # Docker 라벨 예시
+/// 
+/// ## Labels 소스
+/// ```yaml
+/// labels:
+///   - "rproxy.http.middlewares.my-auth.type=basic-auth"
+///   - "rproxy.http.middlewares.my-auth.basicAuth.users=admin:$2y$05$..."
+///   - "rproxy.http.middlewares.my-auth.basicAuth.realm=Restricted Area"
+/// ```
+/// 
+/// ## Htpasswd 파일 소스
+/// ```yaml
+/// labels:
+///   - "rproxy.http.middlewares.my-auth.type=basic-auth"
+///   - "rproxy.http.middlewares.my-auth.basicAuth.source=htpasswd"
+///   - "rproxy.http.middlewares.my-auth.basicAuth.htpasswd.path=/etc/nginx/.htpasswd"
+///   - "rproxy.http.middlewares.my-auth.basicAuth.realm=Restricted Area"
+/// ```
+/// 
+/// ## 환경 변수 소스
+/// ```yaml
+/// labels:
+///   - "rproxy.http.middlewares.my-auth.type=basic-auth"
+///   - "rproxy.http.middlewares.my-auth.basicAuth.source=env"
+///   - "rproxy.http.middlewares.my-auth.basicAuth.env.prefix=BASIC_AUTH_USER_"
+///   - "rproxy.http.middlewares.my-auth.basicAuth.realm=Restricted Area"
+/// ```
+/// 
+/// ## Docker Secrets 소스
+/// ```yaml
+/// labels:
+///   - "rproxy.http.middlewares.my-auth.type=basic-auth"
+///   - "rproxy.http.middlewares.my-auth.basicAuth.source=docker-secret"
+///   - "rproxy.http.middlewares.my-auth.basicAuth.secret.path=/run/secrets/basic-auth"
+///   - "rproxy.http.middlewares.my-auth.basicAuth.realm=Restricted Area"
+/// ```
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum AuthSource {
