@@ -7,6 +7,7 @@ mod config;
 mod error;
 mod traits;
 pub mod headers;
+pub mod basic_auth;
 
 pub use chain::MiddlewareChain;
 pub use config::MiddlewareConfig;
