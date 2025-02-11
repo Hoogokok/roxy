@@ -5,16 +5,22 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use hyper::{header, StatusCode};
 use http_body_util::Full;
 use bytes::Bytes;
+use super::auth::Authenticator;
 
 /// Basic 인증 미들웨어
 pub struct BasicAuthMiddleware {
     name: String,
     config: BasicAuthConfig,
+    authenticator: Box<dyn Authenticator>,
 }
 
 impl BasicAuthMiddleware {
-    pub fn new(name: String, config: BasicAuthConfig) -> Self {
-        Self { name, config }
+    pub fn new(name: String, config: BasicAuthConfig, authenticator: Box<dyn Authenticator>) -> Self {
+        Self { 
+            name, 
+            config,
+            authenticator,
+        }
     }
 
     /// Authorization 헤더에서 자격증명을 추출합니다.
@@ -50,14 +56,6 @@ impl BasicAuthMiddleware {
             .body(Full::new(Bytes::from("Unauthorized")))
             .unwrap()
     }
-
-    /// 자격증명을 검증합니다.
-    fn verify_credentials(&self, username: &str, password: &str) -> bool {
-        self.config.users
-            .get(username)
-            .map(|hash| hash == password)
-            .unwrap_or(false)
-    }
 }
 
 #[async_trait]
@@ -70,8 +68,8 @@ impl Middleware for BasicAuthMiddleware {
         // 자격증명 추출
         match self.extract_credentials(&req) {
             Some((username, password)) => {
-                // 자격증명 검증
-                if self.verify_credentials(&username, &password) {
+                // 변경: 인증기를 통한 검증
+                if self.authenticator.verify_credentials(&username, &password) {
                     Ok(req)
                 } else {
                     Err(MiddlewareError::Runtime {
@@ -103,6 +101,8 @@ impl Middleware for BasicAuthMiddleware {
 
 #[cfg(test)]
 mod tests {
+    use crate::middleware::basic_auth::create_authenticator;
+
     use super::*;
     use std::collections::HashMap;
 
@@ -119,7 +119,8 @@ mod tests {
             ..Default::default()
         };
 
-        BasicAuthMiddleware::new("test-auth".to_string(), config)
+        let authenticator = create_authenticator(&config).unwrap();
+        BasicAuthMiddleware::new("test-auth".to_string(), config, authenticator)
     }
 
     #[tokio::test]
