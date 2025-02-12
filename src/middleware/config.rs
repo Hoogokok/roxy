@@ -28,7 +28,7 @@ pub struct MiddlewareConfig {
 }
 
 fn default_enabled() -> bool {
-    true
+    false
 }
 
 impl MiddlewareConfig {
