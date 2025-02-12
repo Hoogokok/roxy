@@ -6,12 +6,10 @@ use super::BoxError;
 pub enum MiddlewareError {
     /// 미들웨어 설정 오류
     Config {
-        middleware: String,
         message: String,
     },
     /// 미들웨어 실행 중 오류
     Runtime {
-        middleware: String,
         message: String,
         source: Option<BoxError>,
     },
@@ -20,11 +18,11 @@ pub enum MiddlewareError {
 impl fmt::Display for MiddlewareError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Config { middleware, message } => {
-                write!(f, "미들웨어 {} 설정 오류: {}", middleware, message)
+            Self::Config { message } => {
+                write!(f, "설정 오류: {}", message)
             }
-            Self::Runtime { middleware, message, .. } => {
-                write!(f, "미들웨어 {} 실행 오류: {}", middleware, message)
+            Self::Runtime { message, .. } => {
+                write!(f, "실행 오류: {}", message)
             }
         }
     }
@@ -35,6 +33,14 @@ impl std::error::Error for MiddlewareError {
         match self {
             Self::Runtime { source: Some(err), .. } => Some(err.as_ref()),
             _ => None,
+        }
+    }
+}
+
+impl From<serde_json::Error> for MiddlewareError {
+    fn from(err: serde_json::Error) -> Self {
+        MiddlewareError::Config {
+            message: err.to_string(),
         }
     }
 } 

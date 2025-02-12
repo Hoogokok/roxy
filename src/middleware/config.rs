@@ -2,10 +2,18 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// 미들웨어 설정을 위한 공통 인터페이스
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum MiddlewareType {
+    BasicAuth,
+    Headers,
+    // 추후 추가될 미들웨어 타입들...
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MiddlewareConfig {
-    /// 미들웨어 타입 (예: "headers", "basicAuth", "cors" 등)
-    pub middleware_type: String,
+    /// 미들웨어 타입
+    pub middleware_type: MiddlewareType,
     
     /// 미들웨어 활성화 여부
     #[serde(default = "default_enabled")]
@@ -27,11 +35,7 @@ impl MiddlewareConfig {
     /// Docker 라벨에서 미들웨어 설정을 파싱합니다.
     pub fn from_labels(labels: &HashMap<String, String>) -> Vec<(String, Self)> {
         let mut configs = Vec::new();
-        
-        // rproxy.http.middlewares.<name>.<type>... 형식의 라벨 파싱
         let prefix = "rproxy.http.middlewares.";
-        
-        // 미들웨어 이름별로 설정 그룹화
         let mut middleware_groups: HashMap<String, HashMap<String, String>> = HashMap::new();
         
         for (key, value) in labels {
@@ -49,11 +53,16 @@ impl MiddlewareConfig {
             }
         }
 
-        // 그룹화된 설정을 MiddlewareConfig로 변환
         for (name, settings) in middleware_groups {
-            if let Some(middleware_type) = settings.get("type") {
+            if let Some(type_str) = settings.get("type") {
+                let middleware_type = match type_str.as_str() {
+                    "basic-auth" => MiddlewareType::BasicAuth,
+                    "headers" => MiddlewareType::Headers,
+                    _ => continue,
+                };
+
                 let config = MiddlewareConfig {
-                    middleware_type: middleware_type.clone(),
+                    middleware_type,
                     enabled: settings.get("enabled")
                         .map(|v| v.to_lowercase() == "true")
                         .unwrap_or(true),
@@ -105,7 +114,7 @@ mod tests {
         
         let (name, config) = &configs[0];
         assert_eq!(name, "my-headers");
-        assert_eq!(config.middleware_type, "headers");
+        assert_eq!(config.middleware_type, MiddlewareType::Headers);
         assert!(config.enabled);
         assert_eq!(config.order, 0);
         assert!(config.settings.contains_key("headers.customResponseHeaders.X-Custom-Header"));
@@ -127,7 +136,7 @@ mod tests {
         assert_eq!(configs.len(), 1);
         
         let config = configs.get("cors").unwrap();
-        assert_eq!(config.middleware_type, "cors");
+        assert_eq!(config.middleware_type, MiddlewareType::Headers);
         assert!(config.enabled);
         assert_eq!(config.order, 1);
         assert!(config.settings.contains_key("headers.customResponseHeaders.X-Custom-Header"));

@@ -1,4 +1,4 @@
-use reverse_proxy_traefik::middleware::{headers::HeadersConfig, MiddlewareConfig};
+use reverse_proxy_traefik::middleware::{headers::HeadersConfig, MiddlewareConfig, MiddlewareType};
 use std::collections::HashMap;
 
 #[test]
@@ -18,7 +18,7 @@ fn test_middleware_config_from_labels() {
     
     let (name, config) = &configs[0];
     assert_eq!(name, "my-headers");
-    assert_eq!(config.middleware_type, "headers");
+    assert_eq!(config.middleware_type, MiddlewareType::Headers);
     assert!(config.enabled);
     assert_eq!(config.order, 0);
     assert!(config.settings.contains_key("headers.customResponseHeaders.X-Custom-Header"));

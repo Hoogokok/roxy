@@ -23,11 +23,23 @@ use proxy::ProxyConfig;
 use hyper_util::rt::TokioIo;
 use crate::tls::TlsConfig;
 use routing_v2::{RoutingTable, RoutingError};
+use middleware::{handle_middleware_error, MiddlewareManager};
 
 async fn handle_request(
     routing_table: Arc<RwLock<RoutingTable>>,
+    config: Arc<Config>,
     req: Request<Incoming>,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
+    // 미들웨어 매니저 생성
+    let middleware_manager = MiddlewareManager::new(&config);
+
+    // 미들웨어 체인 실행
+    let req = match middleware_manager.handle_request(req).await {
+        Ok(req) => req,
+        Err(e) => return Ok(handle_middleware_error(e)),
+    };
+
+    // 기존 라우팅 로직...
     let table = routing_table.read().await;
     let proxy_config = ProxyConfig::new();
     
@@ -122,12 +134,22 @@ async fn handle_docker_event(
     Ok(())
 }
 
-async fn handle_connection<I>(io: I, routing_table: Arc<tokio::sync::RwLock<RoutingTable>>)
+async fn handle_connection<I>(
+    io: I, 
+    routing_table: Arc<RwLock<RoutingTable>>,
+    config: Arc<Config>,
+)
 where
     I: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
 {
     if let Err(err) = http1::Builder::new()
-        .serve_connection(io, service_fn(move |req| handle_request(routing_table.clone(), req)))
+        .serve_connection(io, service_fn(move |req| {
+            handle_request(
+                routing_table.clone(),
+                config.clone(),
+                req
+            )
+        }))
         .await 
     {
         error!(error = %err, "연결 처리 실패");
@@ -136,14 +158,14 @@ where
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 설정을 먼저 로드
-    let config = Config::load()
+    // 설정을 먼저 로드하고 바로 Arc로 감싸기
+    let config = Arc::new(Config::load()
         .map_err(|e| {
-            eprintln!("설정 로드 실패: {}", e);  // 로깅 초기화 전이므로 eprintln! 사용
+            eprintln!("설정 로드 실패: {}", e);
             e
-        })?;
+        })?);
     
-    // 로깅 초기화
+    // 로깅 초기화 (Arc 내부의 Config 참조)
     init_logging(&config.logging)
         .map_err(|e| {
             eprintln!("로깅 초기화 실패: {}", e);
@@ -152,7 +174,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     info!(http_port = config.http_port, "서버 시작");
     
-    let docker_manager = DockerManager::with_defaults(config.clone())
+    // Docker 매니저는 Config 소유권이 필요하므로 내부값만 clone
+    let docker_manager = DockerManager::with_defaults((*config).clone())
         .await
         .map_err(|e| {
             error!(error = %e, "Docker 매니저 초기화 실패");
@@ -203,16 +226,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
+
     loop {
         tokio::select! {
             result = http_listener.accept() => {
                 match result {
                     Ok((stream, addr)) => {
-                        info!(client_addr = %addr, "HTTP 클라이언트 연결 수락");
                         let routing_table = routing_table.clone();
-                        let io = TokioIo::new(stream);
+                        let config = config.clone();  // Arc clone
                         tokio::spawn(async move {
-                            handle_connection(io, routing_table).await;
+                            handle_connection(TokioIo::new(stream), routing_table, config).await;
                         });
                     }
                     Err(e) => {
@@ -230,15 +253,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             } => {
                 match result {
                     Ok((stream, addr)) => {
-                        info!(client_addr = %addr, "HTTPS 클라이언트 연결 수락");
                         let routing_table = routing_table.clone();
+                        let config = config.clone();  // Arc clone
                         let acceptor = https_config.as_ref().unwrap().acceptor.clone();
                         
                         tokio::spawn(async move {
                             match acceptor.accept(stream).await {
                                 Ok(tls_stream) => {
                                     let io = TokioIo::new(tls_stream);
-                                    handle_connection(io, routing_table).await;
+                                    handle_connection(io, routing_table, config).await;
                                 }
                                 Err(e) => {
                                     error!(error = %e, "TLS 핸드쉐이크 실패");
