@@ -21,20 +21,10 @@ pub struct ServerSettings {
 
     /// TLS 키 경로
     pub tls_key_path: Option<String>,
-
-    /// Docker 네트워크 이름
-    #[serde(default = "default_docker_network")]
-    pub docker_network: String,
-
-    /// Docker 라벨 접두사
-    #[serde(default = "default_label_prefix")]
-    pub label_prefix: String,
 }
 
 fn default_http_port() -> u16 { 8080 }
 fn default_https_port() -> u16 { 443 }
-fn default_docker_network() -> String { "reverse-proxy-network".to_string() }
-fn default_label_prefix() -> String { "rproxy.".to_string() }
 
 fn default_https_disabled() -> bool { false }
 
@@ -65,8 +55,6 @@ impl ServerSettings {
             https_port: parse_env_var::<u16, _>("PROXY_HTTPS_PORT", default_https_port)?,
             tls_cert_path: env::var("PROXY_TLS_CERT").ok(),
             tls_key_path: env::var("PROXY_TLS_KEY").ok(),
-            docker_network: parse_env_var::<String, _>("PROXY_DOCKER_NETWORK", default_docker_network)?,
-            label_prefix: parse_env_var::<String, _>("PROXY_LABEL_PREFIX", default_label_prefix)?,
         })
     }
 
@@ -99,8 +87,6 @@ impl Default for ServerSettings {
             https_port: default_https_port(),
             tls_cert_path: None,
             tls_key_path: None,
-            docker_network: default_docker_network(),
-            label_prefix: default_label_prefix(),
         }
     }
 } 
