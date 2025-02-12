@@ -9,6 +9,8 @@ use crate::{
     proxy::{self, ProxyConfig},
 };
 use tracing::error;
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
 
 pub struct RequestHandler {
     routing_table: Arc<RwLock<RoutingTable>>,
@@ -74,5 +76,18 @@ impl RequestHandler {
                 error!(error = %e, "에러 응답 생성 실패");
                 Response::new(Full::new(Bytes::from("Internal Server Error")))
             })
+    }
+
+    pub async fn handle_connection<I>(&self, io: I) -> Result<()>
+    where
+        I: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
+    {
+        http1::Builder::new()
+            .serve_connection(
+                io,
+                service_fn(|req| self.handle_request(req)),
+            )
+            .await
+            .map_err(|e| e.into())
     }
 } 
