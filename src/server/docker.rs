@@ -71,7 +71,7 @@ impl DockerEventHandler {
             
             DockerEvent::Error(e) => {
                 error!(error = %e, "Docker 이벤트 처리 오류");
-                return Err(Box::new(e));
+                return Err(e.into());
             }
         }
         
