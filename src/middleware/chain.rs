@@ -28,18 +28,14 @@ impl MiddlewareChain {
     /// 요청 체인을 실행합니다.
     pub async fn handle_request(&self, mut req: Request) -> Result<Request, MiddlewareError> {
         for middleware in &self.middlewares {
-            debug!(middleware = middleware.name(), "요청 처리 시작");
+            debug!("요청 처리 시작");
             match middleware.handle_request(req).await {
                 Ok(new_req) => {
-                    debug!(middleware = middleware.name(), "요청 처리 완료");
+                    debug!("요청 처리 완료");
                     req = new_req;
                 }
                 Err(e) => {
-                    error!(
-                        middleware = middleware.name(),
-                        error = %e,
-                        "요청 처리 실패"
-                    );
+                    error!(error = %e, "요청 처리 실패");
                     return Err(e);
                 }
             }
@@ -51,18 +47,14 @@ impl MiddlewareChain {
     pub async fn handle_response(&self, mut res: Response) -> Result<Response, MiddlewareError> {
         // 응답은 역순으로 처리
         for middleware in self.middlewares.iter().rev() {
-            debug!(middleware = middleware.name(), "응답 처리 시작");
+            debug!("응답 처리 시작");
             match middleware.handle_response(res).await {
                 Ok(new_res) => {
-                    debug!(middleware = middleware.name(), "응답 처리 완료");
+                    debug!("응답 처리 완료");
                     res = new_res;
                 }
                 Err(e) => {
-                    error!(
-                        middleware = middleware.name(),
-                        error = %e,
-                        "응답 처리 실패"
-                    );
+                    error!(error = %e, "응답 처리 실패");
                     return Err(e);
                 }
             }
