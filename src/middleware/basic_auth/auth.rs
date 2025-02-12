@@ -73,7 +73,6 @@ impl Authenticator for HtpasswdAuthenticator {
 
     fn load_credentials(&mut self) -> Result<(), MiddlewareError> {
         let content = fs::read_to_string(&self.path).map_err(|e| MiddlewareError::Runtime {
-            middleware: "basic-auth".to_string(),
             message: format!("Failed to read htpasswd file: {}", e),
             source: None,
         })?;
@@ -168,7 +167,6 @@ impl Authenticator for DockerSecretsAuthenticator {
         
         // /run/secrets/<secret_name> 파일에서 자격증명 로드
         let content = fs::read_to_string(&self.secrets_path).map_err(|e| MiddlewareError::Runtime {
-            middleware: "basic-auth".to_string(),
             message: format!("Failed to read Docker secret file: {}", e),
             source: None,
         })?;
