@@ -9,15 +9,13 @@ use super::auth::Authenticator;
 
 /// Basic 인증 미들웨어
 pub struct BasicAuthMiddleware {
-    name: String,
     config: BasicAuthConfig,
     authenticator: Box<dyn Authenticator>,
 }
 
 impl BasicAuthMiddleware {
-    pub fn new(name: String, config: BasicAuthConfig, authenticator: Box<dyn Authenticator>) -> Self {
+    pub fn new(config: BasicAuthConfig, authenticator: Box<dyn Authenticator>) -> Self {
         Self { 
-            name, 
             config,
             authenticator,
         }
@@ -60,9 +58,6 @@ impl BasicAuthMiddleware {
 
 #[async_trait]
 impl Middleware for BasicAuthMiddleware {
-    fn name(&self) -> &str {
-        &self.name
-    }
 
     async fn handle_request(&self, req: Request) -> Result<Request, MiddlewareError> {
         // 자격증명 추출
@@ -73,7 +68,6 @@ impl Middleware for BasicAuthMiddleware {
                     Ok(req)
                 } else {
                     Err(MiddlewareError::Runtime {
-                        middleware: self.name.clone(),
                         message: "Invalid credentials".to_string(),
                         source: None,
                     })
@@ -81,7 +75,6 @@ impl Middleware for BasicAuthMiddleware {
             }
             None => {
                 Err(MiddlewareError::Runtime {
-                    middleware: self.name.clone(),
                     message: "Missing or invalid Authorization header".to_string(),
                     source: None,
                 })
@@ -120,7 +113,7 @@ mod tests {
         };
 
         let authenticator = create_authenticator(&config).unwrap();
-        BasicAuthMiddleware::new("test-auth".to_string(), config, authenticator)
+        BasicAuthMiddleware::new(config, authenticator)
     }
 
     #[tokio::test]
