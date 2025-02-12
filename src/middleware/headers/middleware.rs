@@ -5,13 +5,12 @@ use hyper::header::{HeaderName, HeaderValue};
 
 /// 헤더 수정 미들웨어
 pub struct HeadersMiddleware {
-    name: String,
     config: HeadersConfig,
 }
 
 impl HeadersMiddleware {
-    pub fn new(name: String, config: HeadersConfig) -> Self {
-        Self { name, config }
+    pub fn new(config: HeadersConfig) -> Self {
+        Self {config }
     }
 
     /// 기본 보안 헤더를 설정합니다.
@@ -38,9 +37,6 @@ impl HeadersMiddleware {
 
 #[async_trait]
 impl Middleware for HeadersMiddleware {
-    fn name(&self) -> &str {
-        &self.name
-    }
 
     async fn handle_request(&self, mut req: Request) -> Result<Request, MiddlewareError> {
         // 요청 헤더 수정
