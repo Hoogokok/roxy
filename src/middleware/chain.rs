@@ -18,11 +18,8 @@ impl MiddlewareChain {
     }
 
     /// 미들웨어를 체인에 추가합니다.
-    pub fn add<M>(&mut self, middleware: M) 
-    where
-        M: Middleware + 'static,
-    {
-        self.middlewares.push(Arc::new(middleware));
+    pub fn add_boxed(&mut self, middleware: Box<dyn Middleware>) {
+        self.middlewares.push(Arc::from(middleware));
     }
 
     /// 요청 체인을 실행합니다.
