@@ -78,7 +78,7 @@ impl RequestHandler {
             })
     }
 
-    pub async fn handle_connection<I>(&self, io: I) -> Result<()>
+    pub async fn handle_connection<I>(&self, io: I) -> std::result::Result<(), Box<dyn std::error::Error>>
     where
         I: hyper::rt::Read + hyper::rt::Write + Send + Unpin + 'static,
     {
