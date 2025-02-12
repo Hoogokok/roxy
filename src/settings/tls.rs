@@ -1,7 +1,7 @@
 use std::{env, path::PathBuf};
 use serde::Deserialize;
 use tokio::fs;
-use super::SettingsError;
+use super::{server::parse_env_var, SettingsError};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TlsSettings {
@@ -82,6 +82,17 @@ impl TlsSettings {
         })?;
 
         Ok(())
+    }
+}
+
+impl Default for TlsSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: default_https_port(),
+            cert_path: None,
+            key_path: None,
+        }
     }
 }
 
