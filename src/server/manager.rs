@@ -7,6 +7,7 @@ use crate::{
     middleware::MiddlewareManager,
     handler::RequestHandler,
     listener::ServerListener,
+    docker::DockerEventHandler,
 };
 use super::Result;
 
@@ -60,12 +61,12 @@ impl ServerManager {
     pub async fn run(self) -> Result<()> {
         // Docker 이벤트 구독 설정
         let mut event_rx = self.docker_manager.subscribe_to_events().await;
-        let routing_table = self.routing_table.clone();
+        let event_handler = DockerEventHandler::new(self.routing_table.clone());
 
         // Docker 이벤트 처리 태스크 시작
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
-                if let Err(e) = handle_docker_event(event, &mut routing_table.write().await).await {
+                if let Err(e) = event_handler.handle_event(event).await {
                     error!(error = %e, "Docker 이벤트 처리 실패");
                 }
             }
