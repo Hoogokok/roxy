@@ -1,6 +1,7 @@
 mod manager;
 mod listener;
 mod handler;
+mod docker;
 
 pub use manager::ServerManager;
 
