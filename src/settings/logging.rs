@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer};
 use std::env;
 use tracing::Level;
-use super::SettingsError;
+use super::{server::parse_env_var, SettingsError};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -10,11 +10,46 @@ pub enum LogFormat {
     Json,
 }
 
+impl Default for LogFormat {
+    fn default() -> Self {
+        LogFormat::Text
+    }
+}
+
+impl std::str::FromStr for LogFormat {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "text" => Ok(LogFormat::Text),
+            "json" => Ok(LogFormat::Json),
+            _ => Err(format!("Invalid log format: {}", s)),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogOutput {
     Stdout,
     File(String),
+}
+
+impl Default for LogOutput {
+    fn default() -> Self {
+        LogOutput::Stdout
+    }
+}
+
+impl std::str::FromStr for LogOutput {
+    type Err = String;
+    
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "stdout" => Ok(LogOutput::Stdout),
+            path => Ok(LogOutput::File(path.to_string())),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
