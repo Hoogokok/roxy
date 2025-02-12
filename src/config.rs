@@ -8,6 +8,7 @@ use tracing::Level;
 use std::collections::HashMap;
 use serde_json;
 use crate::middleware::MiddlewareConfig;
+use crate::middleware::config::MiddlewareType;
 
 #[derive(Debug, Clone, Deserialize)]
 pub enum LogFormat {
@@ -258,7 +259,6 @@ impl Config {
         }
 
         // 미들웨어 환경 변수 처리
-        // RPROXY_MIDDLEWARE_<NAME>_<KEY>=<VALUE> 형식 지원
         let middleware_prefix = "RPROXY_MIDDLEWARE_";
         for (key, value) in env::vars() {
             if let Some(rest) = key.strip_prefix(middleware_prefix) {
@@ -266,14 +266,20 @@ impl Config {
                 if parts.len() >= 2 {
                     let name = parts[0].to_lowercase();
                     let config = self.middlewares.entry(name).or_insert_with(|| MiddlewareConfig {
-                        middleware_type: "unknown".to_string(),
+                        middleware_type: MiddlewareType::Headers, // 기본값 설정
                         enabled: true,
                         order: 0,
                         settings: HashMap::new(),
                     });
 
                     match parts[1] {
-                        "TYPE" => config.middleware_type = value,
+                        "TYPE" => {
+                            config.middleware_type = match value.as_str() {
+                                "basic-auth" => MiddlewareType::BasicAuth,
+                                "headers" => MiddlewareType::Headers,
+                                _ => continue, // 알 수 없는 타입은 무시
+                            };
+                        }
                         "ENABLED" => config.enabled = value.to_lowercase() == "true",
                         "ORDER" => if let Ok(order) = value.parse() {
                             config.order = order;

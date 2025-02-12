@@ -3,7 +3,7 @@
 //! HTTP 요청/응답을 처리하는 미들웨어 체인을 구현합니다.
 
 mod chain;
-mod config;
+pub mod config;
 mod error;
 mod traits;
 pub mod headers;
