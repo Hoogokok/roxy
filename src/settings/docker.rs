@@ -59,7 +59,7 @@ impl Default for DockerSettings {
 }
 
 fn default_docker_network() -> String {
-    "bridge".to_string()
+    "reverse-proxy-network".to_string()
 }
 
 fn default_label_prefix() -> String {
