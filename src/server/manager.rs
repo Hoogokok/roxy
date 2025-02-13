@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use crate::{
-    config::Config,
+    settings::Settings,
     docker::DockerManager,
     routing_v2::RoutingTable,
     middleware::MiddlewareManager,
@@ -15,19 +15,19 @@ use super::{
 };
 
 pub struct ServerManager {
-    config: Arc<Config>,
+    config: Settings,
     docker_manager: DockerManager,
     routing_table: Arc<RwLock<RoutingTable>>,
     middleware_manager: MiddlewareManager,
 }
 
 impl ServerManager {
-    pub async fn new(config: Config) -> Result<Self> {
+    pub async fn new(config: Settings) -> Result<Self> {
         // 설정을 Arc로 감싸기
-        let config = Arc::new(config);
+
         
         // Docker 매니저 초기화
-        let docker_manager = DockerManager::with_defaults((*config).clone())
+        let docker_manager = DockerManager::with_defaults(config.docker.clone())
             .await
             .map_err(|e| {
                 error!(error = %e, "Docker 매니저 초기화 실패");
@@ -51,7 +51,7 @@ impl ServerManager {
         }
 
         // 미들웨어 매니저 초기화
-        let middleware_manager = MiddlewareManager::new(&config);
+        let middleware_manager = MiddlewareManager::new(&config.middleware);
 
         Ok(Self {
             config,
