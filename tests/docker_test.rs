@@ -1,7 +1,6 @@
 use bollard::secret::{ContainerSummaryNetworkSettings, EndpointSettings};
 use reverse_proxy_traefik::docker::container::ContainerInfo;
 use reverse_proxy_traefik::docker::{DockerManager, DockerError, DockerClient, ContainerInfoExtractor};
-use reverse_proxy_traefik::config::Config;
 use bollard::container::ListContainersOptions;
 use bollard::models::{ContainerSummary, EventMessage};
 use futures_util::Stream;

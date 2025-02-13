@@ -59,7 +59,6 @@
 //! table.add_route("example.com".to_string(), backend, Some(PathMatcher::from_str("/api").unwrap()));
 //! ```
 
-pub mod config;
 pub mod logging;
 pub mod proxy;
 pub mod tls;
