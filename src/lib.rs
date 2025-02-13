@@ -66,3 +66,4 @@ pub mod tls;
 pub mod docker;
 pub mod routing_v2;
 pub mod middleware;
+pub mod settings;
