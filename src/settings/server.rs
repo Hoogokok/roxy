@@ -59,7 +59,7 @@ impl ServerSettings {
     }
 
     pub fn validate(&self) -> Result<(), SettingsError> {
-        if self.http_port == 0 || self.http_port > 65535 {
+        if self.http_port == 0 {
             return Err(SettingsError::EnvVarInvalid {
                 var_name: "PROXY_HTTP_PORT".to_string(),
                 value: self.http_port.to_string(),
@@ -67,7 +67,7 @@ impl ServerSettings {
             });
         }
         
-        if self.https_enabled && (self.https_port == 0 || self.https_port > 65535) {
+        if self.https_enabled && (self.https_port == 0) {
             return Err(SettingsError::EnvVarInvalid {
                 var_name: "PROXY_HTTPS_PORT".to_string(),
                 value: self.https_port.to_string(),
