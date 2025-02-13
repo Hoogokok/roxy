@@ -1,10 +1,9 @@
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use hyper_util::rt::TokioIo;
-use crate::{
-    config::Config,
-    tls::TlsConfig,
-};
+use crate::server::error::Error;
+use crate::settings::Settings;
+use crate::tls::TlsConfig;
 use tracing::{error, info};
 use super::handler::RequestHandler;
 use super::Result;
@@ -15,23 +14,27 @@ pub struct ServerListener {
 }
 
 impl ServerListener {
-    pub async fn new(config: &Config) -> Result<Self> {
+    pub async fn new(settings: &Settings) -> Result<Self> {
         // HTTP 리스너 초기화
-        let http_listener = TcpListener::bind(format!("0.0.0.0:{}", config.http_port))
+        let http_listener = TcpListener::bind(format!("0.0.0.0:{}", settings.server.http_port))
             .await
             .map_err(|e| {
-                error!(error = %e, port = config.http_port, "HTTP 포트 바인딩 실패");
+                error!(error = %e, port = settings.server.http_port, "HTTP 포트 바인딩 실패");
                 e
             })?;
 
-        info!(port = config.http_port, "HTTP 리스너 시작");
+        info!(port = settings.server.http_port, "HTTP 리스너 시작");
 
         // HTTPS 설정 초기화
-        let https_config = if config.https_enabled {
-            let cert_path = config.tls_cert_path.as_ref().unwrap();
-            let key_path = config.tls_key_path.as_ref().unwrap();
+        let https_config = if settings.server.https_enabled {
+            let cert_path = settings.server.tls_cert_path.as_ref()
+                .ok_or_else(|| Error::ConfigError("TLS 인증서 경로가 설정되지 않음".into()))?;
+            let key_path = settings.server.tls_key_path.as_ref()
+                .ok_or_else(|| Error::ConfigError("TLS 키 경로가 설정되지 않음".into()))?;
             
-            Some(TlsConfig::new(cert_path, key_path, config.https_port).await?)
+            Some(TlsConfig::new(cert_path, key_path, settings.server.https_port)
+                .await
+                .map_err(|e| Error::Other(e))?)
         } else {
             None
         };
