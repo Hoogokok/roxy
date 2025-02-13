@@ -16,7 +16,7 @@ use bollard::system::EventsOptions;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
-use crate::config::Config;
+use crate::settings::DockerSettings;
 use crate::routing_v2::{BackendService, PathMatcher};
 use tracing::{debug, info, warn};
 use tokio::time::Duration;
@@ -26,7 +26,7 @@ use std::sync::Arc;
 pub struct DockerManager {
     client: Arc<Box<dyn DockerClient>>,
     extractor: Box<dyn ContainerInfoExtractor>,
-    config: Config,
+    config: DockerSettings,
 }
 
 impl DockerManager {
@@ -34,7 +34,7 @@ impl DockerManager {
     pub async fn new(
         client: Box<dyn DockerClient>,
         extractor: Box<dyn ContainerInfoExtractor>,
-        config: Config,
+        config: DockerSettings,
     ) -> Self {
         Self {
             client: Arc::new(client),
@@ -44,17 +44,17 @@ impl DockerManager {
     }
 
     /// 기본 구현을 사용하는 팩토리 메서드
-    pub async fn with_defaults(config: Config) -> Result<Self, DockerError> {
+    pub async fn with_defaults(settings: DockerSettings) -> Result<Self, DockerError> {
         let client = BollardDockerClient::new().await?;
         let extractor = DefaultExtractor::new(
-            config.docker_network.clone(),
-            config.label_prefix.clone(),
+            settings.network.clone(),
+            settings.label_prefix.clone(),
         );
 
         Ok(Self::new(
             Box::new(client),
             Box::new(extractor),
-            config,
+            settings,
         ).await)
     }
 
@@ -164,7 +164,7 @@ impl DockerManager {
     /// Docker 이벤트를 처리하고 필요한 경우 라우팅 테이블을 업데이트합니다.
     async fn handle_container_event(
         docker: &Arc<Box<dyn DockerClient>>,
-        config: &Config,
+        config: &DockerSettings,
         event: &EventMessage,
         tx: &mpsc::Sender<DockerEvent>,
     ) -> Result<(), DockerError> {
@@ -179,7 +179,7 @@ impl DockerManager {
         let manager = DockerManager { 
             client: docker.clone(),
             extractor: Box::new(DefaultExtractor::new(
-                config.docker_network.clone(),
+                config.network.clone(),
                 config.label_prefix.clone(),
             )),
             config: config.clone(),
