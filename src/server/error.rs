@@ -37,3 +37,14 @@ impl fmt::Display for Error {
         }
     }
 }
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::IoError(e) => Some(e),
+            Error::DockerError(e) => Some(e),
+            Error::Other(e) => Some(e.as_ref()),
+            Error::ConfigError(_) => None,
+        }
+    }
+}
