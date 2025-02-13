@@ -29,7 +29,7 @@ impl std::str::FromStr for LogFormat {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(untagged)]
 pub enum LogOutput {
     Stdout,
     File(String),
@@ -59,16 +59,6 @@ pub struct LogSettings {
     pub output: LogOutput,
 }
 
-impl Default for LogSettings {
-    fn default() -> Self {
-        Self {
-            format: LogFormat::Text,
-            level: Level::INFO,
-            output: LogOutput::Stdout,
-        }
-    }
-}
-
 impl LogSettings {
     pub fn from_env() -> Result<Self, SettingsError> {
         Ok(Self {
@@ -76,6 +66,16 @@ impl LogSettings {
             level: parse_log_level(env::var("PROXY_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()))?,
             output: parse_log_output()?,
         })
+    }
+}
+
+impl Default for LogSettings {
+    fn default() -> Self {
+        Self {
+            format: LogFormat::default(),
+            level: Level::INFO,
+            output: LogOutput::default(),
+        }
     }
 }
 

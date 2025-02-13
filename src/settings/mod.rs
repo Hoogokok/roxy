@@ -3,7 +3,7 @@ use serde::Deserialize;
 use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
 
 mod server;
-mod logging;
+pub mod logging;
 mod tls;
 mod error;
 mod docker;
