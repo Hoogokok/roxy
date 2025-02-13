@@ -1,4 +1,5 @@
-use reverse_proxy_traefik::middleware::{headers::HeadersConfig, MiddlewareConfig, MiddlewareType};
+use reverse_proxy_traefik::middleware::config::{MiddlewareConfig, MiddlewareType};
+use reverse_proxy_traefik::middleware::headers::HeadersConfig;
 use std::collections::HashMap;
 
 #[test]
@@ -41,7 +42,7 @@ fn test_middleware_config_from_toml() {
     assert_eq!(configs.len(), 1);
     
     let config = configs.get("cors").unwrap();
-    assert_eq!(config.middleware_type, "cors");
+    assert_eq!(config.middleware_type, MiddlewareType::Headers);
     assert!(config.enabled);
     assert_eq!(config.order, 1);
 }
