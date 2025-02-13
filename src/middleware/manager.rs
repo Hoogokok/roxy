@@ -1,9 +1,9 @@
 use tracing::error;
 use crate::middleware::basic_auth::{BasicAuthConfig, BasicAuthMiddleware, create_authenticator};
 use crate::middleware::headers::{HeadersConfig, HeadersMiddleware};
-use crate::config::Config;
 use super::{Middleware, MiddlewareChain, MiddlewareConfig, MiddlewareError, Request, Response};
 use super::config::MiddlewareType;
+use std::collections::HashMap;
 
 /// 미들웨어 설정으로부터 미들웨어 인스턴스를 생성합니다.
 fn create_middleware(config: &MiddlewareConfig) -> Result<Box<dyn Middleware>, MiddlewareError> {
@@ -42,11 +42,11 @@ pub struct MiddlewareManager {
 }
 
 impl MiddlewareManager {
-    pub fn new(config: &Config) -> Self {
+    pub fn new(middleware_configs: &HashMap<String, MiddlewareConfig>) -> Self {
         let mut chain = MiddlewareChain::new();
         
         // 설정에서 미들웨어 로드 및 정렬
-        let mut middlewares: Vec<_> = config.middlewares.iter()
+        let mut middlewares: Vec<_> = middleware_configs.iter()
             .filter(|(_, config)| config.enabled)
             .collect();
         middlewares.sort_by_key(|(_, config)| config.order);
