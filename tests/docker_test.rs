@@ -10,6 +10,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use std::collections::HashMap;
+use reverse_proxy_traefik::settings::DockerSettings;
 
 // Mock Docker Client
 #[derive(Clone)]
@@ -117,18 +118,27 @@ impl ContainerInfoExtractor for MockExtractor {
     }
 }
 
+// Config::new_for_test() 대신 사용할 함수
+fn create_test_settings() -> DockerSettings {
+    DockerSettings {
+        network: "reverse-proxy-network".to_string(),
+        label_prefix: "reverse-proxy.".to_string(),
+        ..Default::default()
+    }
+}
+
 #[tokio::test]
 async fn test_docker_manager_initialization() {
-    let config = Config::new_for_test();
+    let settings = create_test_settings();
     let client = MockDockerClient {
         containers: Arc::new(Mutex::new(vec![])),
     };
-    let extractor = MockExtractor::new("reverse-proxy-network".to_string(), "reverse-proxy.".to_string());
+    let extractor = MockExtractor::new(settings.network.clone(), settings.label_prefix.clone());
 
     let manager = DockerManager::new(
         Box::new(client),
         Box::new(extractor),
-        config,
+        settings,
     ).await;
 
     assert!(manager.get_container_routes().await.is_ok());
@@ -136,7 +146,7 @@ async fn test_docker_manager_initialization() {
 
 #[tokio::test]
 async fn test_container_routes() {
-    let config = Config::new_for_test();
+    let settings = create_test_settings();
     let containers = vec![ContainerSummary {
         id: Some("test-container".to_string()),
         labels: Some({
@@ -146,42 +156,7 @@ async fn test_container_routes() {
         }),
         network_settings: Some(ContainerSummaryNetworkSettings {
             networks: Some(HashMap::from([(
-                "reverse-proxy-network".to_string(),
-                EndpointSettings {
-                    ip_address: Some("172.17.0.2".to_string()),
-                    ..Default::default()
-                },
-            )])),
-            ..Default::default()
-        }),
-        ..Default::default()   }];
-
-    let client = MockDockerClient {
-        containers: Arc::new(Mutex::new(containers)),
-    };
-    let extractor = MockExtractor::new("reverse-proxy-network".to_string(), "reverse-proxy.".to_string());
-
-    let manager = DockerManager::new(
-        Box::new(client),
-        Box::new(extractor),
-        config,
-    ).await;
-
-    let routes = manager.get_container_routes().await.unwrap();
-    assert_eq!(routes.len(), 1);
-    let default_matcher = PathMatcher::from_str("/").unwrap();
-    assert!(routes.contains_key(&("test.localhost".to_string(), default_matcher)));
-}
-
-#[tokio::test]
-async fn test_container_routes_with_missing_host() {
-    let config = Config::new_for_test();
-    let containers = vec![ContainerSummary {
-        id: Some("test-container".to_string()),
-        labels: Some(HashMap::new()),  // 호스트 라벨 없음
-        network_settings: Some(ContainerSummaryNetworkSettings {
-            networks: Some(HashMap::from([(
-                "reverse-proxy-network".to_string(),
+                settings.network.clone(),
                 EndpointSettings {
                     ip_address: Some("172.17.0.2".to_string()),
                     ..Default::default()
@@ -195,21 +170,57 @@ async fn test_container_routes_with_missing_host() {
     let client = MockDockerClient {
         containers: Arc::new(Mutex::new(containers)),
     };
-    let extractor = MockExtractor::new("reverse-proxy-network".to_string(), "reverse-proxy.".to_string());
+    let extractor = MockExtractor::new(settings.network.clone(), settings.label_prefix.clone());
 
     let manager = DockerManager::new(
         Box::new(client),
         Box::new(extractor),
-        config,
+        settings,
     ).await;
 
     let routes = manager.get_container_routes().await.unwrap();
-    assert_eq!(routes.len(), 0);  // 호스트 라벨이 없으므로 라우트가 없어야 함
+    assert_eq!(routes.len(), 1);
+    let default_matcher = PathMatcher::from_str("/").unwrap();
+    assert!(routes.contains_key(&("test.localhost".to_string(), default_matcher)));
+}
+
+#[tokio::test]
+async fn test_container_routes_with_missing_host() {
+    let settings = create_test_settings();
+    let containers = vec![ContainerSummary {
+        id: Some("test-container".to_string()),
+        labels: Some(HashMap::new()),  // 호스트 라벨 없음
+        network_settings: Some(ContainerSummaryNetworkSettings {
+            networks: Some(HashMap::from([(
+                settings.network.clone(),
+                EndpointSettings {
+                    ip_address: Some("172.17.0.2".to_string()),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }];
+
+    let client = MockDockerClient {
+        containers: Arc::new(Mutex::new(containers)),
+    };
+    let extractor = MockExtractor::new(settings.network.clone(), settings.label_prefix.clone());
+
+    let manager = DockerManager::new(
+        Box::new(client),
+        Box::new(extractor),
+        settings,
+    ).await;
+
+    let routes = manager.get_container_routes().await.unwrap();
+    assert_eq!(routes.len(), 0);
 }
 
 #[tokio::test]
 async fn test_container_routes_with_missing_network() {
-    let config = Config::new_for_test();
+    let settings = create_test_settings();
     let containers = vec![ContainerSummary {
         id: Some("test-container".to_string()),
         labels: Some({
@@ -227,12 +238,12 @@ async fn test_container_routes_with_missing_network() {
     let client = MockDockerClient {
         containers: Arc::new(Mutex::new(containers)),
     };
-    let extractor = MockExtractor::new("reverse-proxy-network".to_string(), "reverse-proxy.".to_string());
+    let extractor = MockExtractor::new(settings.network.clone(), settings.label_prefix.clone());
 
     let manager = DockerManager::new(
         Box::new(client),
         Box::new(extractor),
-        config,
+        settings,
     ).await;
 
     let routes = manager.get_container_routes().await.unwrap();
@@ -241,7 +252,7 @@ async fn test_container_routes_with_missing_network() {
 
 #[tokio::test]
 async fn test_path_based_routing() {
-    let config = Config::new_for_test();
+    let settings = create_test_settings();
     let containers = vec![
         ContainerSummary {
             id: Some("api-container".to_string()),
@@ -253,7 +264,7 @@ async fn test_path_based_routing() {
             }),
             network_settings: Some(ContainerSummaryNetworkSettings {
                 networks: Some(HashMap::from([(
-                    "reverse-proxy-network".to_string(),
+                    settings.network.clone(),
                     EndpointSettings {
                         ip_address: Some("172.17.0.2".to_string()),
                         ..Default::default()
@@ -273,7 +284,7 @@ async fn test_path_based_routing() {
             }),
             network_settings: Some(ContainerSummaryNetworkSettings {
                 networks: Some(HashMap::from([(
-                    "reverse-proxy-network".to_string(),
+                    settings.network.clone(),
                     EndpointSettings {
                         ip_address: Some("172.17.0.3".to_string()),
                         ..Default::default()
@@ -288,12 +299,12 @@ async fn test_path_based_routing() {
     let client = MockDockerClient {
         containers: Arc::new(Mutex::new(containers)),
     };
-    let extractor = MockExtractor::new("reverse-proxy-network".to_string(), "reverse-proxy.".to_string());
+    let extractor = MockExtractor::new(settings.network.clone(), settings.label_prefix.clone());
 
     let manager = DockerManager::new(
         Box::new(client),
         Box::new(extractor),
-        config,
+        settings,
     ).await;
 
     let routes = manager.get_container_routes().await.unwrap();
