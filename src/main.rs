@@ -1,6 +1,5 @@
 mod docker;
 mod proxy;
-mod config;
 mod logging;
 mod tls;
 mod routing_v2;
