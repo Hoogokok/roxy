@@ -1,8 +1,11 @@
+pub mod handler;
+pub mod listener;
+pub mod docker;
+pub mod error;
+
+pub type Result<T> = std::result::Result<T, Error>;
+
 mod manager;
-mod listener;
-mod handler;
-mod docker;
 
-pub use manager::ServerManager;
-
-pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>; 
+use error::Error;
+pub use manager::ServerManager; 
