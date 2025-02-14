@@ -103,7 +103,7 @@ impl  DefaultExtractor {
             })
     }
     
-    pub(crate) fn new(network_name: String, label_prefix: String) -> Self {
+    pub fn new(network_name: String, label_prefix: String) -> Self {
         
         Self {
             network_name,

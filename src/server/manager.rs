@@ -15,8 +15,8 @@ use super::{
 };
 
 pub struct ServerManager {
-    config: Settings,
-    docker_manager: DockerManager,
+    pub config: Settings,
+    pub docker_manager: DockerManager,
     routing_table: Arc<RwLock<RoutingTable>>,
     middleware_manager: MiddlewareManager,
 }
