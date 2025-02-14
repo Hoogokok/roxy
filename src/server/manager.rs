@@ -22,10 +22,23 @@ pub struct ServerManager {
 }
 
 impl ServerManager {
-    pub async fn new(config: Settings) -> Result<Self> {
-        // 설정을 Arc로 감싸기
+    // 순수 함수: 모든 의존성을 매개변수로 받음
+    pub fn new(
+        config: Settings,
+        docker_manager: DockerManager,
+        routing_table: Arc<RwLock<RoutingTable>>,
+        middleware_manager: MiddlewareManager,
+    ) -> Self {
+        Self {
+            config,
+            docker_manager,
+            routing_table,
+            middleware_manager,
+        }
+    }
 
-        
+    // 실제 애플리케이션에서 사용할 팩토리 메서드
+    pub async fn with_defaults(config: Settings) -> Result<Self> {
         // Docker 매니저 초기화
         let docker_manager = DockerManager::with_defaults(config.docker.clone())
             .await
@@ -53,12 +66,12 @@ impl ServerManager {
         // 미들웨어 매니저 초기화
         let middleware_manager = MiddlewareManager::new(&config.middleware);
 
-        Ok(Self {
+        Ok(Self::new(
             config,
             docker_manager,
             routing_table,
             middleware_manager,
-        })
+        ))
     }
 
     pub async fn run(self) -> Result<()> {
