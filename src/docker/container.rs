@@ -9,6 +9,7 @@ pub struct ContainerInfo {
     pub ip: String,
     pub port: u16,
     pub path_matcher: Option<PathMatcher>,
+    pub middlewares: Option<Vec<String>>,
 }
 
 // 순수 함수들의 모음
@@ -102,6 +103,16 @@ impl  DefaultExtractor {
                 context: None,
             })
     }
+
+    fn extract_middlewares(&self, labels: &Option<std::collections::HashMap<String, String>>) -> Option<Vec<String>> {
+        labels
+            .as_ref()
+            .and_then(|l| l.iter()
+                .find(|(k, _)| k.ends_with(".middlewares"))
+                .map(|(_, v)| v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .collect()))
+    }
     
     pub fn new(network_name: String, label_prefix: String) -> Self {
         
@@ -121,6 +132,7 @@ impl ContainerInfoExtractor for DefaultExtractor {
         let labels = &container.labels;
         let host = self.extract_host(labels)?;
         let port = self.extract_port(labels);
+        let middlewares = self.extract_middlewares(labels);
         
         let ip = container
             .network_settings
@@ -140,11 +152,16 @@ impl ContainerInfoExtractor for DefaultExtractor {
             ip: ip.clone(),
             port,
             path_matcher: self.extract_path_matcher(labels),
+            middlewares,
         })
     }
 
     fn create_backend(&self, info: &ContainerInfo) -> Result<BackendService, DockerError> {
         let addr = self.parse_socket_addr(&info.ip, info.port)?;
-        Ok(BackendService::new(addr))
+        let mut service = BackendService::new(addr);
+        if let Some(middlewares) = &info.middlewares {
+            service.set_middlewares(middlewares.clone());
+        }
+        Ok(service)
     }
 } 
