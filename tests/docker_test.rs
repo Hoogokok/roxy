@@ -101,19 +101,33 @@ impl ContainerInfoExtractor for MockExtractor {
             PathMatcher::from_str(&pattern).ok()
         });
 
+        // 미들웨어 추출
+        let middlewares = labels.and_then(|l| {
+            l.get(&format!("{}middlewares", self.label_prefix))
+                .map(|m| m.split(',')
+                    .map(|s| s.trim().to_string())
+                    .collect::<Vec<_>>())
+        });
+
         Ok(ContainerInfo {
             host,
             ip: ip.clone(),
             port,
             path_matcher,
+            middlewares,
         })
     }
 
-    fn create_backend(&self, info: &ContainerInfo) -> Result<BackendService, 
-    DockerError> {
-        Ok(BackendService::new(
+    fn create_backend(&self, info: &ContainerInfo) -> Result<BackendService, DockerError> {
+        let mut service = BackendService::new(
             format!("{}:{}", info.ip, info.port).parse().unwrap()
-        ))
+        );
+        
+        if let Some(middlewares) = &info.middlewares {
+            service.set_middlewares(middlewares.clone());
+        }
+        
+        Ok(service)
     }
 }
 
@@ -405,4 +419,54 @@ fn test_container_path_patterns_regex() {
     assert!(path_matcher.matches("/api/users"));
     assert!(path_matcher.matches("/api/123"));
     assert!(!path_matcher.matches("/web/api"));
+}
+
+// 미들웨어 테스트 추가
+#[tokio::test]
+async fn test_container_with_middleware() {
+    let settings = create_test_settings();
+    let containers = vec![ContainerSummary {
+        id: Some("test-container".to_string()),
+        labels: Some({
+            let mut labels = HashMap::new();
+            labels.insert("reverse-proxy.host".to_string(), "test.localhost".to_string());
+            labels.insert("reverse-proxy.middlewares".to_string(), "auth,compress".to_string());
+            labels
+        }),
+        network_settings: Some(ContainerSummaryNetworkSettings {
+            networks: Some(HashMap::from([(
+                settings.network.clone(),
+                EndpointSettings {
+                    ip_address: Some("172.17.0.2".to_string()),
+                    ..Default::default()
+                },
+            )])),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }];
+
+    let client = MockDockerClient {
+        containers: Arc::new(Mutex::new(containers)),
+    };
+    let extractor = MockExtractor::new(settings.network.clone(), settings.label_prefix.clone());
+
+    let manager = DockerManager::new(
+        Box::new(client),
+        Box::new(extractor),
+        settings,
+    ).await;
+
+    let routes = manager.get_container_routes().await.unwrap();
+    assert_eq!(routes.len(), 1);
+    
+    let default_matcher = PathMatcher::from_str("/").unwrap();
+    let backend = routes.get(&("test.localhost".to_string(), default_matcher)).unwrap();
+    
+    // 미들웨어 검증
+    assert!(backend.has_middlewares());
+    assert_eq!(
+        backend.middlewares.as_ref().unwrap(),
+        &vec!["auth".to_string(), "compress".to_string()]
+    );
 } 
