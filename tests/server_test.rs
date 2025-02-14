@@ -338,4 +338,96 @@ mod tests {
 
         teardown();
     }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_server_with_middleware() {
+        setup();
+        
+        let mut labels = std::collections::HashMap::new();
+        // 라우터 규칙
+        labels.insert(
+            "rproxy.http.routers.test.rule".to_string(), 
+            "Host(`test.local`)".to_string()
+        );
+        // 미들웨어 설정
+        labels.insert(
+            "rproxy.http.middlewares.test-auth.type".to_string(),
+            "basicauth".to_string()
+        );
+        labels.insert(
+            "rproxy.http.middlewares.test-auth.basicAuth.users".to_string(),
+            "test:$2y$05$123456789abcdef".to_string()
+        );
+        // 라우터에 미들웨어 연결
+        labels.insert(
+            "rproxy.http.routers.test.middlewares".to_string(),
+            "test-auth".to_string()
+        );
+        // 서비스 포트 설정
+        labels.insert(
+            "rproxy.http.services.test.loadbalancer.server.port".to_string(),
+            "8080".to_string()
+        );
+
+        let container = ContainerSummary {
+            id: Some("test-1".to_string()),
+            labels: Some(labels),
+            network_settings: Some(bollard::models::ContainerSummaryNetworkSettings {
+                networks: Some({
+                    let mut networks = std::collections::HashMap::new();
+                    networks.insert("test-network".to_string(), bollard::models::EndpointSettings {
+                        ip_address: Some("172.17.0.2".to_string()),
+                        ..Default::default()
+                    });
+                    networks
+                }),
+            }),
+            ..Default::default()
+        };
+
+        let mut settings = Settings::from_env().unwrap();
+        settings.docker.network = "test-network".to_string();
+        
+        let docker_manager = DockerManager::new(
+            Box::new(MockDockerClient { containers: Arc::new(vec![container]) }),
+            Box::new(DefaultExtractor::new(
+                settings.docker.network.clone(),
+                settings.docker.label_prefix.clone(),
+            )),
+            settings.docker.clone(),
+        ).await;
+
+        let routing_table = Arc::new(RwLock::new(RoutingTable::new()));
+        let middleware_manager = MiddlewareManager::new(&settings.middleware);
+
+        let server = ServerManager::new(
+            settings,
+            docker_manager,
+            routing_table.clone(),
+            middleware_manager,
+        );
+
+        let routes = server.docker_manager.get_container_routes().await.unwrap();
+        {
+            let mut table = routing_table.write().await;
+            table.sync_docker_routes(routes);
+        }
+
+        // 라우팅 테이블에서 미들웨어 설정 검증
+        let table = routing_table.read().await;
+        let route = table.routes.get(&(
+            "test.local".to_string(),
+            PathMatcher::from_str("/").unwrap()
+        )).unwrap();
+        
+        match &route.middlewares {
+            Some(middlewares) => {
+                assert!(middlewares.contains(&"test-auth".to_string()));
+            },
+            None => panic!("Expected middlewares to be configured"),
+        }
+        
+        teardown();
+    }
 } 
