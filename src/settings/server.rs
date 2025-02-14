@@ -48,33 +48,76 @@ where
 }
 
 impl ServerSettings {
+    // 포트 범위 상수 추가
+    const MIN_PORT: u16 = 1;
+    const MAX_PORT: u16 = 65535;
+    
+    // 포트 파싱 전용 함수
+    fn parse_port(name: &str, value: &str) -> Result<u16, SettingsError> {
+        let port = value.parse::<u16>().map_err(|_| SettingsError::EnvVarInvalid {
+            var_name: name.to_string(),
+            value: value.to_string(),
+            reason: format!("포트는 {}-{} 범위여야 합니다", Self::MIN_PORT, Self::MAX_PORT),
+        })?;
+        
+        if port < Self::MIN_PORT {
+            return Err(SettingsError::EnvVarInvalid {
+                var_name: name.to_string(),
+                value: value.to_string(),
+                reason: "포트는 0이 될 수 없습니다".to_string(),
+            });
+        }
+        
+        Ok(port)
+    }
+
     pub fn from_env() -> Result<Self, SettingsError> {
-        Ok(Self {
-            http_port: parse_env_var::<u16, _>("PROXY_HTTP_PORT", default_http_port)?,
+        let http_port = Self::parse_port(
+            "PROXY_HTTP_PORT",
+            &env::var("PROXY_HTTP_PORT").unwrap_or_else(|_| default_http_port().to_string())
+        )?;
+
+        let https_port = Self::parse_port(
+            "PROXY_HTTPS_PORT",
+            &env::var("PROXY_HTTPS_PORT").unwrap_or_else(|_| default_https_port().to_string())
+        )?;
+
+        let settings = Self {
+            http_port,
+            https_port,
             https_enabled: parse_env_var::<bool, _>("PROXY_HTTPS_ENABLED", default_https_disabled)?,
-            https_port: parse_env_var::<u16, _>("PROXY_HTTPS_PORT", default_https_port)?,
             tls_cert_path: env::var("PROXY_TLS_CERT").ok(),
             tls_key_path: env::var("PROXY_TLS_KEY").ok(),
-        })
+        };
+        
+        settings.validate()?;
+        Ok(settings)
     }
 
     pub fn validate(&self) -> Result<(), SettingsError> {
-        if self.http_port == 0 {
-            return Err(SettingsError::EnvVarInvalid {
-                var_name: "PROXY_HTTP_PORT".to_string(),
-                value: self.http_port.to_string(),
-                reason: "포트는 1-65535 범위여야 합니다".to_string(),
-            });
+        // HTTPS가 활성화된 경우 인증서/키 파일 필수 검사
+        if self.https_enabled {
+            if self.tls_cert_path.is_none() {
+                return Err(SettingsError::EnvVarMissing {
+                    var_name: "PROXY_TLS_CERT".to_string()
+                });
+            }
+            if self.tls_key_path.is_none() {
+                return Err(SettingsError::EnvVarMissing {
+                    var_name: "PROXY_TLS_KEY".to_string()
+                });
+            }
+
+            // HTTP/HTTPS 포트 충돌 검사
+            if self.http_port == self.https_port {
+                return Err(SettingsError::EnvVarInvalid {
+                    var_name: "PROXY_HTTP_PORT/PROXY_HTTPS_PORT".to_string(),
+                    value: format!("{}/{}", self.http_port, self.https_port),
+                    reason: "HTTP와 HTTPS 포트는 달라야 합니다".to_string(),
+                });
+            }
         }
-        
-        if self.https_enabled && (self.https_port == 0) {
-            return Err(SettingsError::EnvVarInvalid {
-                var_name: "PROXY_HTTPS_PORT".to_string(),
-                value: self.https_port.to_string(),
-                reason: "포트는 1-65535 범위여야 합니다".to_string(),
-            });
-        }
-        
+
         Ok(())
     }
 }
