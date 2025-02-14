@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     logging::init_logging(&settings.logging)?;
     
     // 3. 서버 매니저 생성 및 실행
-    let server = ServerManager::new(settings).await?;
+    let server = ServerManager::with_defaults(settings).await?;
     info!("서버 시작");
     
     // 4. 서버 실행
