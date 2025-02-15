@@ -33,11 +33,12 @@ fn default_enabled() -> bool {
 
 impl MiddlewareConfig {
     /// Docker 라벨에서 미들웨어 설정을 파싱합니다.
-    pub fn from_labels(labels: &HashMap<String, String>) -> Vec<(String, Self)> {
+    pub fn from_labels(labels: &HashMap<String, String>) -> Result<Vec<(String, Self)>, String> {
         let mut configs = Vec::new();
         let prefix = "rproxy.http.middlewares.";
         let mut middleware_groups: HashMap<String, HashMap<String, String>> = HashMap::new();
         
+        // 1. 라벨 그룹화
         for (key, value) in labels {
             if let Some(rest) = key.strip_prefix(prefix) {
                 let parts: Vec<&str> = rest.splitn(3, '.').collect();
@@ -53,32 +54,34 @@ impl MiddlewareConfig {
             }
         }
 
+        // 2. 설정 파싱 및 검증
         for (name, settings) in middleware_groups {
-            if let Some(type_str) = settings.get("type") {
-                let middleware_type = match type_str.as_str() {
-                    "basic-auth" => MiddlewareType::BasicAuth,
-                    "headers" => MiddlewareType::Headers,
-                    _ => continue,
-                };
+            let type_str = settings.get("type")
+                .ok_or_else(|| format!("Middleware '{}' missing type", name))?;
+                
+            let middleware_type = match type_str.as_str() {
+                "basic-auth" => MiddlewareType::BasicAuth,
+                "headers" => MiddlewareType::Headers,
+                unknown => return Err(format!("Unknown middleware type '{}' for '{}'", unknown, name)),
+            };
 
-                let config = MiddlewareConfig {
-                    middleware_type,
-                    enabled: settings.get("enabled")
-                        .map(|v| v.to_lowercase() == "true")
-                        .unwrap_or(true),
-                    order: settings.get("order")
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(0),
-                    settings: settings.into_iter()
-                        .filter(|(k, _)| k != "type" && k != "enabled" && k != "order")
-                        .map(|(k, v)| (k, serde_json::Value::String(v)))
-                        .collect(),
-                };
-                configs.push((name, config));
-            }
+            let config = MiddlewareConfig {
+                middleware_type,
+                enabled: settings.get("enabled")
+                    .map(|v| v.to_lowercase() == "true")
+                    .unwrap_or(true),
+                order: settings.get("order")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(0),
+                settings: settings.into_iter()
+                    .filter(|(k, _)| k != "type" && k != "enabled" && k != "order")
+                    .map(|(k, v)| (k, serde_json::Value::String(v)))
+                    .collect(),
+            };
+            configs.push((name, config));
         }
 
-        configs
+        Ok(configs)
     }
 
     /// TOML 설정에서 미들웨어 설정을 파싱합니다.
@@ -109,7 +112,7 @@ mod tests {
             "value".to_string(),
         );
 
-        let configs = MiddlewareConfig::from_labels(&labels);
+        let configs = MiddlewareConfig::from_labels(&labels).unwrap();
         assert_eq!(configs.len(), 1);
         
         let (name, config) = &configs[0];

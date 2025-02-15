@@ -15,17 +15,17 @@ use crate::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // 1. 설정 로드
-    let settings = Settings::load()?;
+    // Settings 로드를 async로 변경
+    let settings = Settings::load().await?;
     
-    // 2. 로깅 초기화
+    // 로깅 초기화
     logging::init_logging(&settings.logging)?;
     
-    // 3. 서버 매니저 생성 및 실행
+    // 서버 매니저 생성 및 실행
     let server = ServerManager::with_defaults(settings).await?;
     info!("서버 시작");
     
-    // 4. 서버 실행
+    // 서버 실행
     server.run().await?;
     
     Ok(())
