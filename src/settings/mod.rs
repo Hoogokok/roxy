@@ -40,31 +40,39 @@ pub struct Settings {
 }
 
 impl Settings {
-    pub fn load() -> Result<Self> {
+    pub async fn load() -> Result<Self> {
+        // 기본 설정만 로드 (Docker 라벨은 ServerManager에서 처리)
         if let Ok(config_path) = env::var("PROXY_CONFIG_FILE") {
-            Self::from_toml_file(&config_path)
+            Self::from_toml_file(&config_path).await
         } else {
-            Self::from_env()
+            Self::from_env().await
         }
     }
 
-    pub fn from_toml_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+    pub async fn from_toml_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(&path).map_err(|e| SettingsError::FileError {
             path: path.as_ref().to_string_lossy().to_string(),
             error: e,
         })?;
 
-        toml::from_str(&content).map_err(|e| SettingsError::ParseError { source: e })
+        let settings: Self = toml::from_str(&content)
+            .map_err(|e| SettingsError::ParseError { source: e })?;
+        
+        Ok(settings)
     }
 
-    pub fn from_env() -> Result<Self> {
-        Ok(Self {
+    pub async fn from_env() -> Result<Self> {
+        let settings = Self {
             server: ServerSettings::from_env()?,
             logging: LogSettings::from_env()?,
             tls: TlsSettings::from_env()?,
             docker: DockerSettings::from_env()?,
-            middleware: HashMap::new(), // 미들웨어는 Docker 라벨에서 로드
-        })
+            middleware: HashMap::new(),
+        };
+
+        // 설정 생성 시점에 바로 검증
+        settings.validate().await?;
+        Ok(settings)
     }
 
     /// 설정 유효성 검증
@@ -91,6 +99,26 @@ impl Settings {
             }
         }
 
+        Ok(())
+    }
+
+    // Docker 라벨에서 미들웨어 설정을 로드하는 메서드 추가
+    pub fn merge_docker_labels(&mut self, labels: &HashMap<String, String>) -> Result<()> {
+        let label_middlewares = MiddlewareConfig::from_labels(labels)
+            .map_err(|e| SettingsError::InvalidConfig(e))?;
+
+        for (name, config) in label_middlewares {
+            // add_middleware를 통해 중복 체크와 설정 추가
+            self.add_middleware(name, config)?;
+        }
+        Ok(())
+    }
+
+    pub fn add_middleware(&mut self, name: String, config: MiddlewareConfig) -> Result<()> {
+        if self.middleware.contains_key(&name) {
+            return Err(SettingsError::DuplicateMiddleware(name));
+        }
+        self.middleware.insert(name, config);
         Ok(())
     }
 }
