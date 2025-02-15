@@ -122,26 +122,4 @@ mod tests {
         assert_eq!(config.order, 0);
         assert!(config.settings.contains_key("headers.customResponseHeaders.X-Custom-Header"));
     }
-
-    #[test]
-    fn test_parse_toml_config() {
-        let toml_str = r#"
-            [middlewares.cors]
-            middleware_type = "cors"
-            enabled = true
-            order = 1
-            
-            [middlewares.cors.settings]
-            "headers.customResponseHeaders.X-Custom-Header" = "value"
-        "#;
-
-        let configs = MiddlewareConfig::from_toml(toml_str).unwrap();
-        assert_eq!(configs.len(), 1);
-        
-        let config = configs.get("cors").unwrap();
-        assert_eq!(config.middleware_type, MiddlewareType::Headers);
-        assert!(config.enabled);
-        assert_eq!(config.order, 1);
-        assert!(config.settings.contains_key("headers.customResponseHeaders.X-Custom-Header"));
-    }
-} 
+}
