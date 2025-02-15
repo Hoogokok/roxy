@@ -9,19 +9,10 @@ use std::collections::HashMap;
 fn create_middleware(config: &MiddlewareConfig) -> Result<Box<dyn Middleware>, MiddlewareError> {
     match config.middleware_type {
         MiddlewareType::BasicAuth => {
-            // settings를 BasicAuthConfig로 변환
             let auth_config: BasicAuthConfig = serde_json::from_value(
                 serde_json::to_value(&config.settings)?
             )?;
-            
-            // 인증기 생성
-            let authenticator = create_authenticator(&auth_config)?;
-            
-            // 미들웨어 생성
-            Ok(Box::new(BasicAuthMiddleware::new(
-                auth_config,
-                authenticator,
-            )))
+            Ok(Box::new(BasicAuthMiddleware::new(auth_config)?))
         }
         MiddlewareType::Headers => {
             // settings를 HeadersConfig로 변환

@@ -1,4 +1,4 @@
-use crate::middleware::{HeaderParser, Middleware, MiddlewareError, Request, Response};
+use crate::middleware::{Middleware, MiddlewareError, Request, Response};
 use super::{config::BasicAuthConfig, create_authenticator};
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
@@ -12,7 +12,6 @@ use super::auth::Authenticator;
 pub struct BasicAuthMiddleware {
     config: BasicAuthConfig,
     authenticator: Box<dyn Authenticator>,
-    parser: HeaderParser,
 }
 
 impl BasicAuthMiddleware {
@@ -21,30 +20,42 @@ impl BasicAuthMiddleware {
         Ok(Self {
             config,
             authenticator,
-            parser: HeaderParser::new(),
         })
     }
 
     /// Authorization 헤더에서 자격증명을 추출합니다.
-    fn extract_credentials(&self, req: &Request) -> Option<(String, String)> {
-        req.headers()
+    fn extract_credentials(&self, req: &Request) -> Result<(String, String), MiddlewareError> {
+        // 1. Authorization 헤더 가져오기
+        let auth_header = req.headers()
             .get(header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|auth| {
-                if !auth.starts_with("Basic ") {
-                    return None;
-                }
-                let credentials = auth.trim_start_matches("Basic ").trim();
-                BASE64.decode(credentials).ok()
-            })
-            .and_then(|decoded| String::from_utf8(decoded).ok())
-            .and_then(|pair| {
-                let mut parts = pair.splitn(2, ':');
-                Some((
-                    parts.next()?.to_string(),
-                    parts.next()?.to_string(),
-                ))
-            })
+            .ok_or_else(|| MiddlewareError::InvalidAuth("Missing Authorization header".into()))?;
+
+        // 2. "Basic " 접두사 확인
+        let auth_str = auth_header.to_str()
+            .map_err(|_| MiddlewareError::InvalidAuth("Invalid header encoding".into()))?;
+        
+        if !auth_str.starts_with("Basic ") {
+            return Err(MiddlewareError::InvalidAuth("Invalid auth type".into()));
+        }
+
+        // 3. base64 디코딩
+        let credentials = auth_str.trim_start_matches("Basic ").trim();
+        let decoded = BASE64.decode(credentials)
+            .map_err(|e| MiddlewareError::InvalidAuth(e.to_string()))?;
+
+        // 4. username:password 분리
+        let creds = std::str::from_utf8(&decoded)
+            .map_err(|_| MiddlewareError::InvalidAuth("Invalid UTF-8".into()))?;
+
+        let mut parts = creds.splitn(2, ':');
+        Ok((
+            parts.next()
+                .ok_or_else(|| MiddlewareError::InvalidAuth("Missing username".into()))?
+                .to_string(),
+            parts.next()
+                .ok_or_else(|| MiddlewareError::InvalidAuth("Missing password".into()))?
+                .to_string(),
+        ))
     }
 
     /// 401 Unauthorized 응답을 생성합니다.
@@ -66,7 +77,7 @@ impl Middleware for BasicAuthMiddleware {
     async fn handle_request(&self, req: Request) -> Result<Request, MiddlewareError> {
         // 자격증명 추출
         match self.extract_credentials(&req) {
-            Some((username, password)) => {
+            Ok((username, password)) => {
                 // 변경: 인증기를 통한 검증
                 if self.authenticator.verify_credentials(&username, &password) {
                     Ok(req)
@@ -77,12 +88,7 @@ impl Middleware for BasicAuthMiddleware {
                     })
                 }
             }
-            None => {
-                Err(MiddlewareError::Runtime {
-                    message: "Missing or invalid Authorization header".to_string(),
-                    source: None,
-                })
-            }
+            Err(e) => Err(e),
         }
     }
 
