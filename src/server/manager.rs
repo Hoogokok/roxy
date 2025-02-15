@@ -17,7 +17,7 @@ use super::{
 pub struct ServerManager {
     pub config: Settings,
     pub docker_manager: DockerManager,
-    routing_table: Arc<RwLock<RoutingTable>>,
+    pub routing_table: Arc<RwLock<RoutingTable>>,
     middleware_manager: MiddlewareManager,
 }
 
@@ -38,36 +38,36 @@ impl ServerManager {
     }
 
     // 실제 애플리케이션에서 사용할 팩토리 메서드
-    pub async fn with_defaults(config: Settings) -> Result<Self> {
-        // Docker 매니저 초기화
-        let docker_manager = DockerManager::with_defaults(config.docker.clone())
+    pub async fn with_defaults(mut settings: Settings) -> Result<Self> {
+        // 1. Docker 매니저 초기화
+        let docker_manager = DockerManager::with_defaults(settings.docker.clone())
             .await
             .map_err(|e| {
                 error!(error = %e, "Docker 매니저 초기화 실패");
                 e
             })?;
 
-        // 라우팅 테이블 초기화
+        // 2. Docker 라벨에서 설정 로드 (우선순위 높음)
+        if let Ok(labels) = docker_manager.get_container_labels().await {
+            settings.merge_docker_labels(&labels)?;
+        }
+
+        // 3. 라우팅 테이블 초기화
         let routing_table = Arc::new(RwLock::new(RoutingTable::new()));
         
-        // 초기 라우트 설정
-        let initial_routes = docker_manager.get_container_routes().await
-            .map_err(|e| {
-                error!(error = %e, "초기 컨테이너 라우트 획득 실패");
-                e
-            })?;
+        // 4. 초기 라우트 설정
+        let initial_routes = docker_manager.get_container_routes().await?;
         
         {
             let mut table = routing_table.write().await;
-            table.sync_docker_routes(initial_routes.clone());
-            info!(routes = ?initial_routes, "초기 라우팅 테이블 설정 완료");
+            table.sync_docker_routes(initial_routes);
         }
 
-        // 미들웨어 매니저 초기화
-        let middleware_manager = MiddlewareManager::new(&config.middleware);
+        // 5. 미들웨어 매니저 초기화
+        let middleware_manager = MiddlewareManager::new(&settings.middleware);
 
         Ok(Self::new(
-            config,
+            settings,
             docker_manager,
             routing_table,
             middleware_manager,
