@@ -17,6 +17,8 @@ pub enum SettingsError {
     ParseError {
         source: toml::de::Error,
     },
+    InvalidConfig(String),
+    DuplicateMiddleware(String),
 }
 
 impl fmt::Display for SettingsError {
@@ -30,6 +32,8 @@ impl fmt::Display for SettingsError {
                 write!(f, "설정 파일 {} 오류: {}", path, error),
             Self::ParseError { source } => 
                 write!(f, "설정 파싱 오류: {}", source),
+            Self::InvalidConfig(msg) => write!(f, "Invalid configuration: {}", msg),
+            Self::DuplicateMiddleware(name) => write!(f, "Duplicate middleware: {}", name),
         }
     }
 }
