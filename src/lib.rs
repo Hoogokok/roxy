@@ -9,31 +9,32 @@
 //! 
 //! # 예제
 //! 
-//! ```
+//! ```no_run
 //! use reverse_proxy_traefik::{
 //!     routing_v2::{RoutingTable, BackendService, PathMatcher},
 //!     settings::Settings,
 //! };
 //! use std::net::SocketAddr;
 //! 
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! // 설정 로드
-//! let settings = Settings::load()?;
+//! #[tokio::main]
+//! async fn main() -> Result<(), Box<dyn std::error::Error>> {
+//!     // 설정 로드
+//!     let settings = Settings::load().await?;
 //! 
-//! let mut table = RoutingTable::new();
+//!     let mut table = RoutingTable::new();
 //! 
-//! // 백엔드 서비스 생성
-//! let addr: SocketAddr = "127.0.0.1:8080".parse()?;
-//! let backend = BackendService::new(addr);
+//!     // 백엔드 서비스 생성
+//!     let addr: SocketAddr = "127.0.0.1:8080".parse()?;
+//!     let backend = BackendService::new(addr);
 //! 
-//! // 라우팅 규칙 추가 - API 서비스 (PathPrefix 매칭)
-//! table.add_route(
-//!     "example.com".to_string(), 
-//!     backend,
-//!     Some(PathMatcher::from_str("/api*").unwrap())
-//! );
-//! # Ok(())
-//! # }
+//!     // 라우팅 규칙 추가 - API 서비스 (PathPrefix 매칭)
+//!     table.add_route(
+//!         "example.com".to_string(), 
+//!         backend,
+//!         Some(PathMatcher::from_str("/api*").unwrap())
+//!     );
+//!     Ok(())
+//! }
 //! ```
 //! 
 //! # 설정 예시
@@ -132,14 +133,6 @@
 //! response_headers = { "X-Powered-By" = "ReverseProxy" }
 //! ```
 
-// 주요 타입들을 최상위에서 바로 사용할 수 있도록 re-export
-pub use crate::{
-    settings::Settings,
-    server::ServerManager,
-    docker::DockerManager,
-    routing_v2::{RoutingTable, BackendService, PathMatcher},
-};
-
 /// # 에러 처리
 /// 
 /// ```
@@ -153,9 +146,22 @@ pub use crate::{
 ///         SettingsError::EnvVarInvalid { var_name, value, reason } => {
 ///             eprintln!("잘못된 환경변수: {}={} ({})", var_name, value, reason);
 ///         }
+///         SettingsError::FileError { path, error } => {
+///             eprintln!("설정 파일 에러: {} ({})", path, error);
+///         }
+///         SettingsError::ParseError { source } => {
+///             eprintln!("설정 파싱 에러: {}", source);
+///         }
+///         SettingsError::InvalidConfig(msg) => {
+///             eprintln!("잘못된 설정: {}", msg);
+///         }
+///         SettingsError::DuplicateMiddleware(name) => {
+///             eprintln!("중복된 미들웨어: {}", name);
+///         }
 ///     }
 /// }
-/// ```
+///  
+
 pub mod logging;
 pub mod proxy;
 pub mod tls;
@@ -163,4 +169,12 @@ pub mod docker;
 pub mod routing_v2;
 pub mod middleware;
 pub mod settings;
-pub mod server;  // server 모듈 추가
+pub mod server;
+
+// 주요 타입들을 최상위에서 바로 사용할 수 있도록 re-export
+pub use crate::{
+    settings::Settings,
+    server::ServerManager,
+    docker::DockerManager,
+    routing_v2::{RoutingTable, BackendService, PathMatcher},
+};
