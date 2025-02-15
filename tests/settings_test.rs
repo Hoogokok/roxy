@@ -4,6 +4,7 @@ use std::sync::Once;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;  // 테스트 격리를 위해 추가
 
     static INIT: Once = Once::new();
 
@@ -37,40 +38,42 @@ mod tests {
         (file_path.to_str().unwrap().to_string(), dir)
     }
 
-    #[test]
-    fn test_settings_validation() {
+    #[tokio::test]
+    #[serial]
+    async fn test_settings_validation() {
         setup();
 
         // 1. 잘못된 포트 번호
         std::env::set_var("PROXY_HTTP_PORT", "99999");
-        let result = Settings::from_env();
+        let result = Settings::from_env().await;
         assert!(result.is_err());
         teardown();
         
         // 2. 잘못된 로그 레벨
         std::env::set_var("PROXY_LOG_LEVEL", "invalid_level");
-        let result = Settings::from_env();
+        let result = Settings::from_env().await;
         assert!(result.is_err());
         teardown();
         
         // 3. 잘못된 Docker 네트워크 이름
         std::env::set_var("PROXY_DOCKER_NETWORK", "invalid@network");
-        let result = Settings::from_env();
+        let result = Settings::from_env().await;
         assert!(result.is_err());
         teardown();
         
         // 4. 잘못된 라벨 접두사
         std::env::set_var("PROXY_LABEL_PREFIX", "invalid-prefix");
-        let result = Settings::from_env();
+        let result = Settings::from_env().await;
         assert!(result.is_err());
         teardown();
     }
 
-    #[test]
-    fn test_settings_defaults() {
+    #[tokio::test]
+    #[serial]
+    async fn test_settings_defaults() {
         setup();
         
-        let settings = Settings::from_env().unwrap();
+        let settings = Settings::from_env().await.unwrap();
         
         assert_eq!(settings.server.http_port, 8080);
         assert!(!settings.server.https_enabled);
@@ -81,8 +84,9 @@ mod tests {
         teardown();
     }
 
-    #[test]
-    fn test_settings_from_toml() {
+    #[tokio::test]
+    #[serial]
+    async fn test_settings_from_toml() {
         setup();
 
         let toml_content = r#"
@@ -101,7 +105,7 @@ mod tests {
         "#;
         
         let (file_path, _temp_dir) = create_test_toml(toml_content);
-        let settings = Settings::from_toml_file(&file_path).unwrap();
+        let settings = Settings::from_toml_file(&file_path).await.unwrap();
         
         assert_eq!(settings.server.http_port, 9090);
         assert!(settings.server.https_enabled);
@@ -110,8 +114,9 @@ mod tests {
         teardown();
     }
 
-    #[test]
-    fn test_settings_from_env() {
+    #[tokio::test]
+    #[serial]
+    async fn test_settings_from_env() {
         setup();
 
         // 환경변수 설정
@@ -124,7 +129,7 @@ mod tests {
         std::env::set_var("PROXY_LABEL_PREFIX", "custom.");
 
         // 설정 로드 및 검증
-        let settings = Settings::from_env().unwrap();
+        let settings = Settings::from_env().await.unwrap();
         
         // 설정값 검증
         assert_eq!(settings.server.http_port, 9090);
@@ -136,8 +141,9 @@ mod tests {
         teardown();
     }
 
-    #[test]
-    fn test_settings_edge_cases() {
+    #[tokio::test]
+    #[serial]
+    async fn test_settings_edge_cases() {
         setup();
 
         // 1. 포트 충돌 케이스 (HTTP와 HTTPS 포트가 같은 경우)
@@ -146,7 +152,7 @@ mod tests {
         std::env::set_var("PROXY_HTTPS_PORT", "443");
         std::env::set_var("PROXY_TLS_CERT", "/path/to/cert.pem");
         std::env::set_var("PROXY_TLS_KEY", "/path/to/key.pem");
-        let result = Settings::from_env();
+        let result = Settings::from_env().await;
         assert!(result.is_err(), "포트 충돌이 감지되어야 함");
         if let Err(e) = result {
             assert!(e.to_string().contains("HTTP와 HTTPS 포트는 달라야 합니다"));
@@ -155,19 +161,19 @@ mod tests {
         // 2. 포트 번호 0 케이스
         teardown();
         std::env::set_var("PROXY_HTTP_PORT", "0");
-        let result = Settings::from_env();
+        let result = Settings::from_env().await;
         assert!(result.is_err(), "포트 0은 허용되지 않아야 함");
 
         // 3. 빈 네트워크 이름 케이스
         teardown();
         std::env::set_var("PROXY_DOCKER_NETWORK", "");
-        let result = Settings::from_env();
+        let result = Settings::from_env().await;
         assert!(result.is_err(), "빈 네트워크 이름은 허용되지 않아야 함");
 
         // 4. 매우 긴 라벨 접두사 케이스
         teardown();
         std::env::set_var("PROXY_LABEL_PREFIX", "a".repeat(1000) + ".");
-        let result = Settings::from_env();
+        let result = Settings::from_env().await;
         assert!(result.is_err(), "너무 긴 라벨 접두사는 허용되지 않아야 함");
 
         teardown();
