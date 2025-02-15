@@ -1,4 +1,5 @@
-use reverse_proxy_traefik::middleware::{headers::HeadersConfig, MiddlewareConfig, MiddlewareType};
+use reverse_proxy_traefik::middleware::config::{MiddlewareConfig, MiddlewareType};
+use reverse_proxy_traefik::middleware::headers::HeadersConfig;
 use std::collections::HashMap;
 
 #[test]
@@ -13,7 +14,7 @@ fn test_middleware_config_from_labels() {
         "value".to_string(),
     );
 
-    let configs = MiddlewareConfig::from_labels(&labels);
+    let configs = MiddlewareConfig::from_labels(&labels).unwrap();
     assert_eq!(configs.len(), 1);
     
     let (name, config) = &configs[0];
@@ -27,21 +28,20 @@ fn test_middleware_config_from_labels() {
 #[test]
 fn test_middleware_config_from_toml() {
     let toml_str = r#"
-        [middlewares.cors]
-        middleware_type = "cors"
+        [middlewares.auth]
+        middleware_type = "basic-auth"
         enabled = true
         order = 1
 
-        [middlewares.cors.settings]
-        allow_origins = ["*"]
-        allow_methods = ["GET", "POST"]
+        [middlewares.auth.settings]
+        users = ["user:password"]
     "#;
 
     let configs = MiddlewareConfig::from_toml(toml_str).unwrap();
     assert_eq!(configs.len(), 1);
     
-    let config = configs.get("cors").unwrap();
-    assert_eq!(config.middleware_type, "cors");
+    let config = configs.get("auth").unwrap();
+    assert_eq!(config.middleware_type, MiddlewareType::BasicAuth);
     assert!(config.enabled);
     assert_eq!(config.order, 1);
 }
