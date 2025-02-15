@@ -12,9 +12,10 @@ pub enum MiddlewareError {
     /// 미들웨어 실행 중 오류
     Runtime {
         message: String,
-        source: Option<BoxError>,
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
     },
     InvalidAuth(String),
+    InvalidFormat(String),
 }
 
 impl fmt::Display for MiddlewareError {
@@ -28,6 +29,9 @@ impl fmt::Display for MiddlewareError {
             }
             Self::InvalidAuth(message) => {
                 write!(f, "인증 오류: {}", message)
+            }
+            Self::InvalidFormat(message) => {
+                write!(f, "형식 오류: {}", message)
             }
         }
     }
