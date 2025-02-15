@@ -1,4 +1,4 @@
-use crate::docker::DockerError;
+use crate::{docker::DockerError, settings::SettingsError};
 use std::fmt;
 
 #[derive(Debug)]
@@ -7,6 +7,7 @@ pub enum Error {
     IoError(std::io::Error),
     DockerError(DockerError),
     Other(Box<dyn std::error::Error>),
+    Configuration(String),
 }
 
 impl From<std::io::Error> for Error {
@@ -27,6 +28,12 @@ impl From<Box<dyn std::error::Error>> for Error {
     }
 }
 
+impl From<SettingsError> for Error {
+    fn from(err: SettingsError) -> Self {
+        Error::Configuration(err.to_string())
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -34,6 +41,7 @@ impl fmt::Display for Error {
             Error::IoError(e) => write!(f, "IO Error: {}", e),
             Error::DockerError(e) => write!(f, "Docker Error: {}", e),
             Error::Other(e) => write!(f, "Error: {}", e),
+            Error::Configuration(msg) => write!(f, "Configuration Error: {}", msg),
         }
     }
 }
@@ -45,6 +53,7 @@ impl std::error::Error for Error {
             Error::DockerError(e) => Some(e),
             Error::Other(e) => Some(e.as_ref()),
             Error::ConfigError(_) => None,
+            Error::Configuration(_) => None,
         }
     }
 }
