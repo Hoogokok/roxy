@@ -1,12 +1,22 @@
 use bytes::Bytes;
-use crate::middleware::MiddlewareError;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
+use std::fmt;
 
 #[derive(Debug)]
 pub enum ParserError {
     InvalidFormat(String),
     InvalidEncoding(String),
     InvalidLength(String),
+}
+
+impl fmt::Display for ParserError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidFormat(msg) => write!(f, "Invalid format: {}", msg),
+            Self::InvalidEncoding(msg) => write!(f, "Invalid encoding: {}", msg),
+            Self::InvalidLength(msg) => write!(f, "Invalid length: {}", msg),
+        }
+    }
 }
 
 /// RecordSet 기반의 헤더 파서
@@ -50,21 +60,31 @@ impl HeaderParser {
 
         while let Some(range) = self.find_next_header(pos) {
             if range.end > self.buffer.len() {
+                // 불완전한 헤더는 오버플로우로
                 self.overflow.extend_from_slice(&self.buffer[pos..]);
                 break;
             }
 
-            // 헤더 파싱 및 소유권 이전
+            // 헤더 파싱
             let header = std::str::from_utf8(&self.buffer[range.start..range.end])
                 .map_err(|e| ParserError::InvalidEncoding(e.to_string()))?;
 
-            let (name, value) = self.split_header(header)?;
-            headers.push((name.to_string(), value.to_string()));
+            // 개행 문자 제거 및 공백 처리
+            let header = header.trim_end_matches(|c| c == '\r' || c == '\n');
+            
+            if !header.is_empty() {
+                let (name, value) = self.split_header(header)?;
+                headers.push((name.to_string(), value.to_string()));
+            }
+            
             pos = range.end;
         }
 
-        // 버퍼 정리
-        self.buffer.drain(..pos);
+        // 남은 데이터가 있으면 오버플로우로
+        if pos < self.buffer.len() {
+            self.overflow.extend_from_slice(&self.buffer[pos..]);
+        }
+        self.buffer.clear();
 
         Ok(headers)
     }
@@ -84,14 +104,14 @@ impl HeaderParser {
 
     /// 다음 완전한 헤더의 범위 찾기
     fn find_next_header(&self, start: usize) -> Option<Range> {
-        // 헤더 끝 위치 찾기 (CRLF나 LF)
         let mut pos = start;
         while pos < self.buffer.len() {
             if self.buffer[pos] == b'\n' {
+                let name_end = self.find_colon(start, pos)?;
                 return Some(Range {
                     start,
                     end: pos + 1,
-                    name_end: self.find_colon(start, pos)?,
+                    name_end,
                 });
             }
             pos += 1;
