@@ -140,7 +140,7 @@ mod tests {
             level = "info"
             
             [middleware.auth]
-            middleware-type = "basic-auth"
+            middleware_type = "basic-auth"
             enabled = true
             order = 1
             
