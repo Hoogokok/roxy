@@ -1,5 +1,5 @@
-use crate::middleware::{Middleware, Request, Response, MiddlewareError};
-use super::config::BasicAuthConfig;
+use crate::middleware::{HeaderParser, Middleware, MiddlewareError, Request, Response};
+use super::{config::BasicAuthConfig, create_authenticator};
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use hyper::{header, StatusCode};
@@ -7,18 +7,22 @@ use http_body_util::Full;
 use bytes::Bytes;
 use super::auth::Authenticator;
 
+
 /// Basic 인증 미들웨어
 pub struct BasicAuthMiddleware {
     config: BasicAuthConfig,
     authenticator: Box<dyn Authenticator>,
+    parser: HeaderParser,
 }
 
 impl BasicAuthMiddleware {
-    pub fn new(config: BasicAuthConfig, authenticator: Box<dyn Authenticator>) -> Self {
-        Self { 
+    pub fn new(config: BasicAuthConfig) -> Result<Self, MiddlewareError> {
+        let authenticator = create_authenticator(&config)?;
+        Ok(Self {
             config,
             authenticator,
-        }
+            parser: HeaderParser::new(),
+        })
     }
 
     /// Authorization 헤더에서 자격증명을 추출합니다.
@@ -113,7 +117,7 @@ mod tests {
         };
 
         let authenticator = create_authenticator(&config).unwrap();
-        BasicAuthMiddleware::new(config, authenticator)
+        BasicAuthMiddleware::new(config).unwrap()
     }
 
     #[tokio::test]

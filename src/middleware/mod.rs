@@ -10,6 +10,7 @@ pub mod headers;
 pub mod basic_auth;
 mod manager;
 mod response;
+pub mod parser;
 
 pub use chain::MiddlewareChain;
 pub use config::MiddlewareConfig;
@@ -23,5 +24,6 @@ pub type Response<B = http_body_util::Full<bytes::Bytes>> = hyper::Response<B>;
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 pub use response::handle_middleware_error;
+pub use parser::HeaderParser;
 
 
