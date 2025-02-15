@@ -14,7 +14,7 @@ fn test_middleware_config_from_labels() {
         "value".to_string(),
     );
 
-    let configs = MiddlewareConfig::from_labels(&labels);
+    let configs = MiddlewareConfig::from_labels(&labels).unwrap();
     assert_eq!(configs.len(), 1);
     
     let (name, config) = &configs[0];
