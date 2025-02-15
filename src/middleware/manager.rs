@@ -45,14 +45,14 @@ impl MiddlewareManager {
     pub fn new(middleware_configs: &HashMap<String, MiddlewareConfig>) -> Self {
         let mut chain = MiddlewareChain::new();
         
-        // 설정에서 미들웨어 로드 및 정렬
-        let mut middlewares: Vec<_> = middleware_configs.iter()
+        // 정렬을 위해 Vec으로 변환
+        let mut ordered_configs: Vec<_> = middleware_configs.iter()
             .filter(|(_, config)| config.enabled)
             .collect();
-        middlewares.sort_by_key(|(_, config)| config.order);
+        ordered_configs.sort_by_key(|(_, config)| config.order);
 
         // 미들웨어 생성 및 체인에 추가
-        for (_, config) in middlewares {
+        for (_, config) in ordered_configs {
             match create_middleware(config) {
                 Ok(middleware) => chain.add_boxed(middleware),
                 Err(e) => {
@@ -62,7 +62,7 @@ impl MiddlewareManager {
             }
         }
 
-        Self { chain }
+        Self { chain }  // middlewares 필드는 제거
     }
 
     pub async fn handle_request(&self, req: Request) -> Result<Request, MiddlewareError> {
