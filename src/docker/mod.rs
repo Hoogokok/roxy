@@ -321,4 +321,18 @@ impl DockerManager {
             None => Ok(None),
         }
     }
+
+    // 컨테이너 라벨 조회 메서드 추가
+    pub async fn get_container_labels(&self) -> Result<HashMap<String, String>, DockerError> {
+        let containers = self.client.list_containers(None).await?;
+        let mut all_labels = HashMap::new();
+        
+        for container in containers {
+            if let Some(labels) = container.labels {
+                all_labels.extend(labels);
+            }
+        }
+        
+        Ok(all_labels)
+    }
 }
