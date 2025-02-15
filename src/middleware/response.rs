@@ -9,6 +9,7 @@ pub fn handle_middleware_error(err: MiddlewareError) -> Response<Full<Bytes>> {
         MiddlewareError::Config { .. } => StatusCode::INTERNAL_SERVER_ERROR,
         MiddlewareError::Runtime { .. } => StatusCode::UNAUTHORIZED,
         MiddlewareError::InvalidAuth(_) => StatusCode::UNAUTHORIZED,
+        MiddlewareError::InvalidFormat(_) => StatusCode::BAD_REQUEST,
     };
 
     Response::builder()
