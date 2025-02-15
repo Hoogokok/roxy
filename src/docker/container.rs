@@ -35,11 +35,21 @@ pub struct DefaultExtractor {
 impl  DefaultExtractor {
     // 순수 함수들
     fn extract_host(&self, labels: &Option<std::collections::HashMap<String, String>>) -> Result<String, DockerError> {
-        let router_rule = self.find_router_rule(labels)?;
-        self.parse_host_from_rule(router_rule)
+        // 1. 먼저 router rule에서 호스트를 찾아봄
+        if let Ok(router_rule) = self.find_router_rule(labels) {
+            if let Some(host) = self.parse_host_from_rule(router_rule) {
+                return Ok(host);
+            }
+        }
+        
+        // 2. router rule이 없으면 host 라벨에서 직접 찾음
+        labels
+            .as_ref()
+            .and_then(|l| l.get(&format!("{}host", self.label_prefix)))
+            .map(String::from)
             .ok_or_else(|| DockerError::ContainerConfigError {
                 container_id: "unknown".to_string(),
-                reason: "host rule missing or invalid".to_string(),
+                reason: "host label missing".to_string(),
                 context: None,
             })
     }
@@ -68,8 +78,31 @@ impl  DefaultExtractor {
     }
 
     fn extract_path_matcher(&self, labels: &Option<std::collections::HashMap<String, String>>) -> Option<PathMatcher> {
-        let rule = self.find_router_rule(labels).ok()?;
-        self.parse_path_prefix(rule)
+        labels.as_ref()
+            .and_then(|l| {
+                // 1. 먼저 router rule에서 PathPrefix를 찾아봄
+                if let Ok(rule) = self.find_router_rule(labels) {
+                    if let Some(path) = self.parse_path_prefix(rule) {
+                        return Some(path);
+                    }
+                }
+                
+                // 2. router rule에 없으면 path 라벨에서 찾아봄
+                let path = l.get(&format!("{}path", self.label_prefix));
+                match path {
+                    Some(p) => {
+                        let pattern = match l.get(&format!("{}path.type", self.label_prefix))
+                            .map(String::as_str) 
+                        {
+                            Some("regex") => format!("^{}", p),
+                            Some("prefix") => format!("{}*", p),
+                            _ => p.to_string(),
+                        };
+                        PathMatcher::from_str(&pattern).ok()
+                    }
+                    None => Some(PathMatcher::from_str("/").unwrap())
+                }
+            })
             .or_else(|| Some(PathMatcher::from_str("/").unwrap()))
     }
 
@@ -109,9 +142,17 @@ impl  DefaultExtractor {
             .as_ref()
             .and_then(|l| l.iter()
                 .find(|(k, _)| k.ends_with(".middlewares"))
-                .map(|(_, v)| v.split(',')
-                    .map(|s| s.trim().to_string())
-                    .collect()))
+                .and_then(|(_, v)| {
+                    let middlewares: Vec<String> = v.split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if middlewares.is_empty() {
+                        None
+                    } else {
+                        Some(middlewares)
+                    }
+                }))
     }
     
     pub fn new(network_name: String, label_prefix: String) -> Self {
