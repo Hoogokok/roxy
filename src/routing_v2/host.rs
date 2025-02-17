@@ -86,10 +86,4 @@ impl HostInfo {
             }),
         }
     }
-
-    // 새로운 메서드: path 설정
-    pub fn with_path(mut self, path: String) -> Self {
-        self.path = Some(path);
-        self
-    }
 } 
