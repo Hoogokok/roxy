@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{error, warn};
 use crate::{
     settings::Settings,
     docker::DockerManager,
