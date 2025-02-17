@@ -11,7 +11,7 @@ fn create_middleware(config: &MiddlewareConfig) -> Result<Box<dyn Middleware>, M
     
     match config.middleware_type {
         MiddlewareType::BasicAuth => {
-            let auth_config = BasicAuthConfig::from_labels(&config.settings, "")?;
+            let auth_config = BasicAuthConfig::from_labels(&config.settings)?;
             Ok(Box::new(BasicAuthMiddleware::new(auth_config)?))
         }
         MiddlewareType::Headers => {

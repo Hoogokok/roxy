@@ -81,7 +81,7 @@ fn default_realm() -> String {
 
 impl BasicAuthConfig {
     /// Docker 라벨에서 설정을 파싱
-    pub fn from_labels(labels: &HashMap<String, String>, name: &str) -> Result<Self, MiddlewareError> {
+    pub fn from_labels(labels: &HashMap<String, String>) -> Result<Self, MiddlewareError> {
         let mut config = Self::default();
         
         for (key, value) in labels {
@@ -132,7 +132,7 @@ mod tests {
             "My Realm".to_string(),
         );
 
-        let config = BasicAuthConfig::from_labels(&labels, "my-auth").unwrap();
+        let config = BasicAuthConfig::from_labels(&labels).unwrap();
         
         assert_eq!(config.realm, "My Realm");
         assert_eq!(
@@ -154,7 +154,7 @@ mod tests {
             "/etc/nginx/.htpasswd".to_string(),
         );
 
-        let config = BasicAuthConfig::from_labels(&labels, "my-auth").unwrap();
+        let config = BasicAuthConfig::from_labels(&labels).unwrap();
         
         assert_eq!(
             config.source,
