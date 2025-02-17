@@ -26,37 +26,39 @@ impl HeaderModification {
     pub fn apply_to_headers(&self, headers: &mut hyper::HeaderMap) {
         debug!("헤더 수정 시작: add={:?}, remove={:?}, set={:?}", self.add, self.remove, self.set);
         
-        // 1. 헤더 삭제 - 대소문자 구분 없이
+        // 1. 먼저 삭제할 헤더 처리
         for header_name in &self.remove {
             if let Ok(name) = HeaderName::from_str(header_name) {
                 debug!("헤더 제거: {}", header_name);
                 headers.remove(name.as_str());
+            } else {
+                error!("잘못된 헤더 이름: {}", header_name);
             }
         }
 
-        // 2. 헤더 추가
-        for (name, value) in &self.add {
-            if let (Ok(name), Ok(value)) = (
-                name.parse::<HeaderName>(),
-                HeaderValue::from_str(value)
-            ) {
-                debug!("헤더 추가: {:?}={:?}", name, value);
-                headers.append(name, value);
-            }
-        }
-
-        // 3. 헤더 설정
+        // 2. set으로 덮어쓸 헤더 처리
         for (name, value) in &self.set {
-            if let (Ok(name), Ok(value)) = (
-                name.parse::<HeaderName>(),
-                HeaderValue::from_str(value)
-            ) {
-                debug!("헤더 설정: {:?}={:?}", name, value);
-                headers.insert(name, value);
+            match (HeaderName::from_str(name), HeaderValue::from_str(value)) {
+                (Ok(name), Ok(value)) => {
+                    debug!("헤더 설정: {:?}={:?}", name, value);
+                    headers.insert(name, value);
+                }
+                _ => error!("잘못된 헤더 설정: {}={}", name, value),
+            }
+        }
+
+        // 3. 마지막으로 추가할 헤더 처리
+        for (name, value) in &self.add {
+            match (HeaderName::from_str(name), HeaderValue::from_str(value)) {
+                (Ok(name), Ok(value)) => {
+                    debug!("헤더 추가: {:?}={:?}", name, value);
+                    headers.append(name, value);
+                }
+                _ => error!("잘못된 헤더 추가: {}={}", name, value),
             }
         }
         
-        debug!("헤더 수정 완료: {:?}", headers);
+        debug!("헤더 수정 완료. 최종 헤더: {:?}", headers);
     }
 }
 
