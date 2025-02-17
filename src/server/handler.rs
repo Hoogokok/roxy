@@ -34,27 +34,36 @@ impl RequestHandler {
         &self,
         req: Request<Incoming>,
     ) -> Result<Response<Full<Bytes>>, std::convert::Infallible> {
-        // 미들웨어 체인 실행
+        // 1. 요청 미들웨어 처리
         let req = match self.middleware_manager.handle_request(req).await {
             Ok(req) => req,
             Err(e) => return Ok(handle_middleware_error(e)),
         };
 
-        // 라우팅 및 프록시
+        // 2. 라우팅 및 프록시
         let table = self.routing_table.read().await;
-        match table.route_request(&req) {
+        let response = match table.route_request(&req) {
             Ok(backend) => {
                 match proxy::proxy_request(&self.proxy_config, backend, req).await {
-                    Ok(response) => Ok(response),
+                    Ok(response) => response,
                     Err(e) => {
                         error!(error = %e, "프록시 요청 실패");
-                        Ok(proxy::error_response(&e))
+                        proxy::error_response(&e)
                     }
                 }
             }
             Err(e) => {
                 error!(error = %e, "라우팅 실패");
-                Ok(self.create_routing_error_response(e))
+                self.create_routing_error_response(e)
+            }
+        };
+
+        // 3. 응답 미들웨어 처리
+        match self.middleware_manager.handle_response(response).await {
+            Ok(response) => Ok(response),
+            Err(e) => {
+                error!(error = %e, "응답 미들웨어 처리 실패");
+                Ok(handle_middleware_error(e))
             }
         }
     }
