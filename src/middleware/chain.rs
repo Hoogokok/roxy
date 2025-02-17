@@ -1,6 +1,6 @@
 use super::{Middleware, Request, Response, MiddlewareError};
 use std::sync::Arc;
-use tracing::{debug, error};
+use tracing::debug;
 use std::any::Any;
 
 /// 미들웨어 체인
