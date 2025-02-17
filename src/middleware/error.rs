@@ -16,6 +16,11 @@ pub enum MiddlewareError {
     },
     InvalidAuth(String),
     InvalidFormat(String),
+    InvalidLabel {
+        key: String,
+        value: String,
+        reason: String,
+    },
 }
 
 impl fmt::Display for MiddlewareError {
@@ -32,6 +37,9 @@ impl fmt::Display for MiddlewareError {
             }
             Self::InvalidFormat(message) => {
                 write!(f, "형식 오류: {}", message)
+            }
+            Self::InvalidLabel { key, value, reason } => {
+                write!(f, "라벨 오류: key={}, value={}, reason={}", key, value, reason)
             }
         }
     }
