@@ -30,8 +30,9 @@ impl MiddlewareChain {
 
     /// 요청 체인을 실행합니다.
     pub async fn handle_request(&self, mut req: Request) -> Result<Request, MiddlewareError> {
-        debug!("미들웨어 체인 요청 처리 시작");
-        for middleware in &self.middlewares {
+        debug!("미들웨어 체인 요청 처리 시작 - 미들웨어 수: {}", self.middlewares.len());
+        for (index, middleware) in self.middlewares.iter().enumerate() {
+            debug!("요청 미들웨어 실행 #{} - 타입: {:?}", index, std::any::type_name::<dyn Middleware>());
             req = middleware.handle_request(req).await?;
         }
         debug!("미들웨어 체인 요청 처리 완료");
@@ -40,11 +41,17 @@ impl MiddlewareChain {
 
     /// 응답 체인을 실행합니다.
     pub async fn handle_response(&self, mut res: Response) -> Result<Response, MiddlewareError> {
-        debug!("응답 처리 시작");
-        for middleware in self.middlewares.iter().rev() {
+        debug!("미들웨어 체인 응답 처리 시작 - 미들웨어 수: {}", self.middlewares.len());
+        // 응답은 역순으로 처리
+        for (index, middleware) in self.middlewares.iter().rev().enumerate() {
+            debug!("응답 미들웨어 실행 #{} - 타입: {:?}", index, std::any::type_name::<dyn Middleware>());
             res = middleware.handle_response(res).await?;
         }
-        debug!("응답 처리 완료");
+        debug!("미들웨어 체인 응답 처리 완료 - 최종 헤더: {:?}", res.headers());
         Ok(res)
+    }
+
+    pub fn middleware_count(&self) -> usize {
+        self.middlewares.len()
     }
 } 
