@@ -77,13 +77,16 @@ impl ServerManager {
     pub async fn run(self) -> Result<()> {
         // Docker 이벤트 구독 설정
         let mut event_rx = self.docker_manager.subscribe_to_events().await;
-        let event_handler = DockerEventHandler::new(self.routing_table.clone());
+        let event_handler = DockerEventHandler::new(
+            self.routing_table.clone(),
+            Arc::new(RwLock::new(self.middleware_manager.clone())),
+        );
 
         // Docker 이벤트 처리 태스크 시작
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 if let Err(e) = event_handler.handle_event(event).await {
-                    error!(error = %e, "Docker 이벤트 처리 실패");
+                    error!("이벤트 처리 오류: {}", e);
                 }
             }
             warn!("Docker 이벤트 스트림 종료");
