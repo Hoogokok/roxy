@@ -4,15 +4,23 @@ use tracing::{error, info};
 use crate::{
     docker::DockerEvent,
     routing_v2::RoutingTable,
+    middleware::MiddlewareManager,
 };
 
 pub struct DockerEventHandler {
     routing_table: Arc<RwLock<RoutingTable>>,
+    middleware_manager: Arc<RwLock<MiddlewareManager>>,
 }
 
 impl DockerEventHandler {
-    pub fn new(routing_table: Arc<RwLock<RoutingTable>>) -> Self {
-        Self { routing_table }
+    pub fn new(
+        routing_table: Arc<RwLock<RoutingTable>>,
+        middleware_manager: Arc<RwLock<MiddlewareManager>>,
+    ) -> Self {
+        Self { 
+            routing_table,
+            middleware_manager,
+        }
     }
 
     pub async fn handle_event(&self, event: DockerEvent) -> crate::server::Result<()> {
@@ -67,6 +75,12 @@ impl DockerEventHandler {
                         );
                     }
                 }
+            }
+            
+            DockerEvent::MiddlewareConfigsUpdated(configs) => {
+                let mut manager = self.middleware_manager.write().await;
+                manager.update_configs(&configs);
+                info!("미들웨어 설정 업데이트 완료");
             }
             
             DockerEvent::Error(e) => {
