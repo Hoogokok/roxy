@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::str::FromStr;
+use tracing::debug;
 
 /// 미들웨어 설정을 위한 공통 인터페이스
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -8,6 +10,18 @@ pub enum MiddlewareType {
     BasicAuth,
     Headers,
     // 추후 추가될 미들웨어 타입들...
+}
+
+impl FromStr for MiddlewareType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "headers" => Ok(MiddlewareType::Headers),
+            "basic-auth" => Ok(MiddlewareType::BasicAuth),
+            unknown => Err(format!("Unknown middleware type: {}", unknown)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -27,6 +41,17 @@ pub struct MiddlewareConfig {
     pub settings: HashMap<String, serde_json::Value>,
 }
 
+impl Default for MiddlewareConfig {
+    fn default() -> Self {
+        Self {
+            middleware_type: MiddlewareType::Headers,  // 기본 타입
+            enabled: default_enabled(),
+            order: 0,
+            settings: HashMap::new(),
+        }
+    }
+}
+
 fn default_enabled() -> bool {
     false
 }
@@ -34,54 +59,38 @@ fn default_enabled() -> bool {
 impl MiddlewareConfig {
     /// Docker 라벨에서 미들웨어 설정을 파싱합니다.
     pub fn from_labels(labels: &HashMap<String, String>) -> Result<Vec<(String, Self)>, String> {
-        let mut configs = Vec::new();
-        let prefix = "rproxy.http.middlewares.";
-        let mut middleware_groups: HashMap<String, HashMap<String, String>> = HashMap::new();
+        let mut configs = HashMap::new();
         
-        // 1. 라벨 그룹화
         for (key, value) in labels {
-            if let Some(rest) = key.strip_prefix(prefix) {
-                let parts: Vec<&str> = rest.splitn(3, '.').collect();
-                if parts.len() >= 2 {
-                    let name = parts[0].to_string();
-                    let settings = middleware_groups.entry(name).or_default();
-                    if parts.len() == 2 {
-                        settings.insert(parts[1].to_string(), value.clone());
-                    } else {
-                        settings.insert(format!("{}.{}", parts[1], parts[2]), value.clone());
+            if let Some(middleware_name) = key.strip_prefix("rproxy.http.middlewares.") {
+                debug!("미들웨어 라벨 파싱: key={}, value={}", key, value);
+                
+                let parts: Vec<&str> = middleware_name.split('.').collect();
+                if parts.len() < 2 {
+                    continue;
+                }
+
+                let name = parts[0].to_string();
+                let config = configs.entry(name.clone())
+                    .or_insert_with(|| MiddlewareConfig::default());
+
+                debug!("설정 추가: name={}, parts={:?}", name, parts);
+                
+                match parts[1] {
+                    "type" => config.middleware_type = value.parse()?,
+                    "enabled" => config.enabled = value.parse().unwrap_or(false),
+                    _ => {
+                        config.settings.insert(
+                            parts[1..].join("."), 
+                            serde_json::Value::String(value.clone())
+                        );
                     }
                 }
             }
         }
 
-        // 2. 설정 파싱 및 검증
-        for (name, settings) in middleware_groups {
-            let type_str = settings.get("type")
-                .ok_or_else(|| format!("Middleware '{}' missing type", name))?;
-                
-            let middleware_type = match type_str.as_str() {
-                "basic-auth" => MiddlewareType::BasicAuth,
-                "headers" => MiddlewareType::Headers,
-                unknown => return Err(format!("Unknown middleware type '{}' for '{}'", unknown, name)),
-            };
-
-            let config = MiddlewareConfig {
-                middleware_type,
-                enabled: settings.get("enabled")
-                    .map(|v| v.to_lowercase() == "true")
-                    .unwrap_or(true),
-                order: settings.get("order")
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(0),
-                settings: settings.into_iter()
-                    .filter(|(k, _)| k != "type" && k != "enabled" && k != "order")
-                    .map(|(k, v)| (k, serde_json::Value::String(v)))
-                    .collect(),
-            };
-            configs.push((name, config));
-        }
-
-        Ok(configs)
+        debug!("최종 설정: {:?}", configs);
+        Ok(configs.into_iter().collect())
     }
 
     /// TOML 설정에서 미들웨어 설정을 파싱합니다.
