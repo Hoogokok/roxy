@@ -21,7 +21,7 @@ services:
       - TLS_CERT_PATH=/app/certs/cert.pem
       - TLS_KEY_PATH=/app/certs/key.pem
       - HTTPS_PORT=443
-      - PROXY_LOG_LEVEL=debug
+      - PROXY_LOG_LEVEL=info
       - PROXY_LOG_FORMAT=text
     user: root
     restart: "no"
