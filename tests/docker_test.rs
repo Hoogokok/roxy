@@ -110,11 +110,12 @@ impl ContainerInfoExtractor for MockExtractor {
         });
 
         Ok(ContainerInfo {
-            host,
+            host: host.clone(),
             ip: ip.clone(),
             port,
             path_matcher,
             middlewares,
+            router_name: Some(host.split('.').next().unwrap_or("default").to_string()),
         })
     }
 
