@@ -1,8 +1,6 @@
 use hyper::header::{HeaderName, HeaderValue};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::fs;
-use std::path::Path;
 use tracing::{debug, error};
 use std::str::FromStr;
 /// 헤더 수정 작업 설정
@@ -75,56 +73,7 @@ pub struct HeadersConfig {
 }
 
 impl HeadersConfig {
-    // TOML 파일에서 설정 로드
-    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
-        let content = fs::read_to_string(path)?;
-        Ok(Self::from_toml(&content)?)
-    }
-
-    // TOML 문자열에서 설정 파싱
-    pub fn from_toml(content: &str) -> Result<Self, toml::de::Error> {
-        toml::from_str(content)
-    }
-
-    /// Docker 레이블에서 설정을 파싱합니다.
-    pub fn from_labels(labels: &HashMap<String, String>, name: &str) -> Option<Self> {
-        let prefix = format!("rproxy.http.middlewares.{}.headers", name);
-        
-        let mut config = HeadersConfig::default();
-
-        // 요청 헤더 파싱
-        for (key, value) in labels {
-            if key.starts_with(&format!("{}.request.add.", prefix)) {
-                let header_name = key.strip_prefix(&format!("{}.request.add.", prefix))?;
-                config.request.add.insert(header_name.to_string(), value.clone());
-            } else if key.starts_with(&format!("{}.request.remove", prefix)) {
-                if let Some(header) = value.split(',').next() {
-                    config.request.remove.push(header.trim().to_string());
-                }
-            } else if key.starts_with(&format!("{}.request.set.", prefix)) {
-                let header_name = key.strip_prefix(&format!("{}.request.set.", prefix))?;
-                config.request.set.insert(header_name.to_string(), value.clone());
-            }
-        }
-
-        // 응답 헤더 파싱
-        for (key, value) in labels {
-            if key.starts_with(&format!("{}.response.add.", prefix)) {
-                let header_name = key.strip_prefix(&format!("{}.response.add.", prefix))?;
-                config.response.add.insert(header_name.to_string(), value.clone());
-            } else if key.starts_with(&format!("{}.response.remove", prefix)) {
-                if let Some(header) = value.split(',').next() {
-                    config.response.remove.push(header.trim().to_string());
-                }
-            } else if key.starts_with(&format!("{}.response.set.", prefix)) {
-                let header_name = key.strip_prefix(&format!("{}.response.set.", prefix))?;
-                config.response.set.insert(header_name.to_string(), value.clone());
-            }
-        }
-
-        Some(config)
-    }
-
+    
     pub fn from_flat_map(settings: &HashMap<String, String>) -> Result<Self, serde_json::Error> {
         let mut config = HeadersConfig::default();
         
