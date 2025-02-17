@@ -1,4 +1,3 @@
-use tracing::error;
 use tracing::debug;
 use crate::middleware::basic_auth::{BasicAuthConfig, BasicAuthMiddleware, create_authenticator};
 use crate::middleware::headers::{HeadersConfig, HeadersMiddleware};
@@ -12,23 +11,11 @@ fn create_middleware(config: &MiddlewareConfig) -> Result<Box<dyn Middleware>, M
     
     match config.middleware_type {
         MiddlewareType::BasicAuth => {
-            let auth_config: BasicAuthConfig = serde_json::from_value(
-                serde_json::to_value(&config.settings)?
-            )?;
+            let auth_config = BasicAuthConfig::from_labels(&config.settings, "")?;
             Ok(Box::new(BasicAuthMiddleware::new(auth_config)?))
         }
         MiddlewareType::Headers => {
-            let string_settings: HashMap<String, String> = config.settings.iter()
-                .map(|(k, v)| {
-                    let string_value = v.as_str()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| v.to_string());
-                    (k.clone(), string_value)
-                })
-                .collect();
-            debug!("변환된 설정: {:?}", string_settings);
-
-            let headers_config = HeadersConfig::from_flat_map(&string_settings)
+            let headers_config = HeadersConfig::from_flat_map(&config.settings)
                 .map_err(|e| MiddlewareError::InvalidFormat(e.to_string()))?;
             debug!("생성된 헤더 설정: {:?}", headers_config);
             
