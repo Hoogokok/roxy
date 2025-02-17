@@ -38,7 +38,7 @@ pub struct MiddlewareConfig {
     pub order: i32,
     
     /// 미들웨어별 설정
-    pub settings: HashMap<String, serde_json::Value>,
+    pub settings: HashMap<String, String>,
 }
 
 impl Default for MiddlewareConfig {
@@ -57,6 +57,15 @@ fn default_enabled() -> bool {
 }
 
 impl MiddlewareConfig {
+    pub fn new(middleware_type: MiddlewareType) -> Self {
+        Self {
+            middleware_type,
+            enabled: default_enabled(),
+            order: 0,
+            settings: HashMap::new(),
+        }
+    }
+
     /// Docker 라벨에서 미들웨어 설정을 파싱합니다.
     pub fn from_labels(labels: &HashMap<String, String>) -> Result<Vec<(String, Self)>, String> {
         let mut configs = HashMap::new();
@@ -72,7 +81,7 @@ impl MiddlewareConfig {
 
                 let name = parts[0].to_string();
                 let config = configs.entry(name.clone())
-                    .or_insert_with(|| MiddlewareConfig::default());
+                    .or_insert_with(|| Self::new(MiddlewareType::Headers));
 
                 debug!("설정 추가: name={}, parts={:?}", name, parts);
                 
@@ -82,7 +91,7 @@ impl MiddlewareConfig {
                     _ => {
                         config.settings.insert(
                             parts[1..].join("."), 
-                            serde_json::Value::String(value.clone())
+                            value.clone()
                         );
                     }
                 }
