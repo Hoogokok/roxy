@@ -82,46 +82,36 @@ fn default_realm() -> String {
 impl BasicAuthConfig {
     /// Docker 라벨에서 설정을 파싱
     pub fn from_labels(labels: &HashMap<String, String>, name: &str) -> Result<Self, MiddlewareError> {
-        let prefix = format!("rproxy.http.middlewares.{}.basicAuth.", name);
-        
         let mut config = Self::default();
         
-        // users 파싱
-        if let Some(users) = labels.get(&format!("{}{}", prefix, "users")) {
-            for user_entry in users.split(',') {
-                if let Some((username, password)) = user_entry.split_once(':') {
-                    config.users.insert(username.trim().to_string(), password.trim().to_string());
+        for (key, value) in labels {
+            match key.as_str() {
+                "basicAuth.users" => {
+                    for user_entry in value.split(',') {
+                        if let Some((username, password)) = user_entry.split_once(':') {
+                            config.users.insert(username.trim().to_string(), password.trim().to_string());
+                        } else {
+                            return Err(MiddlewareError::InvalidLabel {
+                                key: key.clone(),
+                                value: value.clone(),
+                                reason: "Invalid user:password format".to_string(),
+                            });
+                        }
+                    }
                 }
+                "basicAuth.realm" => config.realm = value.clone(),
+                "basicAuth.source" => {
+                    config.source = match value.to_lowercase().as_str() {
+                        "htpasswd" => AuthSource::HtpasswdFile(String::new()),
+                        "env" => AuthSource::EnvVar(String::new()),
+                        "secret" => AuthSource::DockerSecret(String::new()),
+                        _ => AuthSource::Labels,
+                    };
+                }
+                _ => {}  // 다른 설정들은 무시
             }
         }
         
-        // realm 파싱
-        if let Some(realm) = labels.get(&format!("{}{}", prefix, "realm")) {
-            config.realm = realm.clone();
-        }
-        
-        // source 파싱
-        if let Some(source) = labels.get(&format!("{}{}", prefix, "source")) {
-            match source.to_lowercase().as_str() {
-                "htpasswd" => {
-                    if let Some(path) = labels.get(&format!("{}{}", prefix, "htpasswd.path")) {
-                        config.source = AuthSource::HtpasswdFile(path.clone());
-                    }
-                }
-                "env" => {
-                    if let Some(var) = labels.get(&format!("{}{}", prefix, "env.name")) {
-                        config.source = AuthSource::EnvVar(var.clone());
-                    }
-                }
-                "secret" => {
-                    if let Some(secret) = labels.get(&format!("{}{}", prefix, "secret.name")) {
-                        config.source = AuthSource::DockerSecret(secret.clone());
-                    }
-                }
-                _ => config.source = AuthSource::Labels,
-            }
-        }
-
         Ok(config)
     }
 }
