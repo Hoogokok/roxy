@@ -19,6 +19,7 @@ impl fmt::Display for ParserError {
     }
 }
 
+#[derive(Debug)]
 /// RecordSet 기반의 헤더 파서
 pub struct HeaderParser {
     buffer: Vec<u8>,       // 메인 버퍼
