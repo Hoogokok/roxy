@@ -23,7 +23,7 @@ pub struct ServerSettings {
     pub tls_key_path: Option<String>,
 }
 
-fn default_http_port() -> u16 { 8080 }
+fn default_http_port() -> u16 { 80 }
 fn default_https_port() -> u16 { 443 }
 
 fn default_https_disabled() -> bool { false }

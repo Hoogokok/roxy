@@ -1,6 +1,6 @@
 use std::fmt;
 
-use super::BoxError;
+use super::parser::ParserError;
 
 #[derive(Debug)]
 pub enum MiddlewareError {
@@ -11,7 +11,14 @@ pub enum MiddlewareError {
     /// 미들웨어 실행 중 오류
     Runtime {
         message: String,
-        source: Option<BoxError>,
+        source: Option<Box<dyn std::error::Error + Send + Sync>>,
+    },
+    InvalidAuth(String),
+    InvalidFormat(String),
+    InvalidLabel {
+        key: String,
+        value: String,
+        reason: String,
     },
 }
 
@@ -23,6 +30,15 @@ impl fmt::Display for MiddlewareError {
             }
             Self::Runtime { message, .. } => {
                 write!(f, "실행 오류: {}", message)
+            }
+            Self::InvalidAuth(message) => {
+                write!(f, "인증 오류: {}", message)
+            }
+            Self::InvalidFormat(message) => {
+                write!(f, "형식 오류: {}", message)
+            }
+            Self::InvalidLabel { key, value, reason } => {
+                write!(f, "라벨 오류: key={}, value={}, reason={}", key, value, reason)
             }
         }
     }
@@ -42,5 +58,11 @@ impl From<serde_json::Error> for MiddlewareError {
         MiddlewareError::Config {
             message: err.to_string(),
         }
+    }
+}
+
+impl From<ParserError> for MiddlewareError {
+    fn from(err: ParserError) -> Self {
+        MiddlewareError::InvalidAuth(err.to_string())
     }
 } 

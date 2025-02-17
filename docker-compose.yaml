@@ -21,6 +21,8 @@ services:
       - TLS_CERT_PATH=/app/certs/cert.pem
       - TLS_KEY_PATH=/app/certs/key.pem
       - HTTPS_PORT=443
+      - PROXY_LOG_LEVEL=info
+      - PROXY_LOG_FORMAT=text
     user: root
     restart: "no"
     networks:
@@ -38,9 +40,12 @@ services:
     labels:
       - "rproxy.http.routers.api.rule=Host(`test.localhost`) && PathPrefix(`/api`)"
       - "rproxy.http.services.api.loadbalancer.server.port=80"
+      - "rproxy.http.middlewares.api-headers.type=headers"
+      - "rproxy.http.middlewares.api-headers.enabled=true"
       - "rproxy.http.middlewares.api-headers.headers.request.add.X-Request-ID=123"
       - "rproxy.http.middlewares.api-headers.headers.response.add.X-Custom-Header=value"
-      - "rproxy.http.middlewares.api-headers.headers.response.remove=Server"
+      - "rproxy.http.middlewares.api-headers.headers.response.remove=server"
+      - "rproxy.http.routers.api.middlewares=api-headers"
     networks:
       - reverse-proxy-network
     volumes:
@@ -56,8 +61,11 @@ services:
     labels:
       - "rproxy.http.services.web.loadbalancer.server.port=80"
       - "rproxy.http.routers.web.rule=Host(`test.localhost`) && PathPrefix(`/web`)"
+      - "rproxy.http.middlewares.web-headers.type=headers"
+      - "rproxy.http.middlewares.web-headers.enabled=true"
       - "rproxy.http.middlewares.web-headers.headers.request.add.X-Real-IP=true"
       - "rproxy.http.middlewares.web-headers.headers.response.set.Content-Security-Policy=default-src 'self'"
+      - "rproxy.http.routers.web.middlewares=web-headers"
     networks:
       - reverse-proxy-network
     volumes:

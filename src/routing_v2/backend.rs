@@ -10,6 +10,7 @@ pub struct BackendService {
     pub addresses: Vec<SocketAddr>,
     current_index: AtomicUsize,
     pub middlewares: Option<Vec<String>>,
+    pub router_name: Option<String>,
 }
 
 impl Clone for BackendService {
@@ -20,6 +21,7 @@ impl Clone for BackendService {
                 self.current_index.load(Ordering::Relaxed)
             ),
             middlewares: self.middlewares.clone(),
+            router_name: self.router_name.clone(),
         }
     }
 }
@@ -30,6 +32,7 @@ impl BackendService {
             addresses: vec![addr],
             current_index: AtomicUsize::new(0),
             middlewares: None,
+            router_name: None,
         }
     }
 
@@ -38,6 +41,16 @@ impl BackendService {
             addresses: vec![addr],
             current_index: AtomicUsize::new(0),
             middlewares: Some(vec![middleware]),
+            router_name: None,
+        }
+    }
+
+    pub fn with_router(addr: SocketAddr, router_name: Option<String>) -> Self {
+        Self {
+            addresses: vec![addr],
+            current_index: AtomicUsize::new(0),
+            middlewares: None,
+            router_name,
         }
     }
 

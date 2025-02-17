@@ -1,16 +1,20 @@
-use crate::middleware::{Middleware, Request, Response, MiddlewareError};
+use crate::middleware::{Middleware, MiddlewareError, Request, Response};
 use super::config::HeadersConfig;
 use async_trait::async_trait;
 use hyper::header::{HeaderName, HeaderValue};
+use tracing::{debug, instrument};
 
 /// 헤더 수정 미들웨어
+#[derive(Debug)]
 pub struct HeadersMiddleware {
     config: HeadersConfig,
 }
 
 impl HeadersMiddleware {
     pub fn new(config: HeadersConfig) -> Self {
-        Self {config }
+        Self {
+            config,
+        }
     }
 
     /// 기본 보안 헤더를 설정합니다.
@@ -37,19 +41,26 @@ impl HeadersMiddleware {
 
 #[async_trait]
 impl Middleware for HeadersMiddleware {
-
+    #[instrument(skip(self, req), fields(req_headers = ?req.headers()))]
     async fn handle_request(&self, mut req: Request) -> Result<Request, MiddlewareError> {
-        // 요청 헤더 수정
+        debug!("헤더 요청 헤더 처리 시작: {:?}", self.config.request);
+        // request HeaderModification 사용
         self.config.request.apply_to_headers(req.headers_mut());
+        debug!("요청 헤더 수정 완료: {:?}", req.headers());
         Ok(req)
     }
 
+    #[instrument(skip(self, res), fields(res_headers = ?res.headers()))]
     async fn handle_response(&self, mut res: Response) -> Result<Response, MiddlewareError> {
+        debug!(config = ?self.config, "응답 헤더 처리 시작");
+        
         // 기본 보안 헤더 적용
         self.apply_security_headers(res.headers_mut());
         
-        // 응답 헤더 수정
+        // response HeaderModification 사용
         self.config.response.apply_to_headers(res.headers_mut());
+        
+        debug!(modified_headers = ?res.headers(), "응답 헤더 수정 완료");
         Ok(res)
     }
 } 

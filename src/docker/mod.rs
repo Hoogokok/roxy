@@ -21,6 +21,7 @@ use crate::routing_v2::{BackendService, PathMatcher};
 use tracing::{debug, info, warn};
 use tokio::time::Duration;
 use std::sync::Arc;
+use crate::middleware::MiddlewareConfig;
 
 #[derive(Clone)]
 pub struct DockerManager {
@@ -131,9 +132,14 @@ impl DockerManager {
         let docker = self.client.clone();
         let config = self.config.clone();
 
-        // 초기 라우트 전송
+        // 초기 라우트와 미들웨어 설정 전송
         if let Ok(routes) = self.try_get_container_routes().await {
             let _ = tx.send(DockerEvent::RoutesUpdated(routes)).await;
+        }
+        
+        // 미들웨어 설정도 초기에 전송
+        if let Ok(middleware_configs) = self.get_middleware_configs().await {
+            let _ = tx.send(DockerEvent::MiddlewareConfigsUpdated(middleware_configs)).await;
         }
 
         tokio::spawn(async move {
@@ -185,7 +191,8 @@ impl DockerManager {
             config: config.clone(),
         };
 
-        match event.action.as_deref() {
+        // 이벤트 처리 후 미들웨어 설정도 업데이트
+        let result = match event.action.as_deref() {
             Some("start") => Self::handle_container_start(&manager, container_id, tx).await,
             Some("stop" | "die" | "destroy") => Self::handle_container_stop(&manager, container_id, tx).await,
             Some("update") => Self::handle_container_update(&manager, container_id, tx).await,
@@ -197,7 +204,16 @@ impl DockerManager {
                 );
                 Ok(())
             }
+        };
+
+        // 미들웨어 설정 업데이트
+        if let Ok(middleware_configs) = manager.get_middleware_configs().await {
+            tx.send(DockerEvent::MiddlewareConfigsUpdated(middleware_configs))
+                .await
+                .map_err(|_| Self::channel_send_error())?;
         }
+
+        result
     }
 
     async fn handle_container_start(
@@ -334,5 +350,17 @@ impl DockerManager {
         }
         
         Ok(all_labels)
+    }
+
+    // 미들웨어 설정 조회 메서드 추가
+    pub async fn get_middleware_configs(&self) -> Result<Vec<(String, MiddlewareConfig)>, DockerError> {
+        let labels = self.get_container_labels().await?;
+        
+        MiddlewareConfig::from_labels(&labels)
+            .map_err(|e| DockerError::ContainerConfigError {
+                container_id: "unknown".to_string(),
+                reason: format!("미들웨어 설정 파싱 실패: {}", e),
+                context: None,
+            })
     }
 }

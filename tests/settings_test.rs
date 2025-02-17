@@ -75,7 +75,7 @@ mod tests {
         
         let settings = Settings::from_env().await.unwrap();
         
-        assert_eq!(settings.server.http_port, 8080);
+        assert_eq!(settings.server.http_port, 80);
         assert!(!settings.server.https_enabled);
         assert_eq!(settings.logging.level, tracing::Level::INFO);
         assert_eq!(settings.docker.network, "reverse-proxy-network");
