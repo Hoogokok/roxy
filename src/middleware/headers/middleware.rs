@@ -1,4 +1,4 @@
-use crate::middleware::{HeaderParser, Middleware, MiddlewareError, Request, Response};
+use crate::middleware::{Middleware, MiddlewareError, Request, Response};
 use super::config::HeadersConfig;
 use async_trait::async_trait;
 use hyper::header::{HeaderName, HeaderValue};
@@ -8,14 +8,12 @@ use tracing::{debug, instrument};
 #[derive(Debug)]
 pub struct HeadersMiddleware {
     config: HeadersConfig,
-    parser: HeaderParser,
 }
 
 impl HeadersMiddleware {
     pub fn new(config: HeadersConfig) -> Self {
         Self {
             config,
-            parser: HeaderParser::new(),
         }
     }
 
@@ -38,72 +36,6 @@ impl HeadersMiddleware {
             HeaderName::from_static("strict-transport-security"),
             HeaderValue::from_static("max-age=31536000")
         );
-    }
-
-    /// 복잡한 헤더 값 파싱 (예: Cookie, Set-Cookie)
-    fn parse_complex_value(&self, value: &str) -> Option<(String, String)> {
-        // 1. key=value 형식 파싱
-        let mut parts = value.splitn(2, '=');
-        let key = parts.next()?.trim();
-        let value = parts.next()?.split(';').next()?.trim();
-        
-        // 2. 유효성 검사
-        if key.is_empty() || value.is_empty() {
-            return None;
-        }
-
-        Some((key.to_string(), value.to_string()))
-    }
-
-    /// 헤더 값 처리
-    fn process_header(&mut self, name: &HeaderName, value: &HeaderValue) -> Result<Vec<(String, String)>, MiddlewareError> {
-        match name.as_str() {
-            // Cookie 헤더 처리
-            "cookie" => self.process_cookie_header(value),
-            
-            // Set-Cookie 헤더 처리
-            "set-cookie" => self.process_set_cookie_header(value),
-            
-            // 기타 헤더는 단순 처리
-            _ => Ok(vec![(
-                name.as_str().to_string(),
-                value.to_str()
-                    .map_err(|_| MiddlewareError::InvalidFormat("Invalid header value".into()))?
-                    .to_string()
-            )])
-        }
-    }
-
-    /// Cookie 헤더 처리
-    fn process_cookie_header(&mut self, value: &HeaderValue) -> Result<Vec<(String, String)>, MiddlewareError> {
-        let headers = self.parser.parse_streaming(value.as_bytes())?;
-        
-        let mut cookies = Vec::new();
-        for (_, cookie_str) in headers {
-            // "key1=value1; key2=value2" 형식 파싱
-            for pair in cookie_str.split(';') {
-                if let Some((key, value)) = self.parse_complex_value(pair) {
-                    cookies.push((key, value));
-                }
-            }
-        }
-        
-        Ok(cookies)
-    }
-
-    /// Set-Cookie 헤더 처리
-    fn process_set_cookie_header(&mut self, value: &HeaderValue) -> Result<Vec<(String, String)>, MiddlewareError> {
-        let headers = self.parser.parse_streaming(value.as_bytes())?;
-        
-        let mut cookies = Vec::new();
-        for (_, cookie_str) in headers {
-            // "key=value; expires=date; path=/" 형식 파싱
-            if let Some((key, value)) = self.parse_complex_value(&cookie_str) {
-                cookies.push((key, value));
-            }
-        }
-        
-        Ok(cookies)
     }
 }
 
