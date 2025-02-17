@@ -1,5 +1,5 @@
 use tracing::debug;
-use crate::middleware::basic_auth::{BasicAuthConfig, BasicAuthMiddleware, create_authenticator};
+use crate::middleware::basic_auth::{BasicAuthConfig, BasicAuthMiddleware};
 use crate::middleware::headers::{HeadersConfig, HeadersMiddleware};
 use super::{Middleware, MiddlewareChain, MiddlewareConfig, MiddlewareError, Request, Response};
 use super::config::MiddlewareType;
