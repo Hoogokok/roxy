@@ -1,6 +1,5 @@
 use std::fmt;
 
-use super::BoxError;
 use super::parser::ParserError;
 
 #[derive(Debug)]
