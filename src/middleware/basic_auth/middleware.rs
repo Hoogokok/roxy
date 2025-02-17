@@ -104,7 +104,6 @@ impl Middleware for BasicAuthMiddleware {
 
 #[cfg(test)]
 mod tests {
-    use crate::middleware::basic_auth::create_authenticator;
 
     use super::*;
     use std::collections::HashMap;
@@ -122,7 +121,6 @@ mod tests {
             ..Default::default()
         };
 
-        let authenticator = create_authenticator(&config).unwrap();
         BasicAuthMiddleware::new(config).unwrap()
     }
 
