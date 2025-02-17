@@ -39,61 +39,55 @@ fn create_middleware(config: &MiddlewareConfig) -> Result<Box<dyn Middleware>, M
 
 #[derive(Default, Clone)]
 pub struct MiddlewareManager {
-    chain: MiddlewareChain,
+    // 라우터 이름을 키로 사용하여 각각의 미들웨어 체인 관리
+    chains: HashMap<String, MiddlewareChain>,
 }
 
 impl MiddlewareManager {
     pub fn new(middleware_configs: &HashMap<String, MiddlewareConfig>) -> Self {
-        let mut chain = MiddlewareChain::new();
+        let mut chains = HashMap::new();
         
-        // 정렬을 위해 Vec으로 변환
-        let mut ordered_configs: Vec<_> = middleware_configs.iter()
-            .filter(|(_, config)| config.enabled)
-            .collect();
-        ordered_configs.sort_by_key(|(_, config)| config.order);
-
-        // 미들웨어 생성 및 체인에 추가
-        for (_, config) in ordered_configs {
-            match create_middleware(config) {
-                Ok(middleware) => chain.add_boxed(middleware),
-                Err(e) => {
-                    error!("미들웨어 생성 실패: {}", e);
-                    continue;
+        // 라우터별로 미들웨어 체인 생성
+        for (name, config) in middleware_configs {
+            if config.enabled {
+                let mut chain = MiddlewareChain::new();
+                if let Ok(middleware) = create_middleware(config) {
+                    chain.add_boxed(middleware);
+                    chains.insert(name.clone(), chain);
                 }
             }
         }
 
-        Self { chain }  // middlewares 필드는 제거
+        Self { chains }
     }
 
-    pub async fn handle_request(&self, req: Request) -> Result<Request, MiddlewareError> {
-        self.chain.handle_request(req).await
+    pub async fn handle_request(&self, router_name: Option<&str>, req: Request) -> Result<Request, MiddlewareError> {
+        match router_name.and_then(|name| self.chains.get(name)) {
+            Some(chain) => chain.handle_request(req).await,
+            None => Ok(req)  // 미들웨어가 없으면 요청을 그대로 통과
+        }
     }
 
-    pub async fn handle_response(&self, res: Response) -> Result<Response, MiddlewareError> {
-        self.chain.handle_response(res).await
+    pub async fn handle_response(&self, router_name: Option<&str>, res: Response) -> Result<Response, MiddlewareError> {
+        match router_name.and_then(|name| self.chains.get(name)) {
+            Some(chain) => chain.handle_response(res).await,
+            None => Ok(res)  // 미들웨어가 없으면 응답을 그대로 통과
+        }
     }
 
     pub fn update_configs(&mut self, configs: &[(String, MiddlewareConfig)]) {
-        let mut chain = MiddlewareChain::new();
+        let mut new_chains = HashMap::new();
         
-        // 정렬을 위해 Vec으로 변환
-        let mut ordered_configs: Vec<_> = configs.iter()
-            .filter(|(_, config)| config.enabled)
-            .collect();
-        ordered_configs.sort_by_key(|(_, config)| config.order);
-
-        // 미들웨어 생성 및 체인에 추가
-        for (_, config) in ordered_configs {
-            match create_middleware(config) {
-                Ok(middleware) => chain.add_boxed(middleware),
-                Err(e) => {
-                    error!("미들웨어 생성 실패: {}", e);
-                    continue;
+        for (name, config) in configs {
+            if config.enabled {
+                let mut chain = MiddlewareChain::new();
+                if let Ok(middleware) = create_middleware(config) {
+                    chain.add_boxed(middleware);
+                    new_chains.insert(name.clone(), chain);
                 }
             }
         }
 
-        self.chain = chain;
+        self.chains = new_chains;
     }
 } 
