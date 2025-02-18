@@ -31,91 +31,67 @@ fn create_middleware(config: &MiddlewareConfig) -> Result<Box<dyn Middleware>, M
 
 #[derive(Default, Clone)]
 pub struct MiddlewareManager {
-    chains: HashMap<String, MiddlewareChain>,
-    // 라우터 이름과 미들웨어 이름의 매핑
-    router_middleware_map: HashMap<String, Vec<String>>,
+    router_chains: HashMap<String, MiddlewareChain>,  // 라우터 이름 -> 체인
 }
 
 impl MiddlewareManager {
     pub fn new(middleware_configs: &HashMap<String, MiddlewareConfig>) -> Self {
-        let mut chains = HashMap::new();
-        let mut router_middleware_map = HashMap::new();
+        let mut manager = Self {
+            router_chains: HashMap::new(),
+        };
         
-        debug!("미들웨어 매니저 초기화 시작 - 설정 수: {}", middleware_configs.len());
-        
-        for (name, config) in middleware_configs {
-            if config.enabled {
-                // 미들웨어 이름에서 라우터 이름 추출 (예: "api-headers" -> "api")
-                if let Some(router_name) = name.split('-').next() {
-                    debug!("라우터 {} 에 미들웨어 {} 매핑", router_name, name);
-                    router_middleware_map
-                        .entry(router_name.to_string())
-                        .or_insert_with(Vec::new)
-                        .push(name.clone());
-                }
-
-                debug!("미들웨어 체인 생성 시도 - 라우터: {}, 타입: {:?}", name, config.middleware_type);
-                let mut chain = MiddlewareChain::new();
-                if let Ok(middleware) = create_middleware(config) {
-                    chain.add_boxed(middleware);
-                    chains.insert(name.clone(), chain);
-                    debug!("미들웨어 체인 생성 완료 - 라우터: {}", name);
-                }
+        let enabled_middlewares = middleware_configs.iter()
+            .filter(|(_, config)| config.enabled)
+            .filter_map(|(name, config)| {
+                let router_name = name.split('-').next()?;
+                let middleware = create_middleware(config).ok()?;
+                Some((router_name, middleware))
+            });
+            
+        for (router_name, middleware) in enabled_middlewares {
+            manager.ensure_router_chain(router_name);
+            if let Some(chain) = manager.router_chains.get_mut(router_name) {
+                chain.add_boxed(middleware);
             }
         }
-
-        debug!("미들웨어 매니저 초기화 완료 - 체인 수: {}", chains.len());
-        Self { chains, router_middleware_map }
+        
+        manager
     }
 
+    fn ensure_router_chain(&mut self, router_name: &str) {
+        self.router_chains.entry(router_name.to_string())
+            .or_insert_with(MiddlewareChain::new);
+    }
+
+    // handle_request 수정
     pub async fn handle_request(&self, router_name: Option<&str>, req: Request) -> Result<Request, MiddlewareError> {
         match router_name {
             Some(name) => {
-                if let Some(middleware_names) = self.router_middleware_map.get(name) {
-                    debug!("라우터 {} 의 미들웨어 체인 실행 - 미들웨어 수: {}", name, middleware_names.len());
-                    let mut current_req = req;
-                    for middleware_name in middleware_names {
-                        if let Some(chain) = self.chains.get(middleware_name) {
-                            debug!("미들웨어 {} 실행", middleware_name);
-                            current_req = chain.handle_request(current_req).await?;
-                        }
-                    }
-                    Ok(current_req)
+                if let Some(chain) = self.router_chains.get(name) {
+                    debug!("라우터 {} 의 미들웨어 체인 실행", name);
+                    chain.handle_request(req).await
                 } else {
-                    debug!("라우터 {} 에 대한 미들웨어 매핑 없음", name);
+                    debug!("라우터 {} 에 대한 미들웨어 체인 없음", name);
                     Ok(req)
                 }
             }
-            None => {
-                debug!("라우터 이름 없음 - 미들웨어 처리 생략");
-                Ok(req)
-            }
+            None => Ok(req)
         }
     }
 
+    // handle_response 수정
     pub async fn handle_response(&self, router_name: Option<&str>, res: Response) -> Result<Response, MiddlewareError> {
         match router_name {
             Some(name) => {
-                if let Some(middleware_names) = self.router_middleware_map.get(name) {
-                    debug!("라우터 {} 의 응답 미들웨어 체인 실행 - 미들웨어 수: {}", name, middleware_names.len());
-                    let mut current_res = res;
-                    // 응답은 역순으로 처리
-                    for middleware_name in middleware_names.iter().rev() {
-                        if let Some(chain) = self.chains.get(middleware_name) {
-                            debug!("미들웨어 {} 실행", middleware_name);
-                            current_res = chain.handle_response(current_res).await?;
-                        }
-                    }
-                    Ok(current_res)
+                if let Some(chain) = self.router_chains.get(name) {
+                    debug!("라우터 {} 의 응답 미들웨어 체인 실행", name);
+                    chain.handle_response(res).await
                 } else {
-                    debug!("라우터 {} 에 대한 미들웨어 매핑 없음", name);
+                    debug!("라우터 {} 에 대한 미들웨어 체인 없음", name);
                     Ok(res)
                 }
             }
-            None => {
-                debug!("라우터 이름 없음 - 미들웨어 처리 생략");
-                Ok(res)
-            }
+            None => Ok(res)
         }
     }
 
@@ -135,23 +111,18 @@ impl MiddlewareManager {
             }
         }
 
-        debug!("현재 체인 수: {}, 새 체인 수: {}", self.chains.len(), new_chains.len());
-        self.chains = new_chains;
+        debug!("현재 체인 수: {}, 새 체인 수: {}", self.router_chains.len(), new_chains.len());
+        self.router_chains = new_chains;
         debug!("미들웨어 설정 업데이트 완료");
     }
 
     pub fn print_chain_status(&self) {
         debug!("=== 미들웨어 체인 상태 ===");
-        if self.router_middleware_map.is_empty() {
+        if self.router_chains.is_empty() {
             debug!("등록된 미들웨어 매핑 없음");
         } else {
-            for (router_name, middleware_names) in &self.router_middleware_map {
-                debug!("라우터: {} - 미들웨어: {:?}", router_name, middleware_names);
-                for middleware_name in middleware_names {
-                    if let Some(chain) = self.chains.get(middleware_name) {
-                        debug!("  - {}: {} 개의 미들웨어", middleware_name, chain.middleware_count());
-                    }
-                }
+            for (router_name, chain) in &self.router_chains {
+                debug!("라우터: {} - 미들웨어: {:?}", router_name, chain.middleware_count());
             }
         }
         debug!("========================");
