@@ -35,21 +35,24 @@ pub struct MiddlewareManager {
 }
 
 impl MiddlewareManager {
-    pub fn new(middleware_configs: &HashMap<String, MiddlewareConfig>) -> Self {
+    pub fn new(
+        middleware_configs: &HashMap<String, MiddlewareConfig>,
+        router_middlewares: &HashMap<String, Vec<String>>
+    ) -> Self {
         let mut router_chains = HashMap::new();
         
-        let enabled_middlewares = middleware_configs.iter()
-            .filter(|(_, config)| config.enabled)
-            .filter_map(|(name, config)| {
-                let router_name = name.split('-').next()?;
-                let middleware = create_middleware(config).ok()?;
-                Some((router_name, middleware))
-            });
-            
-        for (router_name, middleware) in enabled_middlewares {
-            router_chains.entry(router_name.to_string())
-                .or_insert_with(MiddlewareChain::new)
-                .add_boxed(middleware);
+        for (router_name, middleware_names) in router_middlewares {
+            let mut chain = MiddlewareChain::new();
+            for middleware_name in middleware_names {
+                if let Some(config) = middleware_configs.get(middleware_name) {
+                    if config.enabled {
+                        if let Ok(middleware) = create_middleware(config) {
+                            chain.add_boxed(middleware);
+                        }
+                    }
+                }
+            }
+            router_chains.insert(router_name.clone(), chain);
         }
         
         Self { router_chains }
