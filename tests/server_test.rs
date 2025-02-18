@@ -101,7 +101,11 @@ mod tests {
 
         // 나머지 컴포넌트 생성
         let routing_table = Arc::new(RwLock::new(RoutingTable::new()));
-        let middleware_manager = MiddlewareManager::new(&settings.middleware);
+        let router_middlewares = HashMap::new();
+        let middleware_manager = MiddlewareManager::new(
+            &settings.middleware,
+            &router_middlewares
+        );
 
         // ServerManager 생성
         let server = ServerManager::new(
@@ -138,10 +142,14 @@ mod tests {
             settings,
             docker_manager,
             Arc::new(RwLock::new(RoutingTable::new())),
-            MiddlewareManager::new(&HashMap::new()),
+            MiddlewareManager::new(&HashMap::new(), &HashMap::new()),
         );
 
-        // ... assertions
+        // 기본 설정 검증
+        assert_eq!(server.config.server.http_port, 9090, "HTTP 포트가 기본값과 일치해야 함");
+        assert!(!server.config.server.https_enabled, "HTTPS는 기본적으로 비활성화되어 있어야 함");
+        assert!(server.routing_table.read().await.routes.is_empty(), "라우팅 테이블이 비어있어야 함");
+        
         teardown();
     }
 
@@ -189,7 +197,11 @@ mod tests {
         ).await;
 
         let routing_table = Arc::new(RwLock::new(RoutingTable::new()));
-        let middleware_manager = MiddlewareManager::new(&settings.middleware);
+        let router_middlewares = HashMap::new();
+        let middleware_manager = MiddlewareManager::new(
+            &settings.middleware,
+            &router_middlewares
+        );
 
         let server = ServerManager::new(
             settings,
@@ -238,7 +250,11 @@ mod tests {
         ).await;
 
         let routing_table = Arc::new(RwLock::new(RoutingTable::new()));
-        let middleware_manager = MiddlewareManager::new(&settings.middleware);
+        let router_middlewares = HashMap::new();
+        let middleware_manager = MiddlewareManager::new(
+            &settings.middleware,
+            &router_middlewares
+        );
 
         let server = ServerManager::new(
             settings,
@@ -306,7 +322,11 @@ mod tests {
         ).await;
 
         let routing_table = Arc::new(RwLock::new(RoutingTable::new()));
-        let middleware_manager = MiddlewareManager::new(&settings.middleware);
+        let router_middlewares = HashMap::new();
+        let middleware_manager = MiddlewareManager::new(
+            &settings.middleware,
+            &router_middlewares
+        );
 
         let server = ServerManager::new(
             settings,
@@ -392,14 +412,43 @@ mod tests {
             settings.docker.clone(),
         ).await;
 
+        let routing_table = Arc::new(RwLock::new(RoutingTable::new()));
+        let router_middlewares = HashMap::new();
+        let middleware_manager = MiddlewareManager::new(
+            &settings.middleware,
+            &router_middlewares
+        );
+
         let server = ServerManager::new(
             settings,
             docker_manager,
-            Arc::new(RwLock::new(RoutingTable::new())),
-            MiddlewareManager::new(&HashMap::new()),
+            routing_table.clone(),
+            middleware_manager,
         );
 
-        // ... 나머지 테스트 코드는 동일
+        // 초기 라우트 설정
+        let routes = server.docker_manager.get_container_routes().await.unwrap();
+        {
+            let mut table = routing_table.write().await;
+            table.sync_docker_routes(routes);
+        }
+
+        // 라우팅 테이블 검증
+        let table = routing_table.read().await;
+        let route = table.routes.get(&(
+            "test.local".to_string(),
+            PathMatcher::from_str("/").unwrap()
+        )).unwrap();
+
+        // 미들웨어 설정 검증
+        match &route.middlewares {
+            Some(middlewares) => {
+                assert_eq!(middlewares.len(), 1, "미들웨어 체인에는 하나의 미들웨어만 있어야 함");
+                assert!(middlewares.contains(&"test-auth".to_string()), "test-auth 미들웨어가 설정되어 있어야 함");
+            },
+            None => panic!("미들웨어가 설정되어 있어야 함"),
+        }
+
         teardown();
     }
 
@@ -451,7 +500,11 @@ mod tests {
         ).await;
 
         let routing_table = Arc::new(RwLock::new(RoutingTable::new()));
-        let middleware_manager = MiddlewareManager::new(&settings.middleware);
+        let router_middlewares = HashMap::new();
+        let middleware_manager = MiddlewareManager::new(
+            &settings.middleware,
+            &router_middlewares
+        );
 
         let server = ServerManager::new(
             settings.clone(),
@@ -535,7 +588,11 @@ mod tests {
         ).await;
 
         let routing_table = Arc::new(RwLock::new(RoutingTable::new()));
-        let middleware_manager = MiddlewareManager::new(&settings.middleware);
+        let router_middlewares = HashMap::new();
+        let middleware_manager = MiddlewareManager::new(
+            &settings.middleware,
+            &router_middlewares
+        );
 
         let server = ServerManager::new(
             settings,
