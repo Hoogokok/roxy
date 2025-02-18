@@ -1,5 +1,6 @@
 use tracing::debug;
 use crate::middleware::basic_auth::{BasicAuthConfig, BasicAuthMiddleware};
+use crate::middleware::cors::{CorsConfig, CorsMiddleware};
 use crate::middleware::headers::{HeadersConfig, HeadersMiddleware};
 use super::{Middleware, MiddlewareChain, MiddlewareConfig, MiddlewareError, Request, Response};
 use super::config::MiddlewareType;
@@ -20,6 +21,10 @@ fn create_middleware(config: &MiddlewareConfig) -> Result<Box<dyn Middleware>, M
             debug!("생성된 헤더 설정: {:?}", headers_config);
             
             Ok(Box::new(HeadersMiddleware::new(headers_config)))
+        }
+        MiddlewareType::Cors => {
+            let cors_config = CorsConfig::from_labels(&config.settings)?;
+            Ok(Box::new(CorsMiddleware::new(cors_config)))
         }
     }
 }
