@@ -64,7 +64,7 @@ impl ServerManager {
         }
 
         // 5. 미들웨어 매니저 초기화
-        let middleware_manager = MiddlewareManager::new(&settings.middleware);
+        let middleware_manager = MiddlewareManager::new(&settings.middleware, &settings.router_middlewares);
 
         Ok(Self::new(
             settings,
