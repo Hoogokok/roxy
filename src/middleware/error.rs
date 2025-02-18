@@ -25,6 +25,8 @@ pub enum MiddlewareError {
     },
     InvalidRequest(String),
     PreflightResponse(Response<Full<Bytes>>),
+    /// Rate limit 초과 에러
+    TooManyRequests(Response<Full<Bytes>>),
 }
 
 impl fmt::Display for MiddlewareError {
@@ -50,6 +52,9 @@ impl fmt::Display for MiddlewareError {
             }
             Self::PreflightResponse(_) => {
                 write!(f, "Preflight 응답 오류")
+            }
+            Self::TooManyRequests(_) => {
+                write!(f, "Rate limit exceeded")
             }
         }
     }
