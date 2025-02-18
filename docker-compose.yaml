@@ -73,7 +73,11 @@ services:
       - "rproxy.http.middlewares.web-headers.enabled=true"
       - "rproxy.http.middlewares.web-headers.headers.request.add.X-Real-IP=true"
       - "rproxy.http.middlewares.web-headers.headers.response.set.Content-Security-Policy=default-src 'self'"
-      - "rproxy.http.routers.web.middlewares=web-headers"
+      - "rproxy.http.middlewares.web-ratelimit.type=ratelimit"
+      - "rproxy.http.middlewares.web-ratelimit.enabled=true"
+      - "rproxy.http.middlewares.web-ratelimit.rateLimit.average=2"
+      - "rproxy.http.middlewares.web-ratelimit.rateLimit.burst=4"
+      - "rproxy.http.routers.web.middlewares=web-headers,web-ratelimit"
     networks:
       - reverse-proxy-network
     volumes:
