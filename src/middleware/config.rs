@@ -9,6 +9,7 @@ use tracing::debug;
 pub enum MiddlewareType {
     BasicAuth,
     Headers,
+    Cors,
     // 추후 추가될 미들웨어 타입들...
 }
 
@@ -19,6 +20,7 @@ impl FromStr for MiddlewareType {
         match s {
             "headers" => Ok(MiddlewareType::Headers),
             "basic-auth" => Ok(MiddlewareType::BasicAuth),
+            "cors" => Ok(MiddlewareType::Cors),
             unknown => Err(format!("Unknown middleware type: {}", unknown)),
         }
     }
