@@ -57,7 +57,7 @@ impl MiddlewareManager {
 
     async fn handle_chain<F, T>(&self, router_name: Option<&str>, input: T, handler: F) -> Result<T, MiddlewareError> 
     where
-        F: Fn(&MiddlewareChain, T) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, MiddlewareError>> + '_>>
+        F: Fn(&MiddlewareChain, T) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, MiddlewareError>> + Send + '_>>
     {
         match router_name {
             Some(name) => {
