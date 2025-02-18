@@ -5,36 +5,45 @@ use super::MiddlewareError;
 
 /// 미들웨어 에러를 HTTP 응답으로 변환합니다.
 pub fn handle_middleware_error(err: MiddlewareError) -> Response<Full<Bytes>> {
-    let (status, message) = match err {
-        MiddlewareError::Config { message } => {
-            (StatusCode::INTERNAL_SERVER_ERROR, message)
-        }
-        MiddlewareError::Runtime { message, .. } => {
-            (StatusCode::INTERNAL_SERVER_ERROR, message)
-        }
-        MiddlewareError::InvalidAuth(message) => {
-            (StatusCode::UNAUTHORIZED, message)
-        }
-        MiddlewareError::InvalidFormat(message) => {
-            (StatusCode::BAD_REQUEST, message)
-        }
-        MiddlewareError::InvalidLabel { key, value, reason } => {
-            // 라벨 파싱 에러는 서버 설정 오류이므로 500 반환
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("라벨 설정 오류 - key: {}, value: {}, 원인: {}", key, value, reason)
-            )
-        }
-        MiddlewareError::InvalidRequest(message) => {
-            (StatusCode::BAD_REQUEST, message)
-        }
-        MiddlewareError::PreflightResponse(response) => {
-            return response;
-        }
-    };
+    match err {
+        // 직접 Response를 반환하는 에러들
+        MiddlewareError::PreflightResponse(response) => response,
+        MiddlewareError::TooManyRequests(response) => response,
+        
+        // 상태 코드와 메시지를 생성하는 에러들
+        _ => {
+            let (status, message) = match err {
+                MiddlewareError::Config { message } => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, message)
+                }
+                MiddlewareError::Runtime { message, .. } => {
+                    (StatusCode::INTERNAL_SERVER_ERROR, message)
+                }
+                MiddlewareError::InvalidAuth(message) => {
+                    (StatusCode::UNAUTHORIZED, message)
+                }
+                MiddlewareError::InvalidFormat(message) => {
+                    (StatusCode::BAD_REQUEST, message)
+                }
+                MiddlewareError::InvalidLabel { key, value, reason } => {
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("라벨 설정 오류 - key: {}, value: {}, 원인: {}", key, value, reason)
+                    )
+                }
+                MiddlewareError::InvalidRequest(message) => {
+                    (StatusCode::BAD_REQUEST, message)
+                }
+                _ => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal Server Error".to_string()
+                ),
+            };
 
-    Response::builder()
-        .status(status)
-        .body(Full::new(Bytes::from(message)))
-        .unwrap()
+            Response::builder()
+                .status(status)
+                .body(Full::new(Bytes::from(message)))
+                .unwrap()
+        }
+    }
 } 
