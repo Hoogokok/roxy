@@ -109,6 +109,32 @@ impl Settings {
                             });
                         }
                     }
+                    MiddlewareType::RateLimit => {
+                        // Rate Limit 필수 설정 검증
+                        if !middleware.settings.contains_key("rateLimit.average") {
+                            return Err(SettingsError::EnvVarMissing {
+                                var_name: format!("{}.rateLimit.average", name),
+                            });
+                        }
+                        
+                        // average 값이 유효한 숫자인지 검증
+                        if let Some(average) = middleware.settings.get("rateLimit.average") {
+                            if average.parse::<u32>().is_err() {
+                                return Err(SettingsError::InvalidConfig(
+                                    format!("Invalid average value for rate limit: {}", average)
+                                ));
+                            }
+                        }
+
+                        // burst 값이 있다면 유효한 숫자인지 검증
+                        if let Some(burst) = middleware.settings.get("rateLimit.burst") {
+                            if burst.parse::<u32>().is_err() {
+                                return Err(SettingsError::InvalidConfig(
+                                    format!("Invalid burst value for rate limit: {}", burst)
+                                ));
+                            }
+                        }
+                    }
                 }
             }
         }

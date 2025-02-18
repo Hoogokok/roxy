@@ -2,6 +2,7 @@ use tracing::debug;
 use crate::middleware::basic_auth::{BasicAuthConfig, BasicAuthMiddleware};
 use crate::middleware::cors::{CorsConfig, CorsMiddleware};
 use crate::middleware::headers::{HeadersConfig, HeadersMiddleware};
+use crate::middleware::rate_limit::{RateLimitConfig, RateLimitMiddleware, store::memory::MemoryStore};
 use super::{Middleware, MiddlewareChain, MiddlewareConfig, MiddlewareError, Request, Response};
 use super::config::MiddlewareType;
 use std::collections::HashMap;
@@ -25,6 +26,12 @@ fn create_middleware(config: &MiddlewareConfig) -> Result<Box<dyn Middleware>, M
         MiddlewareType::Cors => {
             let cors_config = CorsConfig::from_labels(&config.settings)?;
             Ok(Box::new(CorsMiddleware::new(cors_config)))
+        }
+        MiddlewareType::RateLimit => {
+            let rate_limit_config = RateLimitConfig::from_labels(&config.settings)
+                .map_err(|e| MiddlewareError::Config { message: e })?;
+            let store = MemoryStore::new();
+            Ok(Box::new(RateLimitMiddleware::new(rate_limit_config, store)))
         }
     }
 }

@@ -12,6 +12,7 @@ mod manager;
 mod response;
 pub mod parser;
 mod cors;
+pub mod rate_limit;
 
 pub use chain::MiddlewareChain;
 pub use config::MiddlewareConfig;
@@ -24,4 +25,3 @@ pub type Request<B = hyper::body::Incoming> = hyper::Request<B>;
 pub type Response<B = http_body_util::Full<bytes::Bytes>> = hyper::Response<B>;
 
 pub use response::handle_middleware_error;
-pub use parser::{HeaderParser, ParserError};
