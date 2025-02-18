@@ -269,3 +269,74 @@ labels:
 htpasswd -nbB admin "my-password"
 ```
 
+# Rate Limit 미들웨어
+
+요청 빈도를 제한하는 미들웨어입니다.
+
+## 기능
+- 토큰 버킷 알고리즘 기반의 rate limiting
+- 초당 평균 요청 수(average) 및 최대 버스트(burst) 설정 지원
+- 클라이언트별 제한 적용 (IP 주소 또는 요청 경로 기반)
+- 429 Too Many Requests 응답 및 적절한 헤더 제공
+
+## 설정 방법
+
+### Docker 라벨 설정
+```yaml
+labels:
+  # 기본 설정
+  - "rproxy.http.middlewares.my-ratelimit.type=ratelimit"
+  - "rproxy.http.middlewares.my-ratelimit.enabled=true"
+  
+  # Rate Limit 설정
+  - "rproxy.http.middlewares.my-ratelimit.rateLimit.average=100"  # 초당 평균 요청 수
+  - "rproxy.http.middlewares.my-ratelimit.rateLimit.burst=200"    # 최대 버스트 허용량
+```
+
+### TOML 설정
+```toml
+[middlewares.my-ratelimit]
+middleware_type = "ratelimit"
+enabled = true
+order = 1
+
+[middlewares.my-ratelimit.settings]
+"rateLimit.average" = "100"
+"rateLimit.burst" = "200"
+```
+
+## 응답 헤더
+Rate limit 상태를 나타내는 헤더가 응답에 포함됩니다:
+
+- `X-RateLimit-Limit`: 초당 허용되는 요청 수
+- `X-RateLimit-Burst`: 최대 버스트 허용량
+- `Retry-After`: 제한 초과 시 다음 요청까지 대기 시간 (초)
+
+## 예제
+
+### 웹 서비스에 Rate Limit 적용
+```yaml
+services:
+  web:
+    image: nginx
+    labels:
+      - "rproxy.http.middlewares.web-ratelimit.type=ratelimit"
+      - "rproxy.http.middlewares.web-ratelimit.enabled=true"
+      - "rproxy.http.middlewares.web-ratelimit.rateLimit.average=2"   # 초당 2개 요청
+      - "rproxy.http.middlewares.web-ratelimit.rateLimit.burst=4"     # 최대 4개 버스트
+      - "rproxy.http.routers.web.middlewares=web-ratelimit"
+```
+
+### API 서비스에 Rate Limit 적용
+```yaml
+services:
+  api:
+    image: node
+    labels:
+      - "rproxy.http.middlewares.api-ratelimit.type=ratelimit"
+      - "rproxy.http.middlewares.api-ratelimit.enabled=true"
+      - "rproxy.http.middlewares.api-ratelimit.rateLimit.average=50"  # 초당 50개 요청
+      - "rproxy.http.middlewares.api-ratelimit.rateLimit.burst=100"   # 최대 100개 버스트
+      - "rproxy.http.routers.api.middlewares=api-ratelimit"
+```
+
