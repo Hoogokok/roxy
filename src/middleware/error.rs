@@ -1,6 +1,9 @@
 use std::fmt;
 
 use super::parser::ParserError;
+use hyper::Response;
+use http_body_util::Full;
+use bytes::Bytes;
 
 #[derive(Debug)]
 pub enum MiddlewareError {
@@ -20,6 +23,8 @@ pub enum MiddlewareError {
         value: String,
         reason: String,
     },
+    InvalidRequest(String),
+    PreflightResponse(Response<Full<Bytes>>),
 }
 
 impl fmt::Display for MiddlewareError {
@@ -39,6 +44,12 @@ impl fmt::Display for MiddlewareError {
             }
             Self::InvalidLabel { key, value, reason } => {
                 write!(f, "라벨 오류: key={}, value={}, reason={}", key, value, reason)
+            }
+            Self::InvalidRequest(message) => {
+                write!(f, "요청 오류: {}", message)
+            }
+            Self::PreflightResponse(_) => {
+                write!(f, "Preflight 응답 오류")
             }
         }
     }
