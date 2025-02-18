@@ -95,6 +95,14 @@ impl Settings {
                     MiddlewareType::Headers => {
                         // Headers 설정 검증은 필요한 경우 추가
                     }
+                    MiddlewareType::Cors => {
+                        // CORS 설정 검증
+                        if !middleware.settings.contains_key("cors.allowOrigins") {
+                            return Err(SettingsError::EnvVarMissing {
+                                var_name: format!("{}.cors.allowOrigins", name),
+                            });
+                        }
+                    }
                 }
             }
         }
