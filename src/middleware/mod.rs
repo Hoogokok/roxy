@@ -11,6 +11,7 @@ pub mod basic_auth;
 mod manager;
 mod response;
 pub mod parser;
+mod cors;
 
 pub use chain::MiddlewareChain;
 pub use config::MiddlewareConfig;
