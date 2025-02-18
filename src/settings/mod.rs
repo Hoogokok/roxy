@@ -1,5 +1,6 @@
 use std::{collections::HashMap, env, fs, path::Path};
 use serde::Deserialize;
+use tracing::debug;
 use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
 
 mod server;
@@ -37,6 +38,10 @@ pub struct Settings {
     /// 미들웨어 설정
     #[serde(default)]
     pub middleware: HashMap<String, MiddlewareConfig>,
+    
+    /// 라우터-미들웨어 매핑
+    #[serde(default)]
+    pub router_middlewares: HashMap<String, Vec<String>>,
 }
 
 impl Settings {
@@ -68,6 +73,7 @@ impl Settings {
             tls: TlsSettings::from_env()?,
             docker: DockerSettings::from_env()?,
             middleware: HashMap::new(),
+            router_middlewares: HashMap::new(),
         };
 
         // 설정 생성 시점에 바로 검증
@@ -110,15 +116,19 @@ impl Settings {
         Ok(())
     }
 
-    // Docker 라벨에서 미들웨어 설정을 로드하는 메서드 추가
+    // Docker 라벨을 통해 설정을 추가
     pub fn merge_docker_labels(&mut self, labels: &HashMap<String, String>) -> Result<()> {
+        // 미들웨어 설정 파싱
         let label_middlewares = MiddlewareConfig::from_labels(labels)
             .map_err(|e| SettingsError::InvalidConfig(e))?;
-
+        // 미들웨어 추가
         for (name, config) in label_middlewares {
-            // add_middleware를 통해 중복 체크와 설정 추가
             self.add_middleware(name, config)?;
         }
+
+        // 라우터-미들웨어 매핑 파싱
+        self.router_middlewares = Self::parse_router_middlewares(labels);
+        
         Ok(())
     }
 
@@ -128,6 +138,32 @@ impl Settings {
         }
         self.middleware.insert(name, config);
         Ok(())
+    }
+
+    fn parse_router_middlewares(labels: &HashMap<String, String>) -> HashMap<String, Vec<String>> {
+        let mut router_middlewares = HashMap::new();
+        
+        for (key, value) in labels {
+            // rproxy.http.routers.{router}.middlewares=middleware1,middleware2
+            if let Some(router_config) = key.strip_prefix("rproxy.http.routers.") {
+                if router_config.ends_with(".middlewares") {
+                    let router_name = router_config.trim_end_matches(".middlewares");
+                    let middlewares: Vec<String> = value.split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect();
+                    
+                    debug!(
+                        router = %router_name,
+                        middlewares = ?middlewares,
+                        "라우터 미들웨어 매핑 파싱"
+                    );
+                    
+                    router_middlewares.insert(router_name.to_string(), middlewares);
+                }
+            }
+        }
+        
+        router_middlewares
     }
 }
 
