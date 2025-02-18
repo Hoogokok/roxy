@@ -55,36 +55,30 @@ impl MiddlewareManager {
         Self { router_chains }
     }
 
-    // handle_request 수정
-    pub async fn handle_request(&self, router_name: Option<&str>, req: Request) -> Result<Request, MiddlewareError> {
+    async fn handle_chain<F, T>(&self, router_name: Option<&str>, input: T, handler: F) -> Result<T, MiddlewareError> 
+    where
+        F: Fn(&MiddlewareChain, T) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, MiddlewareError>> + '_>>
+    {
         match router_name {
             Some(name) => {
                 if let Some(chain) = self.router_chains.get(name) {
                     debug!("라우터 {} 의 미들웨어 체인 실행", name);
-                    chain.handle_request(req).await
+                    handler(chain, input).await
                 } else {
                     debug!("라우터 {} 에 대한 미들웨어 체인 없음", name);
-                    Ok(req)
+                    Ok(input)
                 }
             }
-            None => Ok(req)
+            None => Ok(input)
         }
     }
 
-    // handle_response 수정
+    pub async fn handle_request(&self, router_name: Option<&str>, req: Request) -> Result<Request, MiddlewareError> {
+        self.handle_chain(router_name, req, |chain, req| Box::pin(chain.handle_request(req))).await
+    }
+
     pub async fn handle_response(&self, router_name: Option<&str>, res: Response) -> Result<Response, MiddlewareError> {
-        match router_name {
-            Some(name) => {
-                if let Some(chain) = self.router_chains.get(name) {
-                    debug!("라우터 {} 의 응답 미들웨어 체인 실행", name);
-                    chain.handle_response(res).await
-                } else {
-                    debug!("라우터 {} 에 대한 미들웨어 체인 없음", name);
-                    Ok(res)
-                }
-            }
-            None => Ok(res)
-        }
+        self.handle_chain(router_name, res, |chain, res| Box::pin(chain.handle_response(res))).await
     }
 
     pub fn update_configs(&mut self, configs: &[(String, MiddlewareConfig)]) {
@@ -128,3 +122,4 @@ impl MiddlewareManager {
         debug!("========================");
     }
 } 
+    
