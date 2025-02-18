@@ -21,10 +21,6 @@ impl MiddlewareChain {
     /// 미들웨어를 체인에 추가합니다.
     pub fn add_boxed(&mut self, middleware: Box<dyn Middleware>) {
         let arc: Arc<dyn Middleware> = Arc::from(middleware);
-        let type_id = arc.as_ref().type_id();
-        
-        // 이미 존재하는 같은 타입의 미들웨어가 있다면 제거
-        self.middlewares.retain(|m| m.as_ref().type_id() != type_id);
         self.middlewares.push(arc);
     }
 
@@ -53,5 +49,15 @@ impl MiddlewareChain {
 
     pub fn middleware_count(&self) -> usize {
         self.middlewares.len()
+    }
+
+    pub fn middleware_types(&self) -> Option<Vec<&'static str>> {
+        if self.middlewares.is_empty() {
+            None
+        } else {
+            Some(self.middlewares.iter()
+                .map(|m| std::any::type_name::<dyn Middleware>())
+                .collect())
+        }
     }
 } 

@@ -112,11 +112,25 @@ impl MiddlewareManager {
 
     pub fn print_chain_status(&self) {
         debug!("=== 미들웨어 체인 상태 ===");
-        if self.router_chains.is_empty() {
-            debug!("등록된 미들웨어 매핑 없음");
-        } else {
-            for (router_name, chain) in &self.router_chains {
-                debug!("라우터: {} - 미들웨어: {:?}", router_name, chain.middleware_count());
+        match self.router_chains.len() {
+            0 => debug!("등록된 미들웨어 매핑 없음"),
+            count => {
+                debug!("총 {} 개의 라우터 체인", count);
+                for (router_name, chain) in &self.router_chains {
+                    debug!(
+                        router = %router_name,
+                        middlewares = %chain.middleware_count(),
+                        "라우터 체인 정보"
+                    );
+                    // 체인 내부의 미들웨어 타입 정보도 출력
+                    if let Some(types) = chain.middleware_types() {
+                        debug!(
+                            router = %router_name,
+                            types = ?types,
+                            "미들웨어 타입 목록"
+                        );
+                    }
+                }
             }
         }
         debug!("========================");
