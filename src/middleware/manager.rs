@@ -42,20 +42,31 @@ impl MiddlewareManager {
         let mut router_chains = HashMap::new();
         
         for (router_name, middleware_names) in router_middlewares {
-            let mut chain = MiddlewareChain::new();
-            for middleware_name in middleware_names {
-                if let Some(config) = middleware_configs.get(middleware_name) {
-                    if config.enabled {
-                        if let Ok(middleware) = create_middleware(config) {
-                            chain.add_boxed(middleware);
-                        }
-                    }
-                }
+            let chain = Self::create_middleware_chain(middleware_names, middleware_configs);
+            if chain.middleware_count() > 0 {
+                router_chains.insert(router_name.clone(), chain);
             }
-            router_chains.insert(router_name.clone(), chain);
         }
         
         Self { router_chains }
+    }
+
+    fn create_middleware_chain(
+        middleware_names: &[String],
+        configs: &HashMap<String, MiddlewareConfig>
+    ) -> MiddlewareChain {
+        let mut chain = MiddlewareChain::new();
+        
+        let middlewares = middleware_names.iter()
+            .filter_map(|name| configs.get(name))
+            .filter(|config| config.enabled)
+            .filter_map(|config| create_middleware(config).ok());
+
+        for middleware in middlewares {
+            chain.add_boxed(middleware);
+        }
+        
+        chain
     }
 
     async fn handle_chain<F, T>(&self, router_name: Option<&str>, input: T, handler: F) -> Result<T, MiddlewareError> 
