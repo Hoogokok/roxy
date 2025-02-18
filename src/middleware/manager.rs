@@ -36,9 +36,7 @@ pub struct MiddlewareManager {
 
 impl MiddlewareManager {
     pub fn new(middleware_configs: &HashMap<String, MiddlewareConfig>) -> Self {
-        let mut manager = Self {
-            router_chains: HashMap::new(),
-        };
+        let mut router_chains = HashMap::new();
         
         let enabled_middlewares = middleware_configs.iter()
             .filter(|(_, config)| config.enabled)
@@ -49,18 +47,12 @@ impl MiddlewareManager {
             });
             
         for (router_name, middleware) in enabled_middlewares {
-            manager.ensure_router_chain(router_name);
-            if let Some(chain) = manager.router_chains.get_mut(router_name) {
-                chain.add_boxed(middleware);
-            }
+            router_chains.entry(router_name.to_string())
+                .or_insert_with(MiddlewareChain::new)
+                .add_boxed(middleware);
         }
         
-        manager
-    }
-
-    fn ensure_router_chain(&mut self, router_name: &str) {
-        self.router_chains.entry(router_name.to_string())
-            .or_insert_with(MiddlewareChain::new);
+        Self { router_chains }
     }
 
     // handle_request 수정
