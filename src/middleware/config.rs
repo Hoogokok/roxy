@@ -10,6 +10,7 @@ pub enum MiddlewareType {
     BasicAuth,
     Headers,
     Cors,
+    RateLimit,
     // 추후 추가될 미들웨어 타입들...
 }
 
@@ -21,6 +22,7 @@ impl FromStr for MiddlewareType {
             "headers" => Ok(MiddlewareType::Headers),
             "basic-auth" => Ok(MiddlewareType::BasicAuth),
             "cors" => Ok(MiddlewareType::Cors),
+            "ratelimit" => Ok(MiddlewareType::RateLimit),
             unknown => Err(format!("Unknown middleware type: {}", unknown)),
         }
     }
