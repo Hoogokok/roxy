@@ -25,6 +25,12 @@ pub fn handle_middleware_error(err: MiddlewareError) -> Response<Full<Bytes>> {
                 format!("라벨 설정 오류 - key: {}, value: {}, 원인: {}", key, value, reason)
             )
         }
+        MiddlewareError::InvalidRequest(message) => {
+            (StatusCode::BAD_REQUEST, message)
+        }
+        MiddlewareError::PreflightResponse(response) => {
+            return response;
+        }
     };
 
     Response::builder()
