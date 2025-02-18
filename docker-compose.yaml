@@ -21,7 +21,7 @@ services:
       - TLS_CERT_PATH=/app/certs/cert.pem
       - TLS_KEY_PATH=/app/certs/key.pem
       - HTTPS_PORT=443
-      - PROXY_LOG_LEVEL=info
+      - PROXY_LOG_LEVEL=debug
       - PROXY_LOG_FORMAT=text
     user: root
     restart: "no"
@@ -40,12 +40,20 @@ services:
     labels:
       - "rproxy.http.routers.api.rule=Host(`test.localhost`) && PathPrefix(`/api`)"
       - "rproxy.http.services.api.loadbalancer.server.port=80"
+      - "rproxy.http.middlewares.api-cors.cors.allowOrigins=http://localhost:3000,https://example.com"
+      - "rproxy.http.middlewares.api-cors.cors.allowMethods=GET,POST,PUT,DELETE,OPTIONS"
+      - "rproxy.http.middlewares.api-cors.cors.allowHeaders=Content-Type,Authorization,X-Request-ID"
+      - "rproxy.http.middlewares.api-cors.cors.allowCredentials=true"
+      - "rproxy.http.middlewares.api-cors.cors.exposeHeaders=X-Custom-Header"
+      - "rproxy.http.middlewares.api-cors.cors.maxAge=3600"
+      - "rproxy.http.middlewares.api-cors.type=cors"
+      - "rproxy.http.middlewares.api-cors.enabled=true"
       - "rproxy.http.middlewares.api-headers.type=headers"
       - "rproxy.http.middlewares.api-headers.enabled=true"
       - "rproxy.http.middlewares.api-headers.headers.request.add.X-Request-ID=123"
       - "rproxy.http.middlewares.api-headers.headers.response.add.X-Custom-Header=value"
       - "rproxy.http.middlewares.api-headers.headers.response.remove=server"
-      - "rproxy.http.routers.api.middlewares=api-headers"
+      - "rproxy.http.routers.api.middlewares=api-cors,api-headers"
     networks:
       - reverse-proxy-network
     volumes:
