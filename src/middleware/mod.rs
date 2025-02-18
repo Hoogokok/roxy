@@ -25,5 +25,3 @@ pub type Response<B = http_body_util::Full<bytes::Bytes>> = hyper::Response<B>;
 
 pub use response::handle_middleware_error;
 pub use parser::{HeaderParser, ParserError};
-
-
