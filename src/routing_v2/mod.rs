@@ -3,7 +3,7 @@
 mod error;
 mod host;
 mod backend;
-mod matcher;
+pub mod matcher;
 mod table;
 
 pub use error::RoutingError;
