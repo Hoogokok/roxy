@@ -12,6 +12,7 @@ mod manager;
 mod response;
 pub mod parser;
 mod cors;
+mod rate_limit;
 
 pub use chain::MiddlewareChain;
 pub use config::MiddlewareConfig;
