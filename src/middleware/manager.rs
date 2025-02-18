@@ -96,19 +96,27 @@ impl MiddlewareManager {
     }
 
     pub fn update_configs(&mut self, configs: &[(String, MiddlewareConfig)]) {
-        let mut new_chains = HashMap::new();
-        
         debug!("미들웨어 설정 업데이트 시작 - 설정 수: {}", configs.len());
         
-        for (name, config) in configs {
-            if config.enabled {
-                debug!("미들웨어 체인 업데이트 - 라우터: {}, 타입: {:?}", name, config.middleware_type);
-                let mut chain = MiddlewareChain::new();
-                if let Ok(middleware) = create_middleware(config) {
-                    chain.add_boxed(middleware);
-                    new_chains.insert(name.clone(), chain);
-                }
-            }
+        let mut new_chains = HashMap::new();
+        
+        let enabled_middlewares = configs.iter()
+            .filter(|(_, config)| config.enabled)
+            .filter_map(|(name, config)| {
+                let router_name = name.split('-').next()?;
+                debug!("미들웨어 체인 업데이트 - 라우터: {}, 타입: {:?}", router_name, config.middleware_type);
+                
+                let middleware = match create_middleware(config) {
+                    Ok(m) => m,
+                    Err(_) => return None,
+                };
+                Some((router_name, middleware))
+            });
+
+        for (router_name, middleware) in enabled_middlewares {
+            new_chains.entry(router_name.to_string())
+                .or_insert_with(MiddlewareChain::new)
+                .add_boxed(middleware);
         }
 
         debug!("현재 체인 수: {}, 새 체인 수: {}", self.router_chains.len(), new_chains.len());
