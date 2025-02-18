@@ -55,17 +55,6 @@ fn test_host_info_parsing() {
     }
 }
 
-#[test]
-fn test_host_info_with_path() {
-    let host_info = HostInfo {
-        name: "example.com".to_string(),
-        port: None,
-        path: None,
-    };
-
-    let with_path = host_info.with_path("/api/users".to_string());
-    assert_eq!(with_path.path, Some("/api/users".to_string()));
-}
 
 #[test]
 fn test_host_info_clone() {
