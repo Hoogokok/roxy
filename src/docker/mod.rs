@@ -16,17 +16,18 @@ use bollard::system::EventsOptions;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
-use crate::config::Config;
+use crate::settings::DockerSettings;
 use crate::routing_v2::{BackendService, PathMatcher};
 use tracing::{debug, info, warn};
 use tokio::time::Duration;
 use std::sync::Arc;
+use crate::middleware::MiddlewareConfig;
 
 #[derive(Clone)]
 pub struct DockerManager {
     client: Arc<Box<dyn DockerClient>>,
     extractor: Box<dyn ContainerInfoExtractor>,
-    config: Config,
+    config: DockerSettings,
 }
 
 impl DockerManager {
@@ -34,7 +35,7 @@ impl DockerManager {
     pub async fn new(
         client: Box<dyn DockerClient>,
         extractor: Box<dyn ContainerInfoExtractor>,
-        config: Config,
+        config: DockerSettings,
     ) -> Self {
         Self {
             client: Arc::new(client),
@@ -44,17 +45,17 @@ impl DockerManager {
     }
 
     /// 기본 구현을 사용하는 팩토리 메서드
-    pub async fn with_defaults(config: Config) -> Result<Self, DockerError> {
+    pub async fn with_defaults(settings: DockerSettings) -> Result<Self, DockerError> {
         let client = BollardDockerClient::new().await?;
         let extractor = DefaultExtractor::new(
-            config.docker_network.clone(),
-            config.label_prefix.clone(),
+            settings.network.clone(),
+            settings.label_prefix.clone(),
         );
 
         Ok(Self::new(
             Box::new(client),
             Box::new(extractor),
-            config,
+            settings,
         ).await)
     }
 
@@ -86,11 +87,7 @@ impl DockerManager {
     async fn get_labeled_containers(&self) -> Result<Vec<ContainerSummary>, DockerError> {
         let options = Some(ListContainersOptions::<String> {
             all: true,
-            filters: {
-                let mut filters = HashMap::new();
-                filters.insert("label".to_string(), vec![format!("{}host", self.config.label_prefix)]);
-                filters
-            },
+            filters: HashMap::new(),  // 모든 컨테이너를 조회합니다.
             ..Default::default()
         });
 
@@ -135,9 +132,14 @@ impl DockerManager {
         let docker = self.client.clone();
         let config = self.config.clone();
 
-        // 초기 라우트 전송
+        // 초기 라우트와 미들웨어 설정 전송
         if let Ok(routes) = self.try_get_container_routes().await {
             let _ = tx.send(DockerEvent::RoutesUpdated(routes)).await;
+        }
+        
+        // 미들웨어 설정도 초기에 전송
+        if let Ok(middleware_configs) = self.get_middleware_configs().await {
+            let _ = tx.send(DockerEvent::MiddlewareConfigsUpdated(middleware_configs)).await;
         }
 
         tokio::spawn(async move {
@@ -168,7 +170,7 @@ impl DockerManager {
     /// Docker 이벤트를 처리하고 필요한 경우 라우팅 테이블을 업데이트합니다.
     async fn handle_container_event(
         docker: &Arc<Box<dyn DockerClient>>,
-        config: &Config,
+        config: &DockerSettings,
         event: &EventMessage,
         tx: &mpsc::Sender<DockerEvent>,
     ) -> Result<(), DockerError> {
@@ -183,13 +185,14 @@ impl DockerManager {
         let manager = DockerManager { 
             client: docker.clone(),
             extractor: Box::new(DefaultExtractor::new(
-                config.docker_network.clone(),
+                config.network.clone(),
                 config.label_prefix.clone(),
             )),
             config: config.clone(),
         };
 
-        match event.action.as_deref() {
+        // 이벤트 처리 후 미들웨어 설정도 업데이트
+        let result = match event.action.as_deref() {
             Some("start") => Self::handle_container_start(&manager, container_id, tx).await,
             Some("stop" | "die" | "destroy") => Self::handle_container_stop(&manager, container_id, tx).await,
             Some("update") => Self::handle_container_update(&manager, container_id, tx).await,
@@ -201,7 +204,16 @@ impl DockerManager {
                 );
                 Ok(())
             }
+        };
+
+        // 미들웨어 설정 업데이트
+        if let Ok(middleware_configs) = manager.get_middleware_configs().await {
+            tx.send(DockerEvent::MiddlewareConfigsUpdated(middleware_configs))
+                .await
+                .map_err(|_| Self::channel_send_error())?;
         }
+
+        result
     }
 
     async fn handle_container_start(
@@ -324,5 +336,31 @@ impl DockerManager {
             }
             None => Ok(None),
         }
+    }
+
+    // 컨테이너 라벨 조회 메서드 추가
+    pub async fn get_container_labels(&self) -> Result<HashMap<String, String>, DockerError> {
+        let containers = self.client.list_containers(None).await?;
+        let mut all_labels = HashMap::new();
+        
+        for container in containers {
+            if let Some(labels) = container.labels {
+                all_labels.extend(labels);
+            }
+        }
+        
+        Ok(all_labels)
+    }
+
+    // 미들웨어 설정 조회 메서드 추가
+    pub async fn get_middleware_configs(&self) -> Result<Vec<(String, MiddlewareConfig)>, DockerError> {
+        let labels = self.get_container_labels().await?;
+        
+        MiddlewareConfig::from_labels(&labels)
+            .map_err(|e| DockerError::ContainerConfigError {
+                container_id: "unknown".to_string(),
+                reason: format!("미들웨어 설정 파싱 실패: {}", e),
+                context: None,
+            })
     }
 }

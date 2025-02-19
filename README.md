@@ -160,3 +160,183 @@ networks:
 
 MIT License
 
+## 미들웨어 프레임워크
+
+HTTP 요청/응답을 처리하는 미들웨어 체인을 지원합니다.
+
+### 미들웨어 설정
+
+미들웨어는 Docker 라벨이나 TOML 파일을 통해 설정할 수 있습니다.
+
+#### Docker 라벨 설정
+```
+# 기본 설정
+rproxy.http.middlewares.cors.type=cors
+rproxy.http.middlewares.cors.enabled=true
+rproxy.http.middlewares.cors.order=1
+
+# CORS 설정
+rproxy.http.middlewares.cors.headers.access-control-allow-origin=*
+rproxy.http.middlewares.cors.headers.access-control-allow-methods=GET,POST,PUT,DELETE
+```
+
+#### TOML 설정
+```toml
+[middlewares.cors]
+middleware_type = "cors"
+enabled = true
+order = 1
+
+[middlewares.cors.settings]
+"headers.access-control-allow-origin" = "*"
+"headers.access-control-allow-methods" = "GET,POST,PUT,DELETE"
+```
+
+### 미들웨어 구현
+
+커스텀 미들웨어 구현 예시:
+```rust
+use async_trait::async_trait;
+use crate::middleware::{Middleware, Request, Response, MiddlewareError};
+
+pub struct MyMiddleware {
+    name: String,
+}
+
+#[async_trait]
+impl Middleware for MyMiddleware {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    async fn handle_request(&self, req: Request) -> Result<Request, MiddlewareError> {
+        // 요청 처리 로직
+        Ok(req)
+    }
+
+    async fn handle_response(&self, res: Response) -> Result<Response, MiddlewareError> {
+        // 응답 처리 로직
+        Ok(res)
+    }
+}
+```
+
+# Basic 인증 미들웨어
+
+HTTP Basic 인증을 제공하는 미들웨어입니다.
+
+## 기능
+- Basic 인증 프로토콜 지원
+- bcrypt 해시 알고리즘 ($2a$, $2b$, $2y$)
+- 다양한 인증 소스 지원
+
+## 인증 소스
+### 1. Docker 라벨
+직접 사용자와 해시된 비밀번호를 라벨에 지정합니다.
+```yaml
+labels:
+  - "rproxy.http.middlewares.my-auth.type=basic-auth"
+  - "rproxy.http.middlewares.my-auth.basicAuth.users=admin:$2y$05$..."
+```
+
+### 2. .htpasswd 파일
+Apache 스타일의 .htpasswd 파일을 사용합니다.
+```yaml
+labels:
+  - "rproxy.http.middlewares.my-auth.basicAuth.source=htpasswd"
+  - "rproxy.http.middlewares.my-auth.basicAuth.htpasswd.path=/etc/nginx/.htpasswd"
+```
+
+### 3. 환경 변수
+환경 변수에서 사용자 정보를 로드합니다.
+```yaml
+labels:
+  - "rproxy.http.middlewares.my-auth.basicAuth.source=env"
+  - "rproxy.http.middlewares.my-auth.basicAuth.env.prefix=BASIC_AUTH_USER_"
+```
+
+### 4. Docker Secrets
+Docker secrets에서 사용자 정보를 로드합니다.
+```yaml
+labels:
+  - "rproxy.http.middlewares.my-auth.basicAuth.source=docker-secret"
+  - "rproxy.http.middlewares.my-auth.basicAuth.secret.path=/run/secrets/basic-auth"
+```
+
+## 비밀번호 해시 생성
+```bash
+# bcrypt 해시 생성
+htpasswd -nbB admin "my-password"
+```
+
+# Rate Limit 미들웨어
+
+요청 빈도를 제한하는 미들웨어입니다.
+
+## 기능
+- 토큰 버킷 알고리즘 기반의 rate limiting
+- 초당 평균 요청 수(average) 및 최대 버스트(burst) 설정 지원
+- 클라이언트별 제한 적용 (IP 주소 또는 요청 경로 기반)
+- 429 Too Many Requests 응답 및 적절한 헤더 제공
+
+## 설정 방법
+
+### Docker 라벨 설정
+```yaml
+labels:
+  # 기본 설정
+  - "rproxy.http.middlewares.my-ratelimit.type=ratelimit"
+  - "rproxy.http.middlewares.my-ratelimit.enabled=true"
+  
+  # Rate Limit 설정
+  - "rproxy.http.middlewares.my-ratelimit.rateLimit.average=100"  # 초당 평균 요청 수
+  - "rproxy.http.middlewares.my-ratelimit.rateLimit.burst=200"    # 최대 버스트 허용량
+```
+
+### TOML 설정
+```toml
+[middlewares.my-ratelimit]
+middleware_type = "ratelimit"
+enabled = true
+order = 1
+
+[middlewares.my-ratelimit.settings]
+"rateLimit.average" = "100"
+"rateLimit.burst" = "200"
+```
+
+## 응답 헤더
+Rate limit 상태를 나타내는 헤더가 응답에 포함됩니다:
+
+- `X-RateLimit-Limit`: 초당 허용되는 요청 수
+- `X-RateLimit-Burst`: 최대 버스트 허용량
+- `Retry-After`: 제한 초과 시 다음 요청까지 대기 시간 (초)
+
+## 예제
+
+### 웹 서비스에 Rate Limit 적용
+```yaml
+services:
+  web:
+    image: nginx
+    labels:
+      - "rproxy.http.middlewares.web-ratelimit.type=ratelimit"
+      - "rproxy.http.middlewares.web-ratelimit.enabled=true"
+      - "rproxy.http.middlewares.web-ratelimit.rateLimit.average=2"   # 초당 2개 요청
+      - "rproxy.http.middlewares.web-ratelimit.rateLimit.burst=4"     # 최대 4개 버스트
+      - "rproxy.http.routers.web.middlewares=web-ratelimit"
+```
+
+### API 서비스에 Rate Limit 적용
+```yaml
+services:
+  api:
+    image: node
+    labels:
+      - "rproxy.http.middlewares.api-ratelimit.type=ratelimit"
+      - "rproxy.http.middlewares.api-ratelimit.enabled=true"
+      - "rproxy.http.middlewares.api-ratelimit.rateLimit.average=50"  # 초당 50개 요청
+      - "rproxy.http.middlewares.api-ratelimit.rateLimit.burst=100"   # 최대 100개 버스트
+      - "rproxy.http.routers.api.middlewares=api-ratelimit"
+```
+

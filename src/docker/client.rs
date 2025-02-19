@@ -1,4 +1,3 @@
-// src/docker/client.rs
 use async_trait::async_trait;
 use bollard::container::ListContainersOptions;
 use bollard::models::{ContainerSummary, EventMessage};

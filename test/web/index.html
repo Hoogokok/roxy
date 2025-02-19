@@ -3,9 +3,22 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Server 1</title>
+    <title>웹 서비스</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .status { color: green; }
+    </style>
 </head>
 <body>
-    <h1>Server 1</h1>
+    <h1>웹 서비스</h1>
+    <p class="status">서비스 상태: 정상 작동 중</p>
+    <p>현재 시간: <span id="time"></span></p>
+    <script>
+        function updateTime() {
+            document.getElementById('time').textContent = new Date().toLocaleString();
+        }
+        updateTime();
+        setInterval(updateTime, 1000);
+    </script>
 </body>
 </html>

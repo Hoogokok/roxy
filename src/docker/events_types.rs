@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use crate::docker::DockerError;
 use crate::routing_v2::{BackendService, PathMatcher};
+use crate::middleware::MiddlewareConfig;
 
 #[derive(Debug)]
 pub enum DockerEvent {
@@ -28,4 +29,5 @@ pub enum DockerEvent {
     Error(DockerError),
     /// 라우팅 테이블 업데이트
     RoutesUpdated(HashMap<(String, PathMatcher), BackendService>),
+    MiddlewareConfigsUpdated(Vec<(String, MiddlewareConfig)>),
 }

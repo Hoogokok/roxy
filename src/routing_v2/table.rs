@@ -97,10 +97,18 @@ impl RoutingTable {
     pub fn find_backend(&self, host_info: &HostInfo) -> Result<&BackendService, RoutingError> {
         let request_path = host_info.path.as_deref().unwrap_or("/");
 
-        // 모든 라우트를 순회하면서 매칭 확인
+        // 호스트와 포트가 모두 일치하는 경우를 먼저 확인
         for ((host, matcher), backend) in &self.routes {
             if host == &host_info.name && matcher.matches(request_path) {
-                return Ok(backend);
+                // 포트가 지정된 경우, 포트도 일치하는지 확인
+                if let Some(port) = &host_info.port {
+                    if backend.addresses.iter().any(|addr| addr.port() == *port) {
+                        return Ok(backend);
+                    }
+                } else {
+                    // 포트가 지정되지 않은 경우, 기존 동작 유지
+                    return Ok(backend);
+                }
             }
         }
 
