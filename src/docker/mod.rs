@@ -3,6 +3,7 @@ pub mod events_types;
 mod retry;
 mod client;
 pub mod container;
+mod health;
 
 pub use client::{BollardDockerClient, DockerClient};
 pub use container::{ContainerInfoExtractor, DefaultExtractor};
