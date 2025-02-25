@@ -84,7 +84,7 @@ impl DockerEventHandler {
                 info!("미들웨어 설정 업데이트 완료");
             }
             
-            DockerEvent::ContainerHealthChanged { container_id, status, message, timestamp } => {
+            DockerEvent::ContainerHealthChanged { container_id, status, message, timestamp, host } => {
                 match status {
                     HealthStatus::Healthy => {
                         info!(
@@ -101,7 +101,13 @@ impl DockerEventHandler {
                             message = %message,
                             "컨테이너 헬스 체크 실패"
                         );
-                        // TODO: 나중에 비정상 컨테이너 처리 로직 추가
+                        
+                        table.remove_route(&host);
+                        info!(
+                            container_id = %container_id,
+                            host = %host,
+                            "비정상 컨테이너 제거"
+                        );
                     }
                     _ => {
                         info!(
