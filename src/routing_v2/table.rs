@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use hyper::header;
 use tracing::{debug, info, warn};
+use std::sync::atomic::AtomicUsize;
 
 use crate::routing_v2::{
     HostInfo,
@@ -8,6 +9,8 @@ use crate::routing_v2::{
     PathMatcher,
     RoutingError,
 };
+
+use super::backend::LoadBalancerStrategy;
 
 /// 라우팅 테이블을 관리하는 구조체입니다.
 #[derive(Clone)]
@@ -33,11 +36,23 @@ impl RoutingTable {
     pub fn add_route(&mut self, host: String, service: BackendService, path_matcher: Option<PathMatcher>) {
         let matcher = path_matcher.unwrap_or_else(|| PathMatcher::from_str("/").unwrap());
         let key = (host, matcher);
+        
         match self.routes.get_mut(&key) {
             Some(existing_service) => {
-                existing_service.addresses.extend(service.addresses);
+                // 기존 서비스가 있는 경우
+                if existing_service.load_balancer.is_none() {
+                    // 로드밸런서가 없으면 라운드로빈으로 활성화
+                    existing_service.enable_load_balancer(
+                        LoadBalancerStrategy::RoundRobin {
+                            current_index: AtomicUsize::new(0)
+                        }
+                    );
+                }
+                // 새 주소 추가 (기본 가중치 1)
+                let _ = existing_service.add_address(service.address, 1);
             }
             None => {
+                // 새로운 서비스 추가
                 self.routes.insert(key, service);
             }
         }
@@ -97,28 +112,41 @@ impl RoutingTable {
     pub fn find_backend(&self, host_info: &HostInfo) -> Result<&BackendService, RoutingError> {
         let request_path = host_info.path.as_deref().unwrap_or("/");
 
-        // 호스트와 포트가 모두 일치하는 경우를 먼저 확인
-        for ((host, matcher), backend) in &self.routes {
-            if host == &host_info.name && matcher.matches(request_path) {
-                // 포트가 지정된 경우, 포트도 일치하는지 확인
-                if let Some(port) = &host_info.port {
-                    if backend.addresses.iter().any(|addr| addr.port() == *port) {
-                        return Ok(backend);
-                    }
-                } else {
-                    // 포트가 지정되지 않은 경우, 기존 동작 유지
-                    return Ok(backend);
-                }
+        // 먼저 호스트와 경로가 일치하는 백엔드를 찾음
+        let matching_backend = self.routes.iter()
+            .find(|((host, matcher), _)| {
+                host == &host_info.name && matcher.matches(request_path)
+            })
+            .map(|(_, backend)| backend);
+
+        let backend = match matching_backend {
+            Some(backend) => backend,
+            None => return Err(RoutingError::BackendNotFound {
+                host: host_info.name.clone(),
+                available_routes: self.routes.keys()
+                    .map(|(host, matcher)| format!("{}:{:?}", host, matcher))
+                    .collect(),
+            }),
+        };
+
+        // 포트가 지정된 경우에만 포트 일치 여부 확인
+        if let Some(port) = &host_info.port {
+            let port_matches = match &backend.load_balancer {
+                Some(lb) => lb.addresses.iter().any(|(addr, _)| addr.port() == *port),
+                None => backend.address.port() == *port,
+            };
+
+            if !port_matches {
+                return Err(RoutingError::BackendNotFound {
+                    host: host_info.name.clone(),
+                    available_routes: self.routes.keys()
+                        .map(|(host, matcher)| format!("{}:{:?}", host, matcher))
+                        .collect(),
+                });
             }
         }
 
-        // 매칭되는 라우트를 찾지 못한 경우
-        Err(RoutingError::BackendNotFound {
-            host: host_info.name.clone(),
-            available_routes: self.routes.keys()
-                .map(|(host, matcher)| format!("{}:{:?}", host, matcher))
-                .collect(),
-        })
+        Ok(backend)
     }
 
     /// Docker 컨테이너로부터 라우팅 규칙을 업데이트합니다.
