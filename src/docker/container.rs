@@ -1,7 +1,8 @@
 use bollard::models::ContainerSummary;
-use crate::{docker::DockerError, routing_v2::{BackendService, PathMatcher}};
+use crate::{docker::DockerError, routing_v2::{BackendService, LoadBalancerStrategy, PathMatcher}};
 use std::net::SocketAddr;
 use crate::settings::docker::HealthCheckType;
+use std::sync::atomic::AtomicUsize;
 
 // 불변 데이터 구조
 #[derive(Debug, Clone)]
@@ -14,6 +15,7 @@ pub struct ContainerInfo {
     pub router_name: Option<String>,
     /// 헬스 체크 설정
     pub health_check: Option<ContainerHealthCheck>,
+    pub load_balancer: Option<LoadBalancerStrategy>,
 }
 
 #[derive(Debug, Clone)]
@@ -218,7 +220,68 @@ impl  DefaultExtractor {
                 .unwrap_or(5),
         })
     }
-    
+
+    // 서비스 이름으로 로드밸런서 활성화 여부 확인
+    fn is_load_balancer_enabled(&self, labels: &Option<std::collections::HashMap<String, String>>) -> bool {
+        // 서비스 이름이 있으면 자동으로 로드밸런싱 활성화
+        labels.as_ref()
+            .and_then(|l| l.get(&format!("{}http.services", self.label_prefix)))
+            .is_some()
+    }
+
+    // 기본적으로 라운드 로빈 전략 사용
+    fn extract_load_balancer(&self, _labels: &Option<std::collections::HashMap<String, String>>, _service_name: &str) -> Option<LoadBalancerStrategy> {
+        Some(LoadBalancerStrategy::RoundRobin {
+            current_index: AtomicUsize::new(0),
+        })
+    }
+
+    fn extract_info(&self, container: &ContainerSummary) -> Result<ContainerInfo, DockerError> {
+        let labels = &container.labels;
+        
+        // 먼저 로드밸런서 활성화 여부 확인
+        let load_balancer_enabled = self.is_load_balancer_enabled(labels);
+        
+        let host = self.extract_host(labels)?;
+        let port = self.extract_port(labels);
+        let router_name = self.extract_router_name(labels);
+        let middlewares = router_name
+            .as_ref()
+            .and_then(|name| self.extract_middlewares(labels, name));
+        
+        let ip = container
+            .network_settings
+            .as_ref()
+            .and_then(|settings| settings.networks.as_ref())
+            .and_then(|networks| networks.get(&self.network_name))
+            .and_then(|network| network.ip_address.as_ref())
+            .ok_or_else(|| DockerError::NetworkError {
+                container_id: container.id.as_deref().unwrap_or("unknown").to_string(),
+                network: self.network_name.clone(),
+                reason: "IP 주소를 찾을 수 없음".to_string(),
+                context: None,
+            })?;
+
+        // 로드밸런서가 활성화된 경우에만 설정 추출
+        let load_balancer = if load_balancer_enabled {
+            router_name.as_ref()
+                .and_then(|name| self.extract_load_balancer(labels, name))
+        } else {
+            None
+        };
+
+        Ok(ContainerInfo {
+            host,
+            ip: ip.clone(),
+            port,
+            path_matcher: self.extract_path_matcher(labels),
+            middlewares,
+            router_name,
+            health_check: self.extract_health_check(labels),
+            load_balancer,
+        })
+    }
+
     pub fn new(network_name: String, label_prefix: String) -> Self {
         
         Self {
@@ -263,6 +326,7 @@ impl ContainerInfoExtractor for DefaultExtractor {
             middlewares,
             router_name,
             health_check: self.extract_health_check(labels),
+            load_balancer: None,
         })
     }
 
