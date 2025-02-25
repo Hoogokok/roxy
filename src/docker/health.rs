@@ -7,7 +7,7 @@ use hyper_util::rt::TokioExecutor;
 use http_body_util::Empty;
 use bytes::Bytes;
 use tokio::time::timeout;
-use tracing::{debug, error};
+use tracing::debug;
 use tokio::net::TcpStream;
 
 use crate::settings::docker::HealthCheckType;
