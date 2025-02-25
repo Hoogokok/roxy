@@ -111,30 +111,29 @@ fn default_retry_interval() -> u64 {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LoadBalancerSettings {
-    /// 로드밸런서 활성화 여부
-    #[serde(default)]
-    pub enabled: bool,
+    /// 로드밸런서 타입 (기본값: roundrobin)
+    #[serde(default = "default_lb_strategy")]
+    pub strategy: String,
 
-    /// 로드밸런서 전략 (roundrobin, weighted)
-    #[serde(default)]
-    pub strategy: Option<String>,
-    
     /// 가중치 (weighted 전략일 때만 사용)
     #[serde(default = "default_weight")]
-    pub weight: u32,
+    pub weight: usize,
 }
 
 impl Default for LoadBalancerSettings {
     fn default() -> Self {
         Self {
-            enabled: false,
-            strategy: None,
+            strategy: default_lb_strategy(),
             weight: default_weight(),
         }
     }
 }
 
-fn default_weight() -> u32 {
+fn default_lb_strategy() -> String {
+    "roundrobin".to_string()
+}
+
+fn default_weight() -> usize {
     1
 }
 
