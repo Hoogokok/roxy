@@ -413,3 +413,51 @@ services:
 3. 재시도 가능한 경우 설정된 간격만큼 대기 후 재시도
 4. 최대 시도 횟수 도달 또는 성공할 때까지 반복
 
+## 헬스 체크
+
+컨테이너의 상태를 주기적으로 모니터링하고 비정상 컨테이너를 자동으로 제거합니다.
+
+### 헬스 체크 설정
+
+Docker 라벨을 통해 헬스 체크를 설정할 수 있습니다:
+
+```yaml
+services:
+  api:
+    image: nginx
+    labels:
+      # 헬스 체크 활성화
+      - "rproxy.health.enabled=true"
+      
+      # HTTP 체크 설정
+      - "rproxy.health.http.path=/health"
+      - "rproxy.health.http.method=GET"
+      - "rproxy.health.http.expected_status=200"
+      
+      # 또는 TCP 체크 설정
+      - "rproxy.health.tcp.port=80"
+      
+      # 체크 간격 및 타임아웃
+      - "rproxy.health.interval=30"  # 30초마다 체크
+      - "rproxy.health.timeout=5"    # 5초 타임아웃
+      
+      # 연속 실패 허용 횟수
+      - "rproxy.health.max_failures=3"  # 3회 연속 실패시 제거
+```
+
+### 헬스 체크 타입
+
+1. HTTP 체크
+   - 지정된 경로로 HTTP 요청을 보내 상태 확인
+   - 응답 상태 코드로 정상 여부 판단
+
+2. TCP 체크
+   - 지정된 포트로 TCP 연결을 시도
+   - 연결 성공 여부로 정상 여부 판단
+
+### 실패 처리
+
+- 연속 실패 횟수가 `max_failures`를 초과하면 라우팅 테이블에서 제거
+- 컨테이너가 정상 상태로 복구되면 자동으로 라우팅 테이블에 다시 추가
+- 모든 상태 변경은 로그에 기록됨
+
