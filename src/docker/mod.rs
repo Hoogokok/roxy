@@ -482,10 +482,13 @@ impl DockerManager {
     // 그룹화된 컨테이너들을 하나의 백엔드 서비스로 변환
     fn create_backend_service(&self, infos: &[ContainerInfo]) -> Result<(String, PathMatcher, BackendService), DockerError> {
         let first = &infos[0];
+        debug!("서비스 생성 시작: host={}, path={:?}", first.host, first.path_matcher);
+        
         let mut service = self.extractor.create_backend(first)?;
         
         // 여러 컨테이너가 있으면 로드밸런서 활성화
         if infos.len() > 1 {
+            debug!("로드밸런서 활성화: 컨테이너 수={}", infos.len());
             service.enable_load_balancer(LoadBalancerStrategy::RoundRobin {
                 current_index: AtomicUsize::new(0)
             });
@@ -493,11 +496,15 @@ impl DockerManager {
             // 추가 컨테이너들의 주소 등록
             for info in &infos[1..] {
                 let addr = self.extractor.parse_socket_addr(&info.ip, info.port)?;
+                debug!("백엔드 주소 추가: {}", addr);
                 service.add_address(addr, 1)?;
             }
         }
 
-        let path_matcher = first.path_matcher.clone().unwrap_or_else(|| PathMatcher::from_str("/").unwrap());
+        let path_matcher = first.path_matcher.clone()
+            .unwrap_or_else(|| PathMatcher::from_str("/").unwrap());
+        debug!("최종 경로 매처: {:?}", path_matcher);
+        
         Ok((first.host.clone(), path_matcher, service))
     }
 }
