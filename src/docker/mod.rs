@@ -20,11 +20,15 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 use crate::settings::DockerSettings;
 use crate::routing_v2::{BackendService, PathMatcher};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use tokio::time::Duration;
 use std::sync::Arc;
 use crate::middleware::MiddlewareConfig;
-use tokio::sync::RwLock;
+use tokio::{
+    sync::RwLock,
+    time::interval,
+    task::JoinHandle,
+};
 use self::health::{ContainerHealth, HealthCheckerFactory};
 
 #[derive(Clone)]
@@ -223,6 +227,43 @@ impl DockerManager {
         result
     }
 
+    /// 주기적인 헬스 체크 시작
+    pub async fn start_health_checks(&self, tx: mpsc::Sender<DockerEvent>) -> JoinHandle<()> {
+        let health_checks = self.health_checks.clone();
+        let interval_secs = self.config.health_check.interval;
+
+        tokio::spawn(async move {
+            let mut interval = interval(Duration::from_secs(interval_secs));
+
+            loop {
+                interval.tick().await;
+                let mut checks = health_checks.write().await;
+                
+                for (container_id, health) in checks.iter_mut() {
+                    match health.check().await {
+                        Ok(result) => {
+                            // 헬스 체크 결과 이벤트 발생
+                            let _ = tx.send(DockerEvent::ContainerHealthChanged {
+                                container_id: container_id.clone(),
+                                status: result.status.clone(),
+                                message: result.message.clone(),
+                                timestamp: result.timestamp,
+                            }).await;
+                        }
+                        Err(e) => {
+                            error!(
+                                error = %e,
+                                container_id = %container_id,
+                                "헬스 체크 실행 실패"
+                            );
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    /// 컨테이너 시작 시 헬스 체크 설정
     async fn handle_container_start(
         manager: &DockerManager,
         container_id: &str,
@@ -230,20 +271,31 @@ impl DockerManager {
     ) -> Result<(), DockerError> {
         info!(container_id = %container_id, "컨테이너 시작 이벤트 수신");
         
+        // 컨테이너 정보 조회
+        let containers = manager.get_labeled_containers().await?;
+        let container = containers.iter()
+            .find(|c| c.id.as_deref() == Some(container_id))
+            .ok_or_else(|| DockerError::ContainerConfigError {
+                container_id: container_id.to_string(),
+                reason: "컨테이너를 찾을 수 없음".to_string(),
+                context: None,
+            })?;
+
         match manager.get_container_info(container_id).await? {
             Some((host, service, path_matcher)) => {
-                info!(
-                    container_id = %container_id,
-                    host = %host,
-                    path_matcher = ?path_matcher,
-                    "컨테이너 시작 처리 완료"
-                );
+                // 기존 이벤트 전송
                 tx.send(DockerEvent::ContainerStarted { 
                     container_id: container_id.to_string(),
-                    host,
-                    service,
-                    path_matcher: path_matcher,
+                    host: host.clone(),
+                    service: service.clone(),
+                    path_matcher,
                 }).await.map_err(|_| Self::channel_send_error())?;
+
+                // 헬스 체크 설정
+                if let Ok(info) = manager.extractor.extract_info(container) {
+                    manager.setup_health_check(container_id.to_string(), &info).await?;
+                }
+
                 Ok(())
             }
             None => {
@@ -253,29 +305,24 @@ impl DockerManager {
         }
     }
 
+    /// 컨테이너 중지 시 헬스 체크 제거
     async fn handle_container_stop(
         manager: &DockerManager,
         container_id: &str,
         tx: &mpsc::Sender<DockerEvent>,
     ) -> Result<(), DockerError> {
-        info!(
-            container_id = %container_id,
-            "컨테이너 중지 관련 이벤트 수신"
-        );
+        // 헬스 체크 제거
+        manager.remove_health_check(container_id).await;
 
-        match manager.get_container_info(container_id).await? {
-            Some((host, _, _)) => {  // path 정보는 무시하고 호스트만 사용
-                tx.send(DockerEvent::ContainerStopped { 
-                    container_id: container_id.to_string(),
-                    host,
-                }).await.map_err(|_| Self::channel_send_error())?;
-                Ok(())
-            }
-            None => {
-                warn!(container_id = %container_id, "중지된 컨테이너 정보를 찾을 수 없음");
-                Ok(())
-            }
+        // 기존 이벤트 전송
+        if let Some((host, _, _)) = manager.get_container_info(container_id).await? {
+            tx.send(DockerEvent::ContainerStopped { 
+                container_id: container_id.to_string(),
+                host,
+            }).await.map_err(|_| Self::channel_send_error())?;
         }
+
+        Ok(())
     }
 
     async fn handle_container_update(
