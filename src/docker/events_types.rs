@@ -51,5 +51,6 @@ pub enum DockerEvent {
         status: HealthStatus,
         message: String,
         timestamp: SystemTime,
+        consecutive_failures: u64,
     },
 }
