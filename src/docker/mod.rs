@@ -255,10 +255,11 @@ impl DockerManager {
                         Ok(result) => {
                             let _ = tx.send(DockerEvent::ContainerHealthChanged {
                                 container_id: container_id.clone(),
-                                host,  // 복사된 값 사용
+                                host,
                                 status: result.status.clone(),
                                 message: result.message.clone(),
                                 timestamp: result.timestamp,
+                                consecutive_failures: health.consecutive_failures,
                             }).await;
                         }
                         Err(e) => {
