@@ -1,7 +1,21 @@
 use std::collections::HashMap;
+use std::time::SystemTime;
 use crate::docker::DockerError;
 use crate::routing_v2::{BackendService, PathMatcher};
 use crate::middleware::MiddlewareConfig;
+
+/// 컨테이너 헬스 상태
+#[derive(Debug, Clone, PartialEq)]
+pub enum HealthStatus {
+    /// 상태 확인 전
+    Unknown,
+    /// 정상
+    Healthy,
+    /// 비정상
+    Unhealthy,
+    /// 체크 중
+    Starting,
+}
 
 #[derive(Debug)]
 pub enum DockerEvent {
@@ -30,4 +44,11 @@ pub enum DockerEvent {
     /// 라우팅 테이블 업데이트
     RoutesUpdated(HashMap<(String, PathMatcher), BackendService>),
     MiddlewareConfigsUpdated(Vec<(String, MiddlewareConfig)>),
+    /// 컨테이너 헬스 상태 변경
+    ContainerHealthChanged {
+        container_id: String,
+        status: HealthStatus,
+        message: String,
+        timestamp: SystemTime,
+    },
 }

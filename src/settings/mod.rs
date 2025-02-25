@@ -7,7 +7,7 @@ mod server;
 pub mod logging;
 mod tls;
 mod error;
-mod docker;
+pub mod docker;
 
 pub use server::ServerSettings;
 pub use logging::LogSettings;

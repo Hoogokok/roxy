@@ -1,6 +1,7 @@
 use bollard::models::ContainerSummary;
 use crate::{docker::DockerError, routing_v2::{BackendService, PathMatcher}};
 use std::net::SocketAddr;
+use crate::settings::docker::HealthCheckType;
 
 // 불변 데이터 구조
 #[derive(Debug, Clone)]
@@ -11,6 +12,16 @@ pub struct ContainerInfo {
     pub path_matcher: Option<PathMatcher>,
     pub middlewares: Option<Vec<String>>,
     pub router_name: Option<String>,
+    /// 헬스 체크 설정
+    pub health_check: Option<ContainerHealthCheck>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContainerHealthCheck {
+    pub enabled: bool,
+    pub check_type: HealthCheckType,
+    pub interval: u64,
+    pub timeout: u64,
 }
 
 // 순수 함수들의 모음
@@ -161,6 +172,52 @@ impl  DefaultExtractor {
                         .collect())
             })
     }
+
+    fn extract_health_check(&self, labels: &Option<std::collections::HashMap<String, String>>) -> Option<ContainerHealthCheck> {
+        let labels = labels.as_ref()?;
+        let prefix = format!("{}health.", self.label_prefix);
+
+        // 헬스 체크가 명시적으로 활성화된 경우에만 설정 추출
+        let enabled = labels.get(&format!("{}enabled", prefix))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(false);
+
+        if !enabled {
+            return None;
+        }
+
+        // 체크 타입 결정
+        let check_type = if let Some(path) = labels.get(&format!("{}http.path", prefix)) {
+            // HTTP 체크
+            HealthCheckType::Http {
+                path: path.clone(),
+                method: labels.get(&format!("{}http.method", prefix))
+                    .cloned()
+                    .unwrap_or_else(|| "GET".to_string()),
+                expected_status: labels.get(&format!("{}http.expected_status", prefix))
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(200),
+            }
+        } else if let Some(port) = labels.get(&format!("{}tcp.port", prefix))
+            .and_then(|v| v.parse().ok()) 
+        {
+            // TCP 체크
+            HealthCheckType::Tcp { port }
+        } else {
+            return None;
+        };
+
+        Some(ContainerHealthCheck {
+            enabled,
+            check_type,
+            interval: labels.get(&format!("{}interval", prefix))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30),
+            timeout: labels.get(&format!("{}timeout", prefix))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5),
+        })
+    }
     
     pub fn new(network_name: String, label_prefix: String) -> Self {
         
@@ -205,6 +262,7 @@ impl ContainerInfoExtractor for DefaultExtractor {
             path_matcher: self.extract_path_matcher(labels),
             middlewares,
             router_name,
+            health_check: self.extract_health_check(labels),
         })
     }
 
