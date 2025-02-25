@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use crate::{
-    docker::DockerEvent,
+    docker::{DockerEvent, events_types::HealthStatus},
     routing_v2::RoutingTable,
     middleware::MiddlewareManager,
 };
@@ -82,6 +82,36 @@ impl DockerEventHandler {
                 manager.update_configs(&configs);
                 manager.print_chain_status();
                 info!("미들웨어 설정 업데이트 완료");
+            }
+            
+            DockerEvent::ContainerHealthChanged { container_id, status, message, timestamp } => {
+                match status {
+                    HealthStatus::Healthy => {
+                        info!(
+                            container_id = %container_id,
+                            status = ?status,
+                            message = %message,
+                            "컨테이너 헬스 체크 성공"
+                        );
+                    }
+                    HealthStatus::Unhealthy => {
+                        warn!(
+                            container_id = %container_id,
+                            status = ?status,
+                            message = %message,
+                            "컨테이너 헬스 체크 실패"
+                        );
+                        // TODO: 나중에 비정상 컨테이너 처리 로직 추가
+                    }
+                    _ => {
+                        info!(
+                            container_id = %container_id,
+                            status = ?status,
+                            message = %message,
+                            "컨테이너 헬스 상태 변경"
+                        );
+                    }
+                }
             }
             
             DockerEvent::Error(e) => {
