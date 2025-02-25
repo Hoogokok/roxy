@@ -17,6 +17,7 @@ Docker 컨테이너를 위한 동적 리버스 프록시 서버입니다. 호스
 - Docker 이벤트 실시간 모니터링
 - 컨테이너 시작/중지/업데이트에 따른 자동 라우팅 설정
 - 라우팅 테이블 실시간 업데이트
+- 재시도 메커니즘으로 일시적인 오류 처리
 
 ## 설정
 
@@ -30,6 +31,10 @@ label_prefix = "reverse-proxy."
 http_port = 80
 https_enabled = false
 https_port = 443
+
+[retry]
+max_attempts = 3     # 최대 재시도 횟수
+interval = 1         # 재시도 간격 (초)
 
 [logging]
 format = "text"  # "text" 또는 "json"
@@ -339,4 +344,25 @@ services:
       - "rproxy.http.middlewares.api-ratelimit.rateLimit.burst=100"   # 최대 100개 버스트
       - "rproxy.http.routers.api.middlewares=api-ratelimit"
 ```
+
+### 재시도 메커니즘
+
+일시적인 오류가 발생했을 때 자동으로 재시도를 수행합니다:
+
+#### 재시도 가능한 오류
+- 연결 실패
+- 타임아웃
+- 일시적인 서비스 불가
+
+#### 재시도 설정
+| 설정 | 설명 | 기본값 |
+|------|------|--------|
+| `max_attempts` | 최대 재시도 횟수 | 3 |
+| `interval` | 재시도 간격 (초) | 1 |
+
+#### 동작 방식
+1. 작업 실행 시도
+2. 실패 시 재시도 가능 여부 확인
+3. 재시도 가능한 경우 설정된 간격만큼 대기 후 재시도
+4. 최대 시도 횟수 도달 또는 성공할 때까지 반복
 
