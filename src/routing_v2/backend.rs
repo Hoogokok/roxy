@@ -7,8 +7,10 @@ use crate::routing_v2::error::BackendError;
 /// 백엔드 서비스 정보를 담는 구조체입니다.
 #[derive(Debug)]
 pub struct BackendService {
-    pub addresses: Vec<SocketAddr>,
-    current_index: AtomicUsize,
+    /// 기본 주소
+    pub address: SocketAddr,
+    /// 로드밸런서 (선택적)
+    pub load_balancer: Option<LoadBalancer>,
     pub middlewares: Option<Vec<String>>,
     pub router_name: Option<String>,
 }
@@ -16,10 +18,8 @@ pub struct BackendService {
 impl Clone for BackendService {
     fn clone(&self) -> Self {
         Self {
-            addresses: self.addresses.clone(),
-            current_index: AtomicUsize::new(
-                self.current_index.load(Ordering::Relaxed)
-            ),
+            address: self.address,
+            load_balancer: self.load_balancer.clone(),
             middlewares: self.middlewares.clone(),
             router_name: self.router_name.clone(),
         }
@@ -29,8 +29,8 @@ impl Clone for BackendService {
 impl BackendService {
     pub fn new(addr: SocketAddr) -> Self {
         Self {
-            addresses: vec![addr],
-            current_index: AtomicUsize::new(0),
+            address: addr,
+            load_balancer: None,
             middlewares: None,
             router_name: None,
         }
@@ -38,8 +38,8 @@ impl BackendService {
 
     pub fn with_middleware(addr: SocketAddr, middleware: String) -> Self {
         Self {
-            addresses: vec![addr],
-            current_index: AtomicUsize::new(0),
+            address: addr,
+            load_balancer: None,
             middlewares: Some(vec![middleware]),
             router_name: None,
         }
@@ -47,8 +47,8 @@ impl BackendService {
 
     pub fn with_router(addr: SocketAddr, router_name: Option<String>) -> Self {
         Self {
-            addresses: vec![addr],
-            current_index: AtomicUsize::new(0),
+            address: addr,
+            load_balancer: None,
             middlewares: None,
             router_name,
         }
@@ -70,15 +70,24 @@ impl BackendService {
     }
 
     pub fn get_next_address(&self) -> Result<SocketAddr, BackendError> {
-        let len = self.addresses.len();
-        if len == 0 {
-            return Err(BackendError::NoAddresses);
+        match &self.load_balancer {
+            Some(lb) => lb.get_next_address(),
+            None => Ok(self.address),
         }
-        
-        let index = self.current_index.fetch_add(1, Ordering::Relaxed) % len;
-        self.addresses.get(index)
-            .copied()
-            .ok_or_else(|| BackendError::IndexOutOfBounds { index, len })
+    }
+
+    pub fn enable_load_balancer(&mut self, strategy: LoadBalancerStrategy) {
+        self.load_balancer = Some(LoadBalancer::new(self.address, strategy));
+    }
+
+    pub fn add_address(&mut self, addr: SocketAddr, weight: usize) -> Result<(), BackendError> {
+        match &mut self.load_balancer {
+            Some(lb) => {
+                lb.add_address(addr, weight);
+                Ok(())
+            }
+            None => Err(BackendError::LoadBalancerNotEnabled),
+        }
     }
 }
 
@@ -109,10 +118,10 @@ impl Clone for LoadBalancerStrategy {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug,Clone)]
 pub struct LoadBalancer {
     /// 주소 목록 (가중치 포함)
-    addresses: Vec<(SocketAddr, usize)>,
+    pub addresses: Vec<(SocketAddr, usize)>,
     /// 로드밸런싱 전략
     strategy: LoadBalancerStrategy,
 }
