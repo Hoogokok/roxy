@@ -10,7 +10,7 @@ use container::ContainerInfo;
 pub use container::{ContainerInfoExtractor, DefaultExtractor};
 pub use events_types::{DockerEvent, HealthStatus};
 pub use error_types::DockerError;
-pub use retry::{RetryPolicy, with_retry, ContainerRoutesRetry};
+pub use retry::{RetryPolicy, with_retry, RetryableOperation, ContainerRoutesRetry};
 
 use bollard::container::ListContainersOptions;
 use bollard::models::{ContainerSummary, EventMessage};
@@ -72,7 +72,7 @@ impl DockerManager {
     /// 컨테이너 라우트를 조회하고 실패 시 재시도합니다.
     pub async fn get_container_routes(&self) -> Result<HashMap<(String, PathMatcher), BackendService>, DockerError> {
         let retry_operation = ContainerRoutesRetry { docker_manager: self };
-        let policy = RetryPolicy::new(3, Duration::from_secs(2));
+        let policy = RetryPolicy::from(&self.config.retry);
         
         with_retry(retry_operation, policy).await
     }

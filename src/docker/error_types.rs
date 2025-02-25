@@ -73,3 +73,30 @@ impl From<bollard::errors::Error> for DockerError {
         }
     }
 }
+
+/// 재시도 가능한 오류 타입
+#[derive(Debug, Clone)]
+pub enum RetryableError {
+    /// 연결 실패
+    ConnectionFailed,
+    /// 타임아웃
+    Timeout,
+    /// 서비스 일시적 사용 불가
+    ServiceUnavailable,
+}
+
+impl DockerError {
+    /// 재시도 가능한 오류인지 확인
+    pub fn is_retryable(&self) -> bool {
+        match self {
+            DockerError::ConnectionError { .. } => true,
+            DockerError::NetworkError { reason, .. } => {
+                // 일시적인 네트워크 오류만 재시도
+                reason.contains("timeout") || 
+                reason.contains("connection refused") ||
+                reason.contains("service unavailable")
+            }
+            _ => false
+        }
+    }
+}
