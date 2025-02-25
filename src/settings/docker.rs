@@ -59,6 +59,10 @@ pub struct HealthCheckSettings {
     /// 헬스 체크 타입
     #[serde(default)]
     pub check_type: HealthCheckType,
+
+    /// 최대 연속 실패 횟수
+    #[serde(default = "default_max_failures")]
+    pub max_failures: u32,
 }
 
 impl Default for HealthCheckSettings {
@@ -68,6 +72,7 @@ impl Default for HealthCheckSettings {
             interval: default_check_interval(),
             timeout: default_check_timeout(),
             check_type: HealthCheckType::default(),
+            max_failures: default_max_failures(),
         }
     }
 }
@@ -78,6 +83,10 @@ fn default_check_interval() -> u64 {
 
 fn default_check_timeout() -> u64 {
     5 // 5초
+}
+
+fn default_max_failures() -> u32 {
+    3  // 기본값 3회
 }
 
 /// 재시도 설정
