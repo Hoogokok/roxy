@@ -116,6 +116,7 @@ impl ContainerInfoExtractor for MockExtractor {
             path_matcher,
             middlewares,
             router_name: Some(host.split('.').next().unwrap_or("default").to_string()),
+            health_check: None,  // 테스트에서는 기본적으로 헬스 체크 비활성화
         })
     }
 
