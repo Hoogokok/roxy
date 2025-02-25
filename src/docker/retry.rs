@@ -2,58 +2,69 @@ use async_trait::async_trait;
 use tokio::time::{sleep, Duration};
 use crate::{docker::DockerManager, routing_v2::{BackendService, PathMatcher}};
 use std::collections::HashMap;
-use tracing::warn;
+use tracing::{debug, warn};
 use crate::docker::DockerError;
+use crate::settings::docker::RetrySettings;
 
-#[derive(Debug, Clone)]
+/// 재시도 정책
+#[derive(Clone)]
 pub struct RetryPolicy {
+    /// 최대 시도 횟수
     pub max_attempts: u32,
-    pub delay: Duration,
+    /// 재시도 간격
+    pub interval: Duration,
 }
 
-impl RetryPolicy {
-    pub fn new(max_attempts: u32, delay: Duration) -> Self {
-        Self { max_attempts, delay }
+impl From<&RetrySettings> for RetryPolicy {
+    fn from(settings: &RetrySettings) -> Self {
+        Self {
+            max_attempts: settings.max_attempts,
+            interval: Duration::from_secs(settings.interval),
+        }
     }
 }
 
-#[async_trait]
-pub trait Retryable {
+/// 재시도 가능한 작업 특성
+#[async_trait::async_trait]
+pub trait RetryableOperation {
     type Output;
-    type Error;
     
-    async fn execute(&self) -> Result<Self::Output, Self::Error>;
-    fn should_retry(&self, result: &Result<Self::Output, Self::Error>) -> bool;
-    fn on_retry(&self, attempt: u32, error: &Self::Error);
+    /// 작업 실행
+    async fn execute(&self) -> Result<Self::Output, DockerError>;
+    
+    /// 재시도 여부 결정
+    fn should_retry(&self, error: &DockerError) -> bool {
+        error.is_retryable()
+    }
 }
 
-pub async fn with_retry<T>(
+/// 재시도 로직 실행
+pub async fn with_retry<T: RetryableOperation>(
     operation: T,
     policy: RetryPolicy,
-) -> Result<T::Output, T::Error>
-where
-    T: Retryable,
-{
-    let mut attempt = 0;
+) -> Result<T::Output, DockerError> {
+    let mut attempts = 0;
     
-    while attempt < policy.max_attempts {
-        let result = operation.execute().await;
-        
-        if !operation.should_retry(&result) {
-            return result;
-        }
-        
-        if let Err(ref e) = result {
-            operation.on_retry(attempt, e);
-        }
-        
-        attempt += 1;
-        if attempt < policy.max_attempts {
-            sleep(policy.delay).await;
+    loop {
+        attempts += 1;
+        match operation.execute().await {
+            Ok(result) => return Ok(result),
+            Err(error) => {
+                if attempts >= policy.max_attempts || !operation.should_retry(&error) {
+                    return Err(error);
+                }
+                
+                warn!(
+                    error = %error,
+                    attempt = attempts,
+                    max_attempts = policy.max_attempts,
+                    "작업 실패, 재시도 예정"
+                );
+                
+                sleep(policy.interval).await;
+            }
         }
     }
-    
-    operation.execute().await
 }
 
 pub struct ContainerRoutesRetry<'a> {
@@ -61,28 +72,11 @@ pub struct ContainerRoutesRetry<'a> {
 }
 
 #[async_trait]
-impl<'a> Retryable for ContainerRoutesRetry<'a> {
+impl<'a> RetryableOperation for ContainerRoutesRetry<'a> {
     type Output = HashMap<(String, PathMatcher), BackendService>;
-    type Error = DockerError;
 
-    async fn execute(&self) -> Result<Self::Output, Self::Error> {
+    async fn execute(&self) -> Result<Self::Output, DockerError> {
         self.docker_manager.try_get_container_routes().await
-    }
-
-    fn should_retry(&self, result: &Result<Self::Output, Self::Error>) -> bool {
-        match result {
-            Ok(routes) => routes.is_empty(),
-            Err(_) => true,
-        }
-    }
-
-    fn on_retry(&self, attempt: u32, error: &Self::Error) {
-        warn!(
-            error = %error,
-            "컨테이너 라우트 조회 실패 (시도 {}/{}), 재시도 중...", 
-            attempt + 1,
-            3
-        );
     }
 }
 
