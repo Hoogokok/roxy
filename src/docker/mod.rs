@@ -250,11 +250,12 @@ impl DockerManager {
                 let mut checks = health_checks.write().await;
                 
                 for (container_id, health) in checks.iter_mut() {
+                    let host = health.host.clone();  
                     match health.check().await {
                         Ok(result) => {
-                            // 헬스 체크 결과 이벤트 발생
                             let _ = tx.send(DockerEvent::ContainerHealthChanged {
                                 container_id: container_id.clone(),
+                                host,  // 복사된 값 사용
                                 status: result.status.clone(),
                                 message: result.message.clone(),
                                 timestamp: result.timestamp,
@@ -442,7 +443,11 @@ impl DockerManager {
                 &health_check.check_type,
                 health_check.timeout,
             ) {
-                let container_health = ContainerHealth::new(container_id.clone(), checker);
+                let container_health = ContainerHealth::new(
+                    container_id.clone(),
+                    info.host.clone(),
+                    checker
+                );
                 self.health_checks.write().await.insert(container_id, container_health);
             }
         }
