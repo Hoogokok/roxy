@@ -19,6 +19,53 @@ Docker 컨테이너를 위한 동적 리버스 프록시 서버입니다. 호스
 - 라우팅 테이블 실시간 업데이트
 - 재시도 메커니즘으로 일시적인 오류 처리
 
+## 로드밸런싱 기능
+
+리버스 프록시는 두 가지 로드밸런싱 전략을 지원합니다:
+
+### 1. 라운드로빈 (Round Robin)
+요청을 순차적으로 각 백엔드 서버에 분배합니다.
+
+```yaml
+services:
+  web1:
+    image: nginx
+    labels:
+      - "rproxy.http.routers.web.rule=Host(`web.example.com`)"
+      - "rproxy.http.services.web.loadbalancer.server.port=80"
+  
+  web2:
+    image: nginx
+    labels:
+      - "rproxy.http.routers.web.rule=Host(`web.example.com`)"
+      - "rproxy.http.services.web.loadbalancer.server.port=80"
+```
+
+### 2. 가중치 기반 (Weighted)
+각 서버에 가중치를 부여하여 트래픽을 비율에 맞게 분배합니다.
+
+```yaml
+services:
+  web1:
+    image: nginx
+    labels:
+      - "rproxy.http.routers.web.rule=Host(`web.example.com`)"
+      - "rproxy.http.services.web.loadbalancer.server.port=80"
+      - "rproxy.http.services.web.loadbalancer.server.weight=2"  # 2배 더 많은 트래픽
+  
+  web2:
+    image: nginx
+    labels:
+      - "rproxy.http.routers.web.rule=Host(`web.example.com`)"
+      - "rproxy.http.services.web.loadbalancer.server.port=80"
+      - "rproxy.http.services.web.loadbalancer.server.weight=1"
+```
+
+### 설정 방법
+1. 동일한 라우터 이름(`web`)을 가진 컨테이너들이 자동으로 로드밸런싱 그룹으로 구성됩니다.
+2. 각 서버의 가중치는 `loadbalancer.server.weight` 라벨로 설정할 수 있습니다 (기본값: 1).
+3. 포트는 `loadbalancer.server.port` 라벨로 지정합니다.
+
 ## 설정
 
 ### TOML 설정 파일

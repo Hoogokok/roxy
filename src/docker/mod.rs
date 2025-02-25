@@ -30,6 +30,8 @@ use tokio::{
     task::JoinHandle,
 };
 use self::health::{ContainerHealth, HealthCheckerFactory};
+use std::sync::atomic::AtomicUsize;
+use crate::routing_v2::LoadBalancerStrategy;
 
 #[derive(Clone)]
 pub struct DockerManager {
@@ -83,14 +85,22 @@ impl DockerManager {
         let containers = self.get_labeled_containers().await?;
         info!(count = containers.len(), "컨테이너 목록 조회 성공");
 
+        let services = self.group_containers_by_service(containers).await;
         let mut routes = HashMap::new();
-        for container in containers {
-            if let Ok((host, service, path_matcher)) = self.container_to_route(&container) {
-                routes.insert((host, path_matcher), service);
+        
+        for infos in services.values() {
+            if !infos.is_empty() {
+                match self.create_backend_service(infos) {
+                    Ok((host, path_matcher, service)) => {
+                        routes.insert((host, path_matcher), service);
+                    }
+                    Err(e) => {
+                        warn!("백엔드 서비스 생성 실패: {}", e);
+                    }
+                }
             }
         }
-
-        info!(route_count = routes.len(), "라우팅 테이블 업데이트 완료");
+        
         Ok(routes)
     }
 
@@ -442,5 +452,46 @@ impl DockerManager {
     /// 컨테이너 헬스 체크 제거
     pub async fn remove_health_check(&self, container_id: &str) {
         self.health_checks.write().await.remove(container_id);
+    }
+
+    // 컨테이너들을 서비스 이름으로 그룹화
+    async fn group_containers_by_service(&self, containers: Vec<ContainerSummary>) 
+        -> HashMap<String, Vec<ContainerInfo>> 
+    {
+        let mut services: HashMap<String, Vec<ContainerInfo>> = HashMap::new();
+        
+        for container in containers {
+            if let Ok(info) = self.extractor.extract_info(&container) {
+                let service_name = info.router_name.clone()
+                    .unwrap_or_else(|| info.host.clone());
+                services.entry(service_name)
+                    .or_default()
+                    .push(info);
+            }
+        }
+        
+        services
+    }
+
+    // 그룹화된 컨테이너들을 하나의 백엔드 서비스로 변환
+    fn create_backend_service(&self, infos: &[ContainerInfo]) -> Result<(String, PathMatcher, BackendService), DockerError> {
+        let first = &infos[0];
+        let mut service = self.extractor.create_backend(first)?;
+        
+        // 여러 컨테이너가 있으면 로드밸런서 활성화
+        if infos.len() > 1 {
+            service.enable_load_balancer(LoadBalancerStrategy::RoundRobin {
+                current_index: AtomicUsize::new(0)
+            });
+            
+            // 추가 컨테이너들의 주소 등록
+            for info in &infos[1..] {
+                let addr = self.extractor.parse_socket_addr(&info.ip, info.port)?;
+                service.add_address(addr, 1)?;
+            }
+        }
+
+        let path_matcher = first.path_matcher.clone().unwrap_or_else(|| PathMatcher::from_str("/").unwrap());
+        Ok((first.host.clone(), path_matcher, service))
     }
 }

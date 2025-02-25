@@ -1,5 +1,7 @@
 use std::fmt;
 
+use crate::routing_v2::BackendError;
+
 #[derive(Debug)]
 pub enum DockerError {
     /// Docker 데몬 연결 실패
@@ -70,6 +72,16 @@ impl From<bollard::errors::Error> for DockerError {
         DockerError::ConnectionError {
             source: err,
             context: "Docker 데몬 연결 실패".to_string(),
+        }
+    }
+}
+
+impl From<BackendError> for DockerError {
+    fn from(err: BackendError) -> Self {
+        DockerError::ContainerConfigError {
+            container_id: "unknown".to_string(),
+            reason: "백엔드 서비스 설정 실패".to_string(),
+            context: Some(err.to_string()),
         }
     }
 }

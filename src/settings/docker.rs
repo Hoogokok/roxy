@@ -110,6 +110,34 @@ fn default_retry_interval() -> u64 {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct LoadBalancerSettings {
+    /// 로드밸런서 타입 (기본값: roundrobin)
+    #[serde(default = "default_lb_strategy")]
+    pub strategy: String,
+
+    /// 가중치 (weighted 전략일 때만 사용)
+    #[serde(default = "default_weight")]
+    pub weight: usize,
+}
+
+impl Default for LoadBalancerSettings {
+    fn default() -> Self {
+        Self {
+            strategy: default_lb_strategy(),
+            weight: default_weight(),
+        }
+    }
+}
+
+fn default_lb_strategy() -> String {
+    "roundrobin".to_string()
+}
+
+fn default_weight() -> usize {
+    1
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct DockerSettings {
     /// Docker 네트워크 이름
     #[serde(default = "default_docker_network")]
@@ -126,6 +154,10 @@ pub struct DockerSettings {
     /// 재시도 설정
     #[serde(default)]
     pub retry: RetrySettings,
+
+    /// 로드밸런서 설정
+    #[serde(default)]
+    pub load_balancer: LoadBalancerSettings,
 }
 
 impl DockerSettings {
@@ -134,12 +166,14 @@ impl DockerSettings {
         let label_prefix = parse_env_var("PROXY_LABEL_PREFIX", default_label_prefix)?;
         let health_check = HealthCheckSettings::default();
         let retry = RetrySettings::default();
+        let load_balancer = LoadBalancerSettings::default();
 
         let settings = Self {
             network,
             label_prefix,
             health_check,
             retry,
+            load_balancer,
         };
         settings.validate()?;
         Ok(settings)
@@ -193,6 +227,7 @@ impl Default for DockerSettings {
             label_prefix: default_label_prefix(),
             health_check: HealthCheckSettings::default(),
             retry: RetrySettings::default(),
+            load_balancer: LoadBalancerSettings::default(),
         }
     }
 }

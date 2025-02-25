@@ -57,6 +57,7 @@ impl std::error::Error for RoutingError {}
 pub enum BackendError {
     NoAddresses,
     IndexOutOfBounds { index: usize, len: usize },
+    LoadBalancerNotEnabled,
 }
 
 impl std::fmt::Display for BackendError {
@@ -65,6 +66,8 @@ impl std::fmt::Display for BackendError {
             BackendError::NoAddresses => write!(f, "백엔드 주소가 없음"),
             BackendError::IndexOutOfBounds { index, len } => 
                 write!(f, "백엔드 주소 인덱스 범위 초과: index={}, len={}", index, len),
+            BackendError::LoadBalancerNotEnabled =>
+                write!(f, "로드밸런서가 활성화되지 않음"),
         }
     }
 }

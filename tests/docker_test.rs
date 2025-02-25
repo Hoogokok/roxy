@@ -1,4 +1,4 @@
-use bollard::secret::{ContainerSummaryNetworkSettings, EndpointSettings};
+use bollard::secret::{ContainerSummaryNetworkSettings, EndpointSettings, NetworkSettings};
 use reverse_proxy_traefik::docker::container::ContainerInfo;
 use reverse_proxy_traefik::docker::{DockerManager, DockerError, DockerClient, ContainerInfoExtractor};
 use bollard::container::ListContainersOptions;
@@ -62,13 +62,16 @@ impl ContainerInfoExtractor for MockExtractor {
     fn extract_info(&self, container: &ContainerSummary) -> Result<ContainerInfo, DockerError> {
         let labels = container.labels.as_ref();
         
-        // 호스트 추출
+        // 라우터 규칙에서 호스트 추출
         let host = labels
-            .and_then(|l| l.get(&format!("{}host", self.label_prefix)))
-            .map(String::from)
+            .and_then(|l| l.get("rproxy.http.routers.web.rule"))
+            .and_then(|rule| {
+                let rule = rule.trim_start_matches("Host(`").trim_end_matches("`)");
+                Some(rule.to_string())
+            })
             .ok_or_else(|| DockerError::ContainerConfigError {
                 container_id: container.id.as_deref().unwrap_or("unknown").to_string(),
-                reason: "host label missing".to_string(),
+                reason: "host rule missing".to_string(),
                 context: None,
             })?;
 
@@ -84,46 +87,27 @@ impl ContainerInfoExtractor for MockExtractor {
                 context: None,
             })?;
 
-        // 포트 추출 (기본값 80)
+        // 포트 추출
         let port = labels
-            .and_then(|l| l.get(&format!("{}port", self.label_prefix)))
+            .and_then(|l| l.get("rproxy.http.services.web.loadbalancer.server.port"))
             .and_then(|p| p.parse().ok())
             .unwrap_or(80);
 
-        // 경로 패턴 추출
-        let path_matcher = labels.and_then(|l| {
-            let path = l.get(&format!("{}path", self.label_prefix))?;
-            let pattern = match l.get(&format!("{}path.type", self.label_prefix)).map(String::as_str) {
-                Some("regex") => format!("^{}", path),
-                Some("prefix") => format!("{}*", path),
-                _ => path.to_string(),
-            };
-            PathMatcher::from_str(&pattern).ok()
-        });
-
-        // 미들웨어 추출
-        let middlewares = labels.and_then(|l| {
-            l.get(&format!("{}middlewares", self.label_prefix))
-                .map(|m| m.split(',')
-                    .map(|s| s.trim().to_string())
-                    .collect::<Vec<_>>())
-        });
-
         Ok(ContainerInfo {
-            host: host.clone(),
-            ip: ip.clone(),
+            host,
+            ip: ip.to_string(),
             port,
-            path_matcher,
-            middlewares,
-            router_name: Some(host.split('.').next().unwrap_or("default").to_string()),
-            health_check: None,  // 테스트에서는 기본적으로 헬스 체크 비활성화
+            path_matcher: None,
+            middlewares: None,
+            router_name: Some("web".to_string()),  // 테스트용 고정 라우터 이름
+            health_check: None,
+            load_balancer: None,
         })
     }
 
     fn create_backend(&self, info: &ContainerInfo) -> Result<BackendService, DockerError> {
-        let mut service = BackendService::new(
-            format!("{}:{}", info.ip, info.port).parse().unwrap()
-        );
+        let addr = format!("{}:{}", info.ip, info.port).parse().unwrap();
+        let mut service = BackendService::with_router(addr, info.router_name.clone());
         
         if let Some(middlewares) = &info.middlewares {
             service.set_middlewares(middlewares.clone());
@@ -471,4 +455,69 @@ async fn test_container_with_middleware() {
         backend.middlewares.as_ref().unwrap(),
         &vec!["auth".to_string(), "compress".to_string()]
     );
-} 
+}
+
+#[tokio::test]
+async fn test_load_balancer_grouping() {
+    let containers = vec![
+        ContainerSummary {
+            id: Some("web1".to_string()),
+            names: Some(vec!["/web1".to_string()]),
+            labels: Some({
+                let mut labels = HashMap::new();
+                labels.insert("rproxy.http.routers.web.rule".to_string(), "Host(`web.example.com`)".to_string());
+                labels.insert("rproxy.http.services.web.loadbalancer.server.port".to_string(), "80".to_string());
+                labels
+            }),
+            network_settings: Some(ContainerSummaryNetworkSettings {
+                networks: Some({
+                    let mut networks = HashMap::new();
+                    networks.insert("reverse-proxy-network".to_string(), EndpointSettings {
+                        ip_address: Some("10.0.0.1".to_string()),
+                        ..Default::default()
+                    });
+                    networks
+                }),
+            }),
+            ..Default::default()
+        },
+        ContainerSummary {
+            id: Some("web2".to_string()),
+            names: Some(vec!["/web2".to_string()]),
+            labels: Some({
+                let mut labels = HashMap::new();
+                labels.insert("rproxy.http.routers.web.rule".to_string(), "Host(`web.example.com`)".to_string());
+                labels.insert("rproxy.http.services.web.loadbalancer.server.port".to_string(), "80".to_string());
+                labels
+            }),
+            network_settings: Some(ContainerSummaryNetworkSettings {
+                networks: Some({
+                    let mut networks = HashMap::new();
+                    networks.insert("reverse-proxy-network".to_string(), EndpointSettings {
+                        ip_address: Some("10.0.0.2".to_string()),
+                        ..Default::default()
+                    });
+                    networks
+                }),
+            }),
+            ..Default::default()
+        },
+    ];
+
+    let client = MockDockerClient {
+        containers: Arc::new(Mutex::new(containers)),
+    };
+
+    let settings = create_test_settings();
+    let manager = DockerManager::new(
+        Box::new(client),
+        Box::new(MockExtractor::new(settings.network.clone(), settings.label_prefix.clone())),
+        settings,
+    ).await;
+
+    let routes = manager.get_container_routes().await.unwrap();
+    assert_eq!(routes.len(), 1, "하나의 라우트로 그룹화되어야 함");
+
+    let ((host, _), service) = routes.iter().next().unwrap();
+    assert_eq!(host, "web.example.com");
+}
