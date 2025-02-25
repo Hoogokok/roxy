@@ -47,6 +47,7 @@ pub enum DockerEvent {
     /// 컨테이너 헬스 상태 변경
     ContainerHealthChanged {
         container_id: String,
+        host: String,
         status: HealthStatus,
         message: String,
         timestamp: SystemTime,
