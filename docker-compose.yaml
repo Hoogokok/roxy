@@ -87,8 +87,44 @@ services:
 # 테스트를 위한 네트워크 설정
 networks:
   reverse-proxy-network:
-    name: reverse-proxy-network 
+    name: reverse-proxy-network
 
 volumes:
   cargo-cache:
   target-cache:
+
+# 라운드로빈 예제 (동일 가중치)
+web1:
+  image: nginx
+  labels:
+    - "rproxy.http.routers.web.rule=Host(`web.example.com`)"
+    - "rproxy.http.services.web.loadbalancer.server.port=80"
+  networks:
+    - reverse-proxy-network
+
+web2:
+  image: nginx
+  labels:
+    - "rproxy.http.routers.web.rule=Host(`web.example.com`)"
+    - "rproxy.http.services.web.loadbalancer.server.port=80"
+  networks:
+    - reverse-proxy-network
+
+# 가중치 기반 예제 (2:1 비율)
+api1:
+  image: node
+  labels:
+    - "rproxy.http.routers.api.rule=Host(`api.example.com`)"
+    - "rproxy.http.services.api.loadbalancer.server.port=3000"
+    - "rproxy.http.services.api.loadbalancer.server.weight=2"
+  networks:
+    - reverse-proxy-network
+
+api2:
+  image: node
+  labels:
+    - "rproxy.http.routers.api.rule=Host(`api.example.com`)"
+    - "rproxy.http.services.api.loadbalancer.server.port=3000"
+    - "rproxy.http.services.api.loadbalancer.server.weight=1"
+  networks:
+    - reverse-proxy-network
