@@ -5,13 +5,19 @@ use std::sync::atomic::Ordering;
 use crate::routing_v2::error::BackendError;
 
 /// 백엔드 서비스 정보를 담는 구조체입니다.
+/// 단일 백엔드 또는 로드밸런싱된 여러 백엔드를 관리합니다.
 #[derive(Debug)]
 pub struct BackendService {
-    /// 기본 주소
+    /// 기본 백엔드 주소입니다.
+    /// 로드밸런서가 비활성화된 경우 이 주소로 모든 요청이 전달됩니다.
     pub address: SocketAddr,
-    /// 로드밸런서 (선택적)
+    /// 로드밸런서 설정입니다.
+    /// 활성화된 경우 여러 백엔드로 요청이 분산됩니다.
     pub load_balancer: Option<LoadBalancer>,
+    /// 적용할 미들웨어 목록입니다.
     pub middlewares: Option<Vec<String>>,
+    /// 라우터 이름입니다.
+    /// 동일한 라우터 이름을 가진 서비스들이 하나의 로드밸런싱 그룹을 형성합니다.
     pub router_name: Option<String>,
 }
 
@@ -27,6 +33,8 @@ impl Clone for BackendService {
 }
 
 impl BackendService {
+    /// 새로운 백엔드 서비스를 생성합니다.
+    /// 기본적으로 로드밸런서와 미들웨어는 비활성화됩니다.
     pub fn new(addr: SocketAddr) -> Self {
         Self {
             address: addr,
@@ -36,6 +44,7 @@ impl BackendService {
         }
     }
 
+    /// 미들웨어가 설정된 백엔드 서비스를 생성합니다.
     pub fn with_middleware(addr: SocketAddr, middleware: String) -> Self {
         Self {
             address: addr,
@@ -45,6 +54,8 @@ impl BackendService {
         }
     }
 
+    /// 라우터 이름이 지정된 백엔드 서비스를 생성합니다.
+    /// 로드밸런싱 그룹을 구성할 때 사용됩니다.
     pub fn with_router(addr: SocketAddr, router_name: Option<String>) -> Self {
         Self {
             address: addr,
@@ -69,6 +80,8 @@ impl BackendService {
         self.middlewares.as_ref().map_or(false, |m| !m.is_empty())
     }
 
+    /// 다음 요청을 처리할 백엔드 주소를 반환합니다.
+    /// 로드밸런서가 활성화된 경우 설정된 전략에 따라 주소가 선택됩니다.
     pub fn get_next_address(&self) -> Result<SocketAddr, BackendError> {
         match &self.load_balancer {
             Some(lb) => lb.get_next_address(),
@@ -76,10 +89,14 @@ impl BackendService {
         }
     }
 
+    /// 로드밸런서를 활성화합니다.
+    /// 지정된 전략(라운드로빈/가중치)으로 요청이 분산됩니다.
     pub fn enable_load_balancer(&mut self, strategy: LoadBalancerStrategy) {
         self.load_balancer = Some(LoadBalancer::new(self.address, strategy));
     }
 
+    /// 로드밸런서에 새로운 백엔드 주소를 추가합니다.
+    /// 로드밸런서가 비활성화된 경우 에러를 반환합니다.
     pub fn add_address(&mut self, addr: SocketAddr, weight: usize) -> Result<(), BackendError> {
         match &mut self.load_balancer {
             Some(lb) => {
