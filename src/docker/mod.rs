@@ -6,6 +6,7 @@ pub mod container;
 mod health;
 
 pub use client::{BollardDockerClient, DockerClient};
+use container::ContainerInfo;
 pub use container::{ContainerInfoExtractor, DefaultExtractor};
 pub use events_types::{DockerEvent, HealthStatus};
 pub use error_types::DockerError;
@@ -23,12 +24,15 @@ use tracing::{debug, info, warn};
 use tokio::time::Duration;
 use std::sync::Arc;
 use crate::middleware::MiddlewareConfig;
+use tokio::sync::RwLock;
+use self::health::{ContainerHealth, HealthCheckerFactory};
 
 #[derive(Clone)]
 pub struct DockerManager {
     client: Arc<Box<dyn DockerClient>>,
     extractor: Box<dyn ContainerInfoExtractor>,
     config: DockerSettings,
+    health_checks: Arc<RwLock<HashMap<String, ContainerHealth>>>,
 }
 
 impl DockerManager {
@@ -42,6 +46,7 @@ impl DockerManager {
             client: Arc::new(client),
             extractor,
             config,
+            health_checks: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -190,6 +195,7 @@ impl DockerManager {
                 config.label_prefix.clone(),
             )),
             config: config.clone(),
+            health_checks: Arc::new(RwLock::new(HashMap::new())),
         };
 
         // 이벤트 처리 후 미들웨어 설정도 업데이트
@@ -363,5 +369,31 @@ impl DockerManager {
                 reason: format!("미들웨어 설정 파싱 실패: {}", e),
                 context: None,
             })
+    }
+
+    /// 컨테이너 헬스 체크 설정
+    pub async fn setup_health_check(
+        &self,
+        container_id: String,
+        info: &ContainerInfo,
+    ) -> Result<(), DockerError> {
+        if let Some(health_check) = &info.health_check {
+            let addr = format!("{}:{}", info.ip, info.port);
+            
+            if let Some(checker) = HealthCheckerFactory::create(
+                addr,
+                &health_check.check_type,
+                health_check.timeout,
+            ) {
+                let container_health = ContainerHealth::new(container_id.clone(), checker);
+                self.health_checks.write().await.insert(container_id, container_health);
+            }
+        }
+        Ok(())
+    }
+
+    /// 컨테이너 헬스 체크 제거
+    pub async fn remove_health_check(&self, container_id: &str) {
+        self.health_checks.write().await.remove(container_id);
     }
 }

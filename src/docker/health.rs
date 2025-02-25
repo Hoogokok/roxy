@@ -9,6 +9,7 @@ use bytes::Bytes;
 use tokio::time::timeout;
 use tracing::debug;
 use tokio::net::TcpStream;
+use std::fmt;
 
 use crate::settings::docker::HealthCheckType;
 use super::{DockerError, events_types::HealthStatus};
@@ -159,5 +160,52 @@ impl HealthCheckerFactory {
                     .map(|checker| Box::new(checker) as Box<dyn HealthChecker>)
             }
         }
+    }
+}
+
+/// 컨테이너 헬스 체크 상태 관리
+pub struct ContainerHealth {
+    pub container_id: String,
+    pub checker: Box<dyn HealthChecker>,
+    pub last_check: Option<HealthCheckResult>,
+    pub check_count: u64,
+    pub consecutive_failures: u64,
+}
+
+impl fmt::Debug for ContainerHealth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ContainerHealth")
+            .field("container_id", &self.container_id)
+            .field("checker", &"<dyn HealthChecker>")  // checker는 간단히 표시
+            .field("last_check", &self.last_check)
+            .field("check_count", &self.check_count)
+            .field("consecutive_failures", &self.consecutive_failures)
+            .finish()
+    }
+}
+
+impl ContainerHealth {
+    pub fn new(container_id: String, checker: Box<dyn HealthChecker>) -> Self {
+        Self {
+            container_id,
+            checker,
+            last_check: None,
+            check_count: 0,
+            consecutive_failures: 0,
+        }
+    }
+
+    pub async fn check(&mut self) -> Result<&HealthCheckResult, DockerError> {
+        let result = self.checker.check().await?;
+        self.check_count += 1;
+        
+        match result.status {
+            HealthStatus::Healthy => self.consecutive_failures = 0,
+            HealthStatus::Unhealthy => self.consecutive_failures += 1,
+            _ => {}
+        }
+
+        self.last_check = Some(result);
+        Ok(self.last_check.as_ref().unwrap())
     }
 } 
