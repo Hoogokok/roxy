@@ -113,10 +113,11 @@ impl ContainerInfoExtractor for MockExtractor {
             host: host.clone(),
             ip: ip.clone(),
             port,
-            path_matcher,
-            middlewares,
-            router_name: Some(host.split('.').next().unwrap_or("default").to_string()),
-            health_check: None,  // 테스트에서는 기본적으로 헬스 체크 비활성화
+            path_matcher: None,
+            middlewares: None,
+            router_name: None,
+            health_check: None,
+            load_balancer: None,
         })
     }
 
