@@ -91,13 +91,17 @@ impl BackendService {
     }
 }
 
+/// 로드밸런싱 전략을 정의하는 열거형입니다.
+/// 현재 라운드로빈과 가중치 기반 두 가지 전략을 지원합니다.
 #[derive(Debug)]
 pub enum LoadBalancerStrategy {
-    /// 라운드 로빈 방식
+    /// 라운드 로빈 방식으로 요청을 순차적으로 각 백엔드에 분배합니다.
+    /// 모든 백엔드가 동일한 처리 능력을 가질 때 적합합니다.
     RoundRobin {
         current_index: AtomicUsize,
     },
-    /// 가중치 기반 방식
+    /// 가중치 기반 방식으로 각 백엔드의 가중치에 따라 요청을 분배합니다.
+    /// 백엔드 서버의 처리 능력이 다를 때 사용합니다.
     Weighted {
         current_index: AtomicUsize,
         total_weight: usize,
@@ -118,15 +122,20 @@ impl Clone for LoadBalancerStrategy {
     }
 }
 
+/// 로드밸런서는 여러 백엔드 서버로 요청을 분배하는 역할을 합니다.
+/// 각 백엔드는 주소와 가중치를 가지며, 설정된 전략에 따라 요청이 분배됩니다.
 #[derive(Debug,Clone)]
 pub struct LoadBalancer {
-    /// 주소 목록 (가중치 포함)
+    /// 백엔드 주소와 가중치 목록입니다.
+    /// 튜플의 첫 번째 요소는 서버 주소, 두 번째 요소는 가중치입니다.
     pub addresses: Vec<(SocketAddr, usize)>,
-    /// 로드밸런싱 전략
+    /// 사용할 로드밸런싱 전략입니다.
     strategy: LoadBalancerStrategy,
 }
 
 impl LoadBalancer {
+    /// 새로운 로드밸런서를 생성합니다.
+    /// 초기 주소와 사용할 전략을 지정해야 합니다.
     pub fn new(initial_addr: SocketAddr, strategy: LoadBalancerStrategy) -> Self {
         Self {
             addresses: vec![(initial_addr, 1)],
@@ -134,6 +143,8 @@ impl LoadBalancer {
         }
     }
 
+    /// 새로운 백엔드 주소를 추가합니다.
+    /// 가중치 기반 전략을 사용하는 경우 전체 가중치가 자동으로 업데이트됩니다.
     pub fn add_address(&mut self, addr: SocketAddr, weight: usize) {
         self.addresses.push((addr, weight));
         if let LoadBalancerStrategy::Weighted { total_weight, .. } = &mut self.strategy {
@@ -141,6 +152,8 @@ impl LoadBalancer {
         }
     }
 
+    /// 다음 요청을 처리할 백엔드 주소를 선택합니다.
+    /// 설정된 전략(라운드로빈/가중치)에 따라 적절한 주소를 반환합니다.
     pub fn get_next_address(&self) -> Result<SocketAddr, BackendError> {
         match &self.strategy {
             LoadBalancerStrategy::RoundRobin { current_index } => {
