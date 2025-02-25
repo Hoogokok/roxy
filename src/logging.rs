@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 use tracing::{info, warn, error, Level};
-use tracing_subscriber::fmt;
+use tracing_subscriber::{fmt, EnvFilter};
 use tracing_appender::rolling::Rotation;
 use crate::settings::LogSettings;
 use crate::settings::logging::{LogFormat, LogOutput};
@@ -15,14 +15,19 @@ fn ensure_log_directory(path: &str) -> std::io::Result<()> {
 }
 
 pub fn init_logging(settings: &LogSettings) -> Result<(), Box<dyn std::error::Error>> {
+    let env_filter = EnvFilter::new("")
+        .add_directive(settings.level.into())
+        .add_directive("bollard=warn".parse()?)
+        .add_directive("hyper=warn".parse()?);
+
     let subscriber = fmt::Subscriber::builder()
-        .with_target(true)
-        .with_thread_ids(true)
+        .with_target(false)
+        .with_thread_ids(false)
         .with_file(true)
         .with_line_number(true)
         .with_level(true)
         .with_ansi(matches!(settings.output, LogOutput::Stdout))
-        .with_max_level(settings.level);
+        .with_env_filter(env_filter);
 
     // 출력 대상 설정
     match &settings.output {
@@ -140,37 +145,35 @@ pub fn log_request(log: &RequestLog) {
         Level::INFO
     };
 
+    // 간소화된 로그 포맷
     match level {
         Level::ERROR => error!(
-            request_id = %log.request_id,
-            method = %log.method,
-            path = %log.path,
-            host = %log.host,
-            status = %log.status_code,
-            duration_ms = %log.duration_ms,
-            backend = ?log.backend_address,
-            error = ?log.error,
-            "Request failed"
+            "{} {} {} -> {} ({}ms) [{}]{}",
+            log.method,
+            log.host,
+            log.path,
+            log.status_code,
+            log.duration_ms,
+            log.backend_address.as_deref().unwrap_or("-"),
+            log.error.as_ref().map(|e| format!(" error: {}", e)).unwrap_or_default()
         ),
         Level::WARN => warn!(
-            request_id = %log.request_id,
-            method = %log.method,
-            path = %log.path,
-            host = %log.host,
-            status = %log.status_code,
-            duration_ms = %log.duration_ms,
-            backend = ?log.backend_address,
-            "Request completed with warning"
+            "{} {} {} -> {} ({}ms) [{}]",
+            log.method,
+            log.host,
+            log.path,
+            log.status_code,
+            log.duration_ms,
+            log.backend_address.as_deref().unwrap_or("-")
         ),
         _ => info!(
-            request_id = %log.request_id,
-            method = %log.method,
-            path = %log.path,
-            host = %log.host,
-            status = %log.status_code,
-            duration_ms = %log.duration_ms,
-            backend = ?log.backend_address,
-            "Request completed successfully"
+            "{} {} {} -> {} ({}ms) [{}]",
+            log.method,
+            log.host,
+            log.path,
+            log.status_code,
+            log.duration_ms,
+            log.backend_address.as_deref().unwrap_or("-")
         ),
     }
 } 
