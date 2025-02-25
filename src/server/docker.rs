@@ -100,7 +100,9 @@ impl DockerEventHandler {
                             status = ?status,
                             message = %message,
                             consecutive_failures = %consecutive_failures,
-                            "컨테이너 헬스 체크 실패"
+                            max_failures = 3,
+                            remaining_attempts = %(3 - consecutive_failures),
+                            "컨테이너 헬스 체크 실패: {}", message
                         );
                         
                         if consecutive_failures >= 3 {
@@ -109,7 +111,8 @@ impl DockerEventHandler {
                                 container_id = %container_id,
                                 host = %host,
                                 failures = %consecutive_failures,
-                                "연속 실패 횟수 초과로 컨테이너 제거"
+                                max_failures = 3,
+                                "컨테이너 제거됨: 연속 {} 실패 (최대 허용: {})", consecutive_failures, 3
                             );
                         }
                     }
