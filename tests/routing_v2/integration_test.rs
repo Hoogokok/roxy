@@ -3,6 +3,7 @@ use hyper::{Request, Method};
 use http_body_util::Empty;
 use hyper::body::Bytes;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // 테스트 헬퍼 함수
 fn create_request(host: &str, path: &str) -> Request<Empty<Bytes>> {
@@ -151,4 +152,76 @@ fn test_error_handling_flow() {
         let error = result.unwrap_err();
         assert!(matches!(error, expected_error));
     }
+}
+
+#[tokio::test]
+async fn test_load_balanced_routing() {
+    // 2. 라우팅 테이블 생성
+    let mut table = RoutingTable::new();
+    
+    // 3. 로드밸런서가 활성화된 백엔드 서비스 생성
+    let mut service = BackendService::new("127.0.0.1:8001".parse().unwrap());
+    service.enable_load_balancer(LoadBalancerStrategy::RoundRobin {
+        current_index: AtomicUsize::new(0),
+    });
+    service.add_address("127.0.0.1:8002".parse().unwrap(), 1).unwrap();
+
+    // 4. 라우트 추가
+    table.add_route(
+        "api.example.com".to_string(),
+        service,
+        Some(PathMatcher::from_str("/").unwrap()),
+    );
+
+    // 5. 요청 테스트
+    let request = create_request("api.example.com", "/users");
+    
+    // 첫 번째 요청은 server1으로
+    let backend1 = table.route_request(&request).unwrap();
+    assert_eq!(backend1.get_next_address().unwrap().to_string(), "127.0.0.1:8001");
+
+    // 두 번째 요청은 server2로
+    let backend2 = table.route_request(&request).unwrap();
+    assert_eq!(backend2.get_next_address().unwrap().to_string(), "127.0.0.1:8002");
+}
+
+#[tokio::test]
+async fn test_weighted_load_balancing() {
+    // 1. 라우팅 테이블 생성
+    let mut table = RoutingTable::new();
+    
+    // 2. 가중치 2:1 설정으로 백엔드 서비스 생성
+    let mut service = BackendService::new("127.0.0.1:8001".parse().unwrap());
+    service.enable_load_balancer(LoadBalancerStrategy::Weighted {
+        current_index: AtomicUsize::new(0),
+        total_weight: 1,
+    });
+    service.add_address("127.0.0.1:8002".parse().unwrap(), 2).unwrap();
+
+    // 3. 라우트 추가
+    table.add_route(
+        "api.example.com".to_string(),
+        service,
+        Some(PathMatcher::from_str("/").unwrap()),
+    );
+
+    // 4. 요청 생성
+    let request = create_request("api.example.com", "/users");
+    
+    // 5. 여러 번의 요청을 보내고 분배 비율 확인
+    let mut addr1_count = 0;
+    let mut addr2_count = 0;
+
+    for _ in 0..6 {
+        let backend = table.route_request(&request).unwrap();
+        match backend.get_next_address().unwrap().to_string().as_str() {
+            "127.0.0.1:8001" => addr1_count += 1,
+            "127.0.0.1:8002" => addr2_count += 1,
+            _ => unreachable!(),
+        }
+    }
+
+    // 6. 가중치에 따른 분배 확인
+    assert_eq!(addr1_count, 2, "첫 번째 서버(가중치 1)는 2번 호출되어야 함");
+    assert_eq!(addr2_count, 4, "두 번째 서버(가중치 2)는 4번 호출되어야 함");
 } 
