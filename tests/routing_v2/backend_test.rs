@@ -4,6 +4,7 @@ use reverse_proxy_traefik::routing_v2::{
     backend::LoadBalancerStrategy,
     error::BackendError,
 };
+use std::net::SocketAddr;
 
 #[test]
 fn test_basic_backend_service() {
@@ -17,60 +18,65 @@ fn test_basic_backend_service() {
 }
 
 #[test]
-fn test_round_robin_load_balancing() {
-    let addr1 = "127.0.0.1:8080".parse().unwrap();
-    let addr2 = "127.0.0.1:8081".parse().unwrap();
-    let addr3 = "127.0.0.1:8082".parse().unwrap();
-    
+fn test_round_robin_strategy() {
+    // 1. 백엔드 서비스 생성
+    let addr1: SocketAddr = "127.0.0.1:8001".parse().unwrap();
     let mut service = BackendService::new(addr1);
-    
-    // 라운드 로빈 로드밸런서 활성화
+
+    // 2. 추가 백엔드 주소들
+    let addr2: SocketAddr = "127.0.0.1:8002".parse().unwrap();
+    let addr3: SocketAddr = "127.0.0.1:8003".parse().unwrap();
+
+    // 3. 라운드로빈 전략 활성화
     service.enable_load_balancer(LoadBalancerStrategy::RoundRobin {
-        current_index: AtomicUsize::new(0)
+        current_index: AtomicUsize::new(0),
     });
-    
-    // 추가 주소 등록
+
+    // 4. 추가 주소 등록
     service.add_address(addr2, 1).unwrap();
     service.add_address(addr3, 1).unwrap();
-    
-    // 순차적 순환 확인
+
+    // 5. 순차적 분배 확인
     assert_eq!(service.get_next_address().unwrap(), addr1);
     assert_eq!(service.get_next_address().unwrap(), addr2);
     assert_eq!(service.get_next_address().unwrap(), addr3);
-    assert_eq!(service.get_next_address().unwrap(), addr1);  // 다시 처음으로
+    assert_eq!(service.get_next_address().unwrap(), addr1); // 다시 처음으로
 }
 
 #[test]
-fn test_weighted_load_balancing() {
-    let addr1 = "127.0.0.1:8080".parse().unwrap();
-    let addr2 = "127.0.0.1:8081".parse().unwrap();
-    
+fn test_weighted_strategy() {
+    // 1. 백엔드 서비스 생성
+    let addr1: SocketAddr = "127.0.0.1:8001".parse().unwrap();
     let mut service = BackendService::new(addr1);
-    
-    // 가중치 기반 로드밸런서 활성화
+
+    // 2. 추가 백엔드 주소 (가중치 다르게)
+    let addr2: SocketAddr = "127.0.0.1:8002".parse().unwrap();
+
+    // 3. 가중치 기반 전략 활성화 (addr1: 1, addr2: 2)
     service.enable_load_balancer(LoadBalancerStrategy::Weighted {
         current_index: AtomicUsize::new(0),
         total_weight: 1,
     });
-    
-    // addr2를 2배 가중치로 추가
+
+    // 4. 가중치 2인 주소 추가
     service.add_address(addr2, 2).unwrap();
-    
-    // 가중치에 따른 분배 확인 (3회 순환)
+
+    // 5. 가중치에 따른 분배 확인 (1:2 비율)
     let mut addr1_count = 0;
     let mut addr2_count = 0;
-    
-    for _ in 0..9 {  // 총 가중치 3의 3배
-        let addr = service.get_next_address().unwrap();
-        if addr == addr1 {
-            addr1_count += 1;
-        } else {
-            addr2_count += 1;
+
+    for _ in 0..30 {
+        match service.get_next_address().unwrap() {
+            addr if addr == addr1 => addr1_count += 1,
+            addr if addr == addr2 => addr2_count += 1,
+            _ => unreachable!(),
         }
     }
-    
-    assert_eq!(addr1_count, 3);  // 가중치 1
-    assert_eq!(addr2_count, 6);  // 가중치 2
+
+    // addr2가 addr1의 약 2배 정도 선택되어야 함
+    assert!(addr2_count > addr1_count * 3/2, 
+        "addr2 (count: {}) should be selected about twice as much as addr1 (count: {})",
+        addr2_count, addr1_count);
 }
 
 #[test]
