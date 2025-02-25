@@ -1,5 +1,4 @@
 use reverse_proxy_traefik::routing_v2::*;
-use std::net::SocketAddr;
 use hyper::{Request, Method};
 use http_body_util::Empty;
 use hyper::body::Bytes;
