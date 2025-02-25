@@ -80,4 +80,67 @@ impl BackendService {
             .copied()
             .ok_or_else(|| BackendError::IndexOutOfBounds { index, len })
     }
+}
+
+#[derive(Debug)]
+pub enum LoadBalancerStrategy {
+    /// 라운드 로빈 방식
+    RoundRobin {
+        current_index: AtomicUsize,
+    },
+    /// 가중치 기반 방식
+    Weighted {
+        current_index: AtomicUsize,
+        total_weight: usize,
+    },
+}
+
+#[derive(Debug)]
+pub struct LoadBalancer {
+    /// 주소 목록 (가중치 포함)
+    addresses: Vec<(SocketAddr, usize)>,
+    /// 로드밸런싱 전략
+    strategy: LoadBalancerStrategy,
+}
+
+impl LoadBalancer {
+    pub fn new(initial_addr: SocketAddr, strategy: LoadBalancerStrategy) -> Self {
+        Self {
+            addresses: vec![(initial_addr, 1)],
+            strategy,
+        }
+    }
+
+    pub fn add_address(&mut self, addr: SocketAddr, weight: usize) {
+        self.addresses.push((addr, weight));
+        if let LoadBalancerStrategy::Weighted { total_weight, .. } = &mut self.strategy {
+            *total_weight += weight;
+        }
+    }
+
+    pub fn get_next_address(&self) -> Result<SocketAddr, BackendError> {
+        match &self.strategy {
+            LoadBalancerStrategy::RoundRobin { current_index } => {
+                let index = current_index.fetch_add(1, Ordering::Relaxed) % self.addresses.len();
+                self.addresses.get(index)
+                    .map(|(addr, _)| *addr)
+                    .ok_or(BackendError::NoAddresses)
+            }
+            LoadBalancerStrategy::Weighted { current_index, total_weight } => {
+                let index = current_index.fetch_add(1, Ordering::Relaxed) % *total_weight;
+                let mut current_weight = 0;
+                
+                for (addr, weight) in &self.addresses {
+                    current_weight += weight;
+                    if index < current_weight {
+                        return Ok(*addr);
+                    }
+                }
+                
+                self.addresses.last()
+                    .map(|(addr, _)| *addr)
+                    .ok_or(BackendError::NoAddresses)
+            }
+        }
+    }
 } 
