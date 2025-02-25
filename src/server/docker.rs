@@ -103,12 +103,15 @@ impl DockerEventHandler {
                             "컨테이너 헬스 체크 실패"
                         );
                         
-                        table.remove_route(&host);
-                        info!(
-                            container_id = %container_id,
-                            host = %host,
-                            "비정상 컨테이너 제거"
-                        );
+                        if consecutive_failures >= 3 {
+                            table.remove_route(&host);
+                            info!(
+                                container_id = %container_id,
+                                host = %host,
+                                failures = %consecutive_failures,
+                                "연속 실패 횟수 초과로 컨테이너 제거"
+                            );
+                        }
                     }
                     _ => {
                         info!(
