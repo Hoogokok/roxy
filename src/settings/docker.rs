@@ -3,6 +3,39 @@ use super::{SettingsError, parse_env_var};
 pub type Result<T> = std::result::Result<T, SettingsError>;
 
 #[derive(Debug, Clone, Deserialize)]
+pub struct HealthCheckSettings {
+    /// 헬스 체크 활성화 여부
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// 체크 간격 (초)
+    #[serde(default = "default_check_interval")]
+    pub interval: u64,
+
+    /// 체크 타임아웃 (초)
+    #[serde(default = "default_check_timeout")]
+    pub timeout: u64,
+}
+
+impl Default for HealthCheckSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval: default_check_interval(),
+            timeout: default_check_timeout(),
+        }
+    }
+}
+
+fn default_check_interval() -> u64 {
+    30 // 30초
+}
+
+fn default_check_timeout() -> u64 {
+    5 // 5초
+}
+
+#[derive(Debug, Clone, Deserialize)]
 pub struct DockerSettings {
     /// Docker 네트워크 이름
     #[serde(default = "default_docker_network")]
@@ -11,16 +44,22 @@ pub struct DockerSettings {
     /// 라벨 접두사
     #[serde(default = "default_label_prefix")]
     pub label_prefix: String,
+
+    /// 헬스 체크 설정
+    #[serde(default)]
+    pub health_check: HealthCheckSettings,
 }
 
 impl DockerSettings {
     pub fn from_env() -> Result<Self> {
         let network = parse_env_var("PROXY_DOCKER_NETWORK", default_docker_network)?;
         let label_prefix = parse_env_var("PROXY_LABEL_PREFIX", default_label_prefix)?;
+        let health_check = HealthCheckSettings::default();
 
         let settings = Self {
             network,
             label_prefix,
+            health_check,
         };
         settings.validate()?;
         Ok(settings)
@@ -72,6 +111,7 @@ impl Default for DockerSettings {
         Self {
             network: default_docker_network(),
             label_prefix: default_label_prefix(),
+            health_check: HealthCheckSettings::default(),
         }
     }
 }
