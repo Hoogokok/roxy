@@ -8,6 +8,7 @@ use http_body_util::Empty;
 use bytes::Bytes;
 use tokio::time::timeout;
 use tracing::{debug, error};
+use tokio::net::TcpStream;
 
 use crate::settings::docker::HealthCheckType;
 use super::{DockerError, events_types::HealthStatus};
@@ -102,6 +103,61 @@ impl HealthChecker for HttpHealthChecker {
             }
             Ok(Err(e)) => Ok(HealthCheckResult::unhealthy(format!("요청 실패: {}", e))),
             Err(_) => Ok(HealthCheckResult::unhealthy(format!("타임아웃 ({}초)", self.timeout_secs))),
+        }
+    }
+}
+
+/// TCP 헬스 체커
+pub struct TcpHealthChecker {
+    addr: String,
+    port: u16,
+    timeout_secs: u64,
+}
+
+impl TcpHealthChecker {
+    pub fn new(addr: String, check_type: &HealthCheckType, timeout_secs: u64) -> Option<Self> {
+        match check_type {
+            HealthCheckType::Tcp { port } => Some(Self {
+                addr,
+                port: *port,
+                timeout_secs,
+            }),
+            _ => None,
+        }
+    }
+}
+
+#[async_trait]
+impl HealthChecker for TcpHealthChecker {
+    async fn check(&self) -> Result<HealthCheckResult, DockerError> {
+        let addr = format!("{}:{}", self.addr, self.port);
+        debug!("TCP 헬스 체크 시작: {}", addr);
+
+        match timeout(
+            std::time::Duration::from_secs(self.timeout_secs),
+            TcpStream::connect(&addr)
+        ).await {
+            Ok(Ok(_)) => Ok(HealthCheckResult::healthy(format!("TCP 연결 성공: {}", addr))),
+            Ok(Err(e)) => Ok(HealthCheckResult::unhealthy(format!("TCP 연결 실패: {}", e))),
+            Err(_) => Ok(HealthCheckResult::unhealthy(format!("타임아웃 ({}초)", self.timeout_secs))),
+        }
+    }
+}
+
+/// 헬스 체커 팩토리
+pub struct HealthCheckerFactory;
+
+impl HealthCheckerFactory {
+    pub fn create(addr: String, check_type: &HealthCheckType, timeout_secs: u64) -> Option<Box<dyn HealthChecker>> {
+        match check_type {
+            HealthCheckType::Http { .. } => {
+                HttpHealthChecker::new(addr, check_type, timeout_secs)
+                    .map(|checker| Box::new(checker) as Box<dyn HealthChecker>)
+            }
+            HealthCheckType::Tcp { .. } => {
+                TcpHealthChecker::new(addr, check_type, timeout_secs)
+                    .map(|checker| Box::new(checker) as Box<dyn HealthChecker>)
+            }
         }
     }
 } 
