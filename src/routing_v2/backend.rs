@@ -95,6 +95,20 @@ pub enum LoadBalancerStrategy {
     },
 }
 
+impl Clone for LoadBalancerStrategy {
+    fn clone(&self) -> Self {
+        match self {
+            Self::RoundRobin { current_index } => Self::RoundRobin {
+                current_index: AtomicUsize::new(current_index.load(Ordering::Relaxed)),
+            },
+            Self::Weighted { current_index, total_weight } => Self::Weighted {
+                current_index: AtomicUsize::new(current_index.load(Ordering::Relaxed)),
+                total_weight: *total_weight,
+            },
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct LoadBalancer {
     /// 주소 목록 (가중치 포함)
