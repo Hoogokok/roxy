@@ -80,6 +80,35 @@ fn default_check_timeout() -> u64 {
     5 // 5초
 }
 
+/// 재시도 설정
+#[derive(Debug, Clone, Deserialize)]
+pub struct RetrySettings {
+    /// 최대 재시도 횟수
+    #[serde(default = "default_retry_attempts")]
+    pub max_attempts: u32,
+
+    /// 재시도 간격 (초)
+    #[serde(default = "default_retry_interval")]
+    pub interval: u64,
+}
+
+impl Default for RetrySettings {
+    fn default() -> Self {
+        Self {
+            max_attempts: default_retry_attempts(),
+            interval: default_retry_interval(),
+        }
+    }
+}
+
+fn default_retry_attempts() -> u32 {
+    3
+}
+
+fn default_retry_interval() -> u64 {
+    1 // 1초
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct DockerSettings {
     /// Docker 네트워크 이름
@@ -93,6 +122,10 @@ pub struct DockerSettings {
     /// 헬스 체크 설정
     #[serde(default)]
     pub health_check: HealthCheckSettings,
+
+    /// 재시도 설정
+    #[serde(default)]
+    pub retry: RetrySettings,
 }
 
 impl DockerSettings {
@@ -100,11 +133,13 @@ impl DockerSettings {
         let network = parse_env_var("PROXY_DOCKER_NETWORK", default_docker_network)?;
         let label_prefix = parse_env_var("PROXY_LABEL_PREFIX", default_label_prefix)?;
         let health_check = HealthCheckSettings::default();
+        let retry = RetrySettings::default();
 
         let settings = Self {
             network,
             label_prefix,
             health_check,
+            retry,
         };
         settings.validate()?;
         Ok(settings)
@@ -157,6 +192,7 @@ impl Default for DockerSettings {
             network: default_docker_network(),
             label_prefix: default_label_prefix(),
             health_check: HealthCheckSettings::default(),
+            retry: RetrySettings::default(),
         }
     }
 }
