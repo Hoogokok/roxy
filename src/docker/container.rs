@@ -261,18 +261,7 @@ impl  DefaultExtractor {
             .as_ref()
             .and_then(|name| self.extract_middlewares(labels, name));
         
-        let ip = container
-            .network_settings
-            .as_ref()
-            .and_then(|settings| settings.networks.as_ref())
-            .and_then(|networks| networks.get(&self.network_name))
-            .and_then(|network| network.ip_address.as_ref())
-            .ok_or_else(|| DockerError::NetworkError {
-                container_id: container.id.as_deref().unwrap_or("unknown").to_string(),
-                network: self.network_name.clone(),
-                reason: "IP 주소를 찾을 수 없음".to_string(),
-                context: None,
-            })?;
+        let ip = self.extract_container_ip(container)?;
 
         // 로드밸런서가 활성화된 경우에만 설정 추출
         let load_balancer = if load_balancer_enabled {
@@ -284,13 +273,44 @@ impl  DefaultExtractor {
 
         Ok(ContainerInfo {
             host,
-            ip: ip.clone(),
+            ip,
             port,
             path_matcher: self.extract_path_matcher(labels),
             middlewares,
             router_name,
             health_check: self.extract_health_check(labels),
             load_balancer,
+        })
+    }
+
+    fn extract_container_ip(&self, container: &ContainerSummary) -> Result<String, DockerError> {
+        let networks = container.network_settings
+            .as_ref()
+            .and_then(|settings| settings.networks.as_ref())
+            .ok_or_else(|| DockerError::ContainerConfigError {
+                container_id: container.id.clone().unwrap_or_default(),
+                reason: "네트워크 설정을 찾을 수 없음".to_string(),
+                context: None,
+            })?;
+
+        // 지정된 네트워크의 IP 주소 찾기
+        if let Some(network) = networks.get(&self.network_name) {
+            if let Some(ip) = &network.ip_address {
+                return Ok(ip.clone());
+            }
+        }
+
+        // 대체 IP 주소 찾기 (첫 번째 사용 가능한 IP)
+        for network in networks.values() {
+            if let Some(ip) = &network.ip_address {
+                return Ok(ip.clone());
+            }
+        }
+
+        Err(DockerError::ContainerConfigError {
+            container_id: container.id.clone().unwrap_or_default(),
+            reason: format!("네트워크 {}에서 IP 주소를 찾을 수 없음", self.network_name),
+            context: None,
         })
     }
 
@@ -309,45 +329,23 @@ impl ContainerInfoExtractor for DefaultExtractor {
     }
 
     fn extract_info(&self, container: &ContainerSummary) -> Result<ContainerInfo, DockerError> {
-        let labels = &container.labels;
-        let host = self.extract_host(labels)?;
-        let port = self.extract_port(labels);
-        let router_name = self.extract_router_name(labels);
-        let middlewares = router_name
-            .as_ref()
-            .and_then(|name| self.extract_middlewares(labels, name));
-        
-        let ip = container
-            .network_settings
-            .as_ref()
-            .and_then(|settings| settings.networks.as_ref())
-            .and_then(|networks| networks.get(&self.network_name))
-            .and_then(|network| network.ip_address.as_ref())
-            .ok_or_else(|| DockerError::NetworkError {
-                container_id: container.id.as_deref().unwrap_or("unknown").to_string(),
-                network: self.network_name.clone(),
-                reason: "IP 주소를 찾을 수 없음".to_string(),
-                context: None,
-            })?;
-
-        Ok(ContainerInfo {
-            host,
-            ip: ip.clone(),
-            port,
-            path_matcher: self.extract_path_matcher(labels),
-            middlewares,
-            router_name,
-            health_check: self.extract_health_check(labels),
-            load_balancer: None,
-        })
+        DefaultExtractor::extract_info(self, container)
     }
 
     fn create_backend(&self, info: &ContainerInfo) -> Result<BackendService, DockerError> {
         let addr = self.parse_socket_addr(&info.ip, info.port)?;
         let mut service = BackendService::with_router(addr, info.router_name.clone());
+        
+        // 미들웨어 설정
         if let Some(middlewares) = &info.middlewares {
             service.set_middlewares(middlewares.clone());
         }
+
+        // 로드밸런서 설정이 있으면 활성화
+        if let Some(strategy) = &info.load_balancer {
+            service.enable_load_balancer(strategy.clone());
+        }
+
         Ok(service)
     }
 } 
