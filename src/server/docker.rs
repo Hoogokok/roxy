@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use crate::{
-    docker::{DockerEvent, events_types::HealthStatus},
+    docker::{DockerEvent, HealthStatus},
     routing_v2::RoutingTable,
     middleware::MiddlewareManager,
 };
