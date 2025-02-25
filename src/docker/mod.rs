@@ -10,7 +10,7 @@ use container::ContainerInfo;
 pub use container::{ContainerInfoExtractor, DefaultExtractor};
 pub use events_types::{DockerEvent, HealthStatus};
 pub use error_types::DockerError;
-pub use retry::{RetryPolicy, with_retry, ContainerRoutesRetry};
+pub use retry::{RetryPolicy, with_retry, RetryableOperation, ContainerRoutesRetry};
 
 use bollard::container::ListContainersOptions;
 use bollard::models::{ContainerSummary, EventMessage};
