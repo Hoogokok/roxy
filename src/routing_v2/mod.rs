@@ -6,7 +6,7 @@ mod host;
 pub mod matcher;
 mod table;
 
-pub use backend::{BackendService, LoadBalancer, LoadBalancerStrategy};
+pub use backend::{BackendService, LoadBalancerStrategy};
 pub use error::{RoutingError, BackendError};
 pub use host::HostInfo;
 pub use matcher::PathMatcher;
