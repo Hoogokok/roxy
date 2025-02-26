@@ -547,19 +547,36 @@ impl DockerManager {
         Ok((first.host.clone(), path_matcher, service))
     }
 
+    // 헬스체크 설정을 위한 헬퍼 함수
+    async fn setup_container_health_check(
+        &self,
+        container: &ContainerSummary,
+    ) -> Result<(), DockerError> {
+        let id = container.id.as_ref().ok_or_else(|| DockerError::ContainerConfigError {
+            container_id: "unknown".to_string(),
+            reason: "컨테이너 ID 없음".to_string(),
+            context: None,
+        })?;
+        
+        let info = self.extractor.extract_info(container)?;
+        
+        debug!(
+            container_id = %id,
+            "컨테이너 헬스체크 초기 설정 시도"
+        );
+        
+        self.setup_health_check(id.clone(), &info).await
+    }
+
     pub async fn setup_initial_health_checks(&self) -> Result<(), DockerError> {
         info!("초기 컨테이너 헬스체크 설정 시작");
         
         let containers = self.get_labeled_containers().await?;
         for container in containers {
-            if let Some(id) = container.id.as_ref() {
-                if let Ok(info) = self.extractor.extract_info(&container) {
-                    debug!(
-                        container_id = %id,
-                        "컨테이너 헬스체크 초기 설정 시도"
-                    );
-                    self.setup_health_check(id.clone(), &info).await?;
-                }
+            if let Err(e) = self.setup_container_health_check(&container).await {
+                debug!(error = %e, "컨테이너 헬스체크 설정 실패");
+                // 개별 컨테이너 오류는 무시하고 계속 진행
+                continue;
             }
         }
         
