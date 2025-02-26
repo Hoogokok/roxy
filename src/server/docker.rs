@@ -84,7 +84,7 @@ impl DockerEventHandler {
                 info!("미들웨어 설정 업데이트 완료");
             }
             
-            DockerEvent::ContainerHealthChanged { container_id, status, message, timestamp, host, consecutive_failures } => {
+            DockerEvent::ContainerHealthChanged { container_id, status, message, host, consecutive_failures } => {
                 match status {
                     HealthStatus::Healthy => {
                         info!(
