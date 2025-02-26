@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use tokio::time::{sleep, Duration};
 use crate::{docker::DockerManager, routing_v2::{BackendService, PathMatcher}};
 use std::collections::HashMap;
-use tracing::{debug, warn};
+use tracing::warn;
 use crate::docker::DockerError;
 use crate::settings::docker::RetrySettings;
 
