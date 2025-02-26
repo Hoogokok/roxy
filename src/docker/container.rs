@@ -3,6 +3,7 @@ use crate::{docker::DockerError, routing_v2::{BackendService, LoadBalancerStrate
 use std::net::SocketAddr;
 use crate::settings::docker::HealthCheckType;
 use std::sync::atomic::AtomicUsize;
+use tracing::debug;
 
 // 불변 데이터 구조
 #[derive(Debug, Clone)]
@@ -189,45 +190,52 @@ impl  DefaultExtractor {
 
     fn extract_health_check(&self, labels: &Option<std::collections::HashMap<String, String>>) -> Option<ContainerHealthCheck> {
         let labels = labels.as_ref()?;
-        let prefix = format!("{}health.", self.label_prefix);
-
-        // 헬스 체크가 명시적으로 활성화된 경우에만 설정 추출
-        let enabled = labels.get(&format!("{}enabled", prefix))
-            .and_then(|v| v.parse().ok())
+        
+        debug!("헬스체크 설정 추출 시작, 라벨: {:?}", labels);
+        
+        let enabled = labels.get(&format!("{}health.enabled", self.label_prefix))
+            .map(|v| v.to_lowercase() == "true")
             .unwrap_or(false);
 
+        debug!("헬스체크 활성화 여부: {}", enabled);
+        
         if !enabled {
             return None;
         }
 
         // 체크 타입 결정
-        let check_type = if let Some(path) = labels.get(&format!("{}http.path", prefix)) {
+        let check_type = if let Some(path) = labels.get(&format!("{}health.http.path", self.label_prefix)) {
             // HTTP 체크
             HealthCheckType::Http {
                 path: path.clone(),
-                method: labels.get(&format!("{}http.method", prefix))
+                method: labels.get(&format!("{}health.http.method", self.label_prefix))
                     .cloned()
                     .unwrap_or_else(|| "GET".to_string()),
-                expected_status: labels.get(&format!("{}http.expected_status", prefix))
+                expected_status: labels.get(&format!("{}health.http.expected_status", self.label_prefix))
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(200),
             }
-        } else if let Some(port) = labels.get(&format!("{}tcp.port", prefix))
+        } else if let Some(port) = labels.get(&format!("{}health.tcp.port", self.label_prefix))
             .and_then(|v| v.parse().ok()) 
         {
             // TCP 체크
             HealthCheckType::Tcp { port }
         } else {
-            return None;
+            // 기본값으로 HTTP 체크
+            HealthCheckType::Http {
+                path: "/health".to_string(),
+                method: "GET".to_string(),
+                expected_status: 200,
+            }
         };
 
         Some(ContainerHealthCheck {
             enabled,
             check_type,
-            interval: labels.get(&format!("{}interval", prefix))
+            interval: labels.get(&format!("{}health.interval", self.label_prefix))
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(30),
-            timeout: labels.get(&format!("{}timeout", prefix))
+            timeout: labels.get(&format!("{}health.timeout", self.label_prefix))
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(5),
         })
