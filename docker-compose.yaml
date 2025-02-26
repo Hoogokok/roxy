@@ -47,10 +47,13 @@ services:
     labels:
       - "rproxy.http.routers.api.rule=Host(`test.localhost`) && PathPrefix(`/api`)"
       - "rproxy.http.services.api.loadbalancer.server.port=80"
+      - "rproxy.http.routers.api.middlewares=api-cors"
       - "rproxy.http.services.api.loadbalancer.server.weight=2"
       - "rproxy.health.enabled=true"
-      - "rproxy.health.http.path=/health"
+      - "rproxy.health.http.path=/api/health"
       - "rproxy.health.interval=30"
+      - "rproxy.health.timeout=5"
+      - "rproxy.health.max_failures=3"
       - "rproxy.http.middlewares.api-cors.cors.allowOrigins=http://localhost:3000,https://example.com"
       - "rproxy.http.middlewares.api-cors.cors.allowMethods=GET,POST,PUT,DELETE,OPTIONS"
       - "rproxy.http.middlewares.api-cors.cors.allowHeaders=Content-Type,Authorization,X-Request-ID"
@@ -73,10 +76,13 @@ services:
     labels:
       - "rproxy.http.routers.api.rule=Host(`test.localhost`) && PathPrefix(`/api`)"
       - "rproxy.http.services.api.loadbalancer.server.port=80"
+      - "rproxy.http.routers.api.middlewares=api-cors"
       - "rproxy.http.services.api.loadbalancer.server.weight=1"
       - "rproxy.health.enabled=true"
-      - "rproxy.health.http.path=/health"
+      - "rproxy.health.http.path=/api/health"
       - "rproxy.health.interval=30"
+      - "rproxy.health.timeout=5"
+      - "rproxy.health.max_failures=3"
     networks:
       - reverse-proxy-network
     volumes:
