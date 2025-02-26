@@ -167,6 +167,10 @@ pub struct DockerSettings {
     /// 로드밸런서 설정
     #[serde(default)]
     pub load_balancer: LoadBalancerSettings,
+
+    /// 초기 헬스체크 설정 여부
+    #[serde(default)]
+    pub setup_initial_health_checks: bool,
 }
 
 impl DockerSettings {
@@ -183,6 +187,7 @@ impl DockerSettings {
             health_check,
             retry,
             load_balancer,
+            setup_initial_health_checks: false,
         };
         settings.validate()?;
         Ok(settings)
@@ -237,6 +242,7 @@ impl Default for DockerSettings {
             health_check: HealthCheckSettings::default(),
             retry: RetrySettings::default(),
             load_balancer: LoadBalancerSettings::default(),
+            setup_initial_health_checks: false,
         }
     }
 }
