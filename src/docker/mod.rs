@@ -113,19 +113,6 @@ impl DockerManager {
         self.client.list_containers(options).await
     }
 
-
-    /// 컨테이너에서 라우팅 정보를 추출합니다.
-    fn container_to_route(&self, container: &ContainerSummary) -> Result<(String, BackendService, PathMatcher), DockerError> {
-        let info = self.extractor.extract_info(container)?;
-        let service = self.extractor.create_backend(&info)?;
-        
-        // None일 경우 기본 경로 매처("/") 사용
-        let path_matcher = info.path_matcher
-            .unwrap_or_else(|| PathMatcher::from_str("/").unwrap());
-        
-        Ok((info.host, service, path_matcher))
-    }
-
     fn create_event_filters() -> HashMap<String, Vec<String>> {
         let mut filters: HashMap<String, Vec<String>> = HashMap::new();
         filters.insert(
