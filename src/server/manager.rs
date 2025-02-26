@@ -47,15 +47,20 @@ impl ServerManager {
                 e
             })?;
 
-        // 2. Docker 라벨에서 설정 로드 (우선순위 높음)
+        // 2. 초기 헬스체크 설정
+        if let Err(e) = docker_manager.setup_initial_health_checks().await {
+            error!(error = %e, "초기 헬스체크 설정 실패");
+        }
+
+        // 3. Docker 라벨에서 설정 로드 (우선순위 높음)
         if let Ok(labels) = docker_manager.get_container_labels().await {
             settings.merge_docker_labels(&labels)?;
         }
 
-        // 3. 라우팅 테이블 초기화
+        // 4. 라우팅 테이블 초기화
         let routing_table = Arc::new(RwLock::new(RoutingTable::new()));
         
-        // 4. 초기 라우트 설정
+        // 5. 초기 라우트 설정
         let initial_routes = docker_manager.get_container_routes().await?;
         
         {
@@ -63,7 +68,7 @@ impl ServerManager {
             table.sync_docker_routes(initial_routes);
         }
 
-        // 5. 미들웨어 매니저 초기화
+        // 6. 미들웨어 매니저 초기화
         let middleware_manager = MiddlewareManager::new(&settings.middleware, &settings.router_middlewares);
 
         Ok(Self::new(
