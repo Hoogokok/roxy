@@ -1,12 +1,14 @@
-mod events_types;
 mod error_types;
+pub mod events_types;
 mod retry;
 mod client;
 pub mod container;
+mod health;
 
 pub use client::{BollardDockerClient, DockerClient};
+use container::ContainerInfo;
 pub use container::{ContainerInfoExtractor, DefaultExtractor};
-pub use events_types::DockerEvent;
+pub use events_types::{DockerEvent, HealthStatus};
 pub use error_types::DockerError;
 pub use retry::{RetryPolicy, with_retry, ContainerRoutesRetry};
 
@@ -18,16 +20,24 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 use crate::settings::DockerSettings;
 use crate::routing_v2::{BackendService, PathMatcher};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 use tokio::time::Duration;
 use std::sync::Arc;
 use crate::middleware::MiddlewareConfig;
+use tokio::{
+    sync::RwLock,
+    task::JoinHandle,
+};
+use self::health::{ContainerHealth, HealthCheckerFactory};
+use std::sync::atomic::AtomicUsize;
+use crate::routing_v2::LoadBalancerStrategy;
 
 #[derive(Clone)]
 pub struct DockerManager {
     client: Arc<Box<dyn DockerClient>>,
     extractor: Box<dyn ContainerInfoExtractor>,
     config: DockerSettings,
+    health_checks: Arc<RwLock<HashMap<String, ContainerHealth>>>,
 }
 
 impl DockerManager {
@@ -41,6 +51,7 @@ impl DockerManager {
             client: Arc::new(client),
             extractor,
             config,
+            health_checks: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -62,7 +73,7 @@ impl DockerManager {
     /// 컨테이너 라우트를 조회하고 실패 시 재시도합니다.
     pub async fn get_container_routes(&self) -> Result<HashMap<(String, PathMatcher), BackendService>, DockerError> {
         let retry_operation = ContainerRoutesRetry { docker_manager: self };
-        let policy = RetryPolicy::new(3, Duration::from_secs(2));
+        let policy = RetryPolicy::from(&self.config.retry);
         
         with_retry(retry_operation, policy).await
     }
@@ -73,14 +84,22 @@ impl DockerManager {
         let containers = self.get_labeled_containers().await?;
         info!(count = containers.len(), "컨테이너 목록 조회 성공");
 
+        let services = self.group_containers_by_service(containers).await;
         let mut routes = HashMap::new();
-        for container in containers {
-            if let Ok((host, service, path_matcher)) = self.container_to_route(&container) {
-                routes.insert((host, path_matcher), service);
+        
+        for infos in services.values() {
+            if !infos.is_empty() {
+                match self.create_backend_service(infos) {
+                    Ok((host, path_matcher, service)) => {
+                        routes.insert((host, path_matcher), service);
+                    }
+                    Err(e) => {
+                        warn!("백엔드 서비스 생성 실패: {}", e);
+                    }
+                }
             }
         }
-
-        info!(route_count = routes.len(), "라우팅 테이블 업데이트 완료");
+        
         Ok(routes)
     }
 
@@ -92,19 +111,6 @@ impl DockerManager {
         });
 
         self.client.list_containers(options).await
-    }
-
-
-    /// 컨테이너에서 라우팅 정보를 추출합니다.
-    fn container_to_route(&self, container: &ContainerSummary) -> Result<(String, BackendService, PathMatcher), DockerError> {
-        let info = self.extractor.extract_info(container)?;
-        let service = self.extractor.create_backend(&info)?;
-        
-        // None일 경우 기본 경로 매처("/") 사용
-        let path_matcher = info.path_matcher
-            .unwrap_or_else(|| PathMatcher::from_str("/").unwrap());
-        
-        Ok((info.host, service, path_matcher))
     }
 
     fn create_event_filters() -> HashMap<String, Vec<String>> {
@@ -131,6 +137,7 @@ impl DockerManager {
         let (tx, rx) = mpsc::channel(32);
         let docker = self.client.clone();
         let config = self.config.clone();
+        let health_checks = self.health_checks.clone();
 
         // 초기 라우트와 미들웨어 설정 전송
         if let Ok(routes) = self.try_get_container_routes().await {
@@ -142,6 +149,9 @@ impl DockerManager {
             let _ = tx.send(DockerEvent::MiddlewareConfigsUpdated(middleware_configs)).await;
         }
 
+        // 헬스체크 시작
+        let health_check_handle = self.start_health_checks(tx.clone()).await;
+
         tokio::spawn(async move {
             let options = EventsOptions {
                 filters: Self::create_event_filters(),
@@ -152,8 +162,14 @@ impl DockerManager {
 
             while let Some(event) = events.next().await {
                 match event {
-                    Ok(event) => {
-                        if let Err(e) = Self::handle_container_event(&docker, &config, &event, &tx).await {
+                    Ok(event_msg) => {
+                        if let Err(e) = Self::handle_container_event(
+                            &docker, 
+                            &config,
+                            health_checks.clone(),
+                            &event_msg,
+                            &tx
+                        ).await {
                             let _ = tx.send(DockerEvent::Error(e)).await;
                         }
                     }
@@ -162,6 +178,9 @@ impl DockerManager {
                     }
                 }
             }
+
+            // 이벤트 스트림이 종료되면 헬스체크도 중단
+            health_check_handle.abort();
         });
 
         rx
@@ -171,6 +190,7 @@ impl DockerManager {
     async fn handle_container_event(
         docker: &Arc<Box<dyn DockerClient>>,
         config: &DockerSettings,
+        health_checks: Arc<RwLock<HashMap<String, ContainerHealth>>>,
         event: &EventMessage,
         tx: &mpsc::Sender<DockerEvent>,
     ) -> Result<(), DockerError> {
@@ -189,11 +209,15 @@ impl DockerManager {
                 config.label_prefix.clone(),
             )),
             config: config.clone(),
+            health_checks,
         };
 
         // 이벤트 처리 후 미들웨어 설정도 업데이트
         let result = match event.action.as_deref() {
-            Some("start") => Self::handle_container_start(&manager, container_id, tx).await,
+            Some("start") => {
+                info!("컨테이너 시작 이벤트 감지: {}", container_id);
+                Self::handle_container_start(&manager, container_id, tx).await
+            }
             Some("stop" | "die" | "destroy") => Self::handle_container_stop(&manager, container_id, tx).await,
             Some("update") => Self::handle_container_update(&manager, container_id, tx).await,
             action => {
@@ -216,6 +240,46 @@ impl DockerManager {
         result
     }
 
+    /// 주기적인 헬스 체크 시작
+    pub async fn start_health_checks(&self, tx: mpsc::Sender<DockerEvent>) -> JoinHandle<()> {
+        let health_checks = self.health_checks.clone();
+        let interval = self.config.health_check.interval;
+        let health_checks_ptr = format!("{:p}", &*health_checks.read().await);
+        info!("start_health_checks - health_checks 위치: {}", health_checks_ptr);
+
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(interval));
+            loop {
+                interval.tick().await;
+                let mut checks = health_checks.write().await;
+                let count = checks.len();
+                info!("헬스체크 실행 중... 컨테이너 수: {}, health_checks 위치: {}", count, health_checks_ptr);
+                for (container_id, health) in checks.iter_mut() {
+                    let host = health.host.clone();  
+                    match health.check().await {
+                        Ok(result) => {
+                            let _ = tx.send(DockerEvent::ContainerHealthChanged {
+                                container_id: container_id.clone(),
+                                host,
+                                status: result.status.clone(),
+                                message: result.message.clone(),
+                                consecutive_failures: health.consecutive_failures,
+                            }).await;
+                        }
+                        Err(e) => {
+                            error!(
+                                error = %e,
+                                container_id = %container_id,
+                                "헬스 체크 실행 실패"
+                            );
+                        }
+                    }
+                }
+            }
+        })
+    }
+
+    /// 컨테이너 시작 시 헬스 체크 설정
     async fn handle_container_start(
         manager: &DockerManager,
         container_id: &str,
@@ -223,20 +287,39 @@ impl DockerManager {
     ) -> Result<(), DockerError> {
         info!(container_id = %container_id, "컨테이너 시작 이벤트 수신");
         
+        // 컨테이너 정보 조회
+        let containers = manager.get_labeled_containers().await?;
+        let container = containers.iter()
+            .find(|c| c.id.as_deref() == Some(container_id))
+            .ok_or_else(|| DockerError::ContainerConfigError {
+                container_id: container_id.to_string(),
+                reason: "컨테이너를 찾을 수 없음".to_string(),
+                context: None,
+            })?;
+
         match manager.get_container_info(container_id).await? {
             Some((host, service, path_matcher)) => {
-                info!(
-                    container_id = %container_id,
-                    host = %host,
-                    path_matcher = ?path_matcher,
-                    "컨테이너 시작 처리 완료"
-                );
+                // 기존 이벤트 전송
                 tx.send(DockerEvent::ContainerStarted { 
                     container_id: container_id.to_string(),
-                    host,
-                    service,
-                    path_matcher: path_matcher,
+                    host: host.clone(),
+                    service: service.clone(),
+                    path_matcher,
                 }).await.map_err(|_| Self::channel_send_error())?;
+
+                // 헬스 체크 설정
+                if let Ok(info) = manager.extractor.extract_info(container) {
+                    debug!(
+                        container_id = %container_id,
+                        info = ?info,
+                        "헬스체크 설정 시도"
+                    );
+                    manager.setup_health_check(container_id.to_string(), &info).await?;
+                    debug!(container_id = %container_id, "헬스체크 설정 완료");
+                } else {
+                    warn!(container_id = %container_id, "컨테이너 정보 추출 실패");
+                }
+
                 Ok(())
             }
             None => {
@@ -246,29 +329,24 @@ impl DockerManager {
         }
     }
 
+    /// 컨테이너 중지 시 헬스 체크 제거
     async fn handle_container_stop(
         manager: &DockerManager,
         container_id: &str,
         tx: &mpsc::Sender<DockerEvent>,
     ) -> Result<(), DockerError> {
-        info!(
-            container_id = %container_id,
-            "컨테이너 중지 관련 이벤트 수신"
-        );
+        // 헬스 체크 제거
+        manager.remove_health_check(container_id).await;
 
-        match manager.get_container_info(container_id).await? {
-            Some((host, _, _)) => {  // path 정보는 무시하고 호스트만 사용
-                tx.send(DockerEvent::ContainerStopped { 
-                    container_id: container_id.to_string(),
-                    host,
-                }).await.map_err(|_| Self::channel_send_error())?;
-                Ok(())
-            }
-            None => {
-                warn!(container_id = %container_id, "중지된 컨테이너 정보를 찾을 수 없음");
-                Ok(())
-            }
+        // 기존 이벤트 전송
+        if let Some((host, _, _)) = manager.get_container_info(container_id).await? {
+            tx.send(DockerEvent::ContainerStopped { 
+                container_id: container_id.to_string(),
+                host,
+            }).await.map_err(|_| Self::channel_send_error())?;
         }
+
+        Ok(())
     }
 
     async fn handle_container_update(
@@ -362,5 +440,133 @@ impl DockerManager {
                 reason: format!("미들웨어 설정 파싱 실패: {}", e),
                 context: None,
             })
+    }
+
+    /// 컨테이너 헬스 체크 설정
+    pub async fn setup_health_check(&self, container_id: String, info: &ContainerInfo) -> Result<(), DockerError> {
+        let health_checks_ptr = format!("{:p}", &*self.health_checks.read().await);
+        info!("setup_health_check - health_checks 위치: {}", health_checks_ptr);
+        
+        debug!(
+            container_id = %container_id,
+            host = %info.host,
+            ip = %info.ip,
+            port = %info.port,
+            health_check = ?info.health_check,
+            "헬스체크 설정 시작"
+        );
+
+        if let Some(health_check) = &info.health_check {
+            let addr = format!("{}:{}", info.ip, info.port);
+            
+            if let Some(checker) = HealthCheckerFactory::create(addr.clone(), &health_check.check_type, health_check.timeout) {
+                let container_health = ContainerHealth::new(container_id.clone(), info.host.clone(), checker);
+                self.health_checks.write().await.insert(container_id.clone(), container_health);
+                info!(
+                    container_id = %container_id,
+                    addr = %addr,
+                    check_type = ?health_check.check_type,
+                    health_checks_ptr = %health_checks_ptr,
+                    "헬스체크 설정 완료"
+                );
+            } else {
+                warn!(
+                    container_id = %container_id,
+                    addr = %addr,
+                    "헬스체크 생성 실패"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// 컨테이너 헬스 체크 제거
+    pub async fn remove_health_check(&self, container_id: &str) {
+        self.health_checks.write().await.remove(container_id);
+    }
+
+    // 컨테이너들을 서비스 이름으로 그룹화
+    async fn group_containers_by_service(&self, containers: Vec<ContainerSummary>) 
+        -> HashMap<String, Vec<ContainerInfo>> 
+    {
+        let mut services: HashMap<String, Vec<ContainerInfo>> = HashMap::new();
+        
+        for container in containers {
+            if let Ok(info) = self.extractor.extract_info(&container) {
+                let service_name = info.router_name.clone()
+                    .unwrap_or_else(|| info.host.clone());
+                services.entry(service_name)
+                    .or_default()
+                    .push(info);
+            }
+        }
+        
+        services
+    }
+
+    // 그룹화된 컨테이너들을 하나의 백엔드 서비스로 변환
+    fn create_backend_service(&self, infos: &[ContainerInfo]) -> Result<(String, PathMatcher, BackendService), DockerError> {
+        let first = &infos[0];
+        debug!("서비스 생성 시작: host={}, path={:?}", first.host, first.path_matcher);
+        
+        let mut service = self.extractor.create_backend(first)?;
+        
+        // 여러 컨테이너가 있으면 로드밸런서 활성화
+        if infos.len() > 1 {
+            debug!("로드밸런서 활성화: 컨테이너 수={}", infos.len());
+            service.enable_load_balancer(LoadBalancerStrategy::RoundRobin {
+                current_index: AtomicUsize::new(0)
+            });
+            
+            // 추가 컨테이너들의 주소 등록
+            for info in &infos[1..] {
+                let addr = self.extractor.parse_socket_addr(&info.ip, info.port)?;
+                debug!("백엔드 주소 추가: {}", addr);
+                service.add_address(addr, 1)?;
+            }
+        }
+
+        let path_matcher = first.path_matcher.clone()
+            .unwrap_or_else(|| PathMatcher::from_str("/").unwrap());
+        debug!("최종 경로 매처: {:?}", path_matcher);
+        
+        Ok((first.host.clone(), path_matcher, service))
+    }
+
+    // 헬스체크 설정을 위한 헬퍼 함수
+    async fn setup_container_health_check(
+        &self,
+        container: &ContainerSummary,
+    ) -> Result<(), DockerError> {
+        let id = container.id.as_ref().ok_or_else(|| DockerError::ContainerConfigError {
+            container_id: "unknown".to_string(),
+            reason: "컨테이너 ID 없음".to_string(),
+            context: None,
+        })?;
+        
+        let info = self.extractor.extract_info(container)?;
+        
+        debug!(
+            container_id = %id,
+            "컨테이너 헬스체크 초기 설정 시도"
+        );
+        
+        self.setup_health_check(id.clone(), &info).await
+    }
+
+    pub async fn setup_initial_health_checks(&self) -> Result<(), DockerError> {
+        info!("초기 컨테이너 헬스체크 설정 시작");
+        
+        let containers = self.get_labeled_containers().await?;
+        for container in containers {
+            if let Err(e) = self.setup_container_health_check(&container).await {
+                debug!(error = %e, "컨테이너 헬스체크 설정 실패");
+                // 개별 컨테이너 오류는 무시하고 계속 진행
+                continue;
+            }
+        }
+        
+        info!("초기 컨테이너 헬스체크 설정 완료");
+        Ok(())
     }
 }

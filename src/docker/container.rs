@@ -1,6 +1,9 @@
 use bollard::models::ContainerSummary;
-use crate::{docker::DockerError, routing_v2::{BackendService, PathMatcher}};
+use crate::{docker::DockerError, routing_v2::{BackendService, LoadBalancerStrategy, PathMatcher}};
 use std::net::SocketAddr;
+use crate::settings::docker::HealthCheckType;
+use std::sync::atomic::AtomicUsize;
+use tracing::debug;
 
 // 불변 데이터 구조
 #[derive(Debug, Clone)]
@@ -11,6 +14,17 @@ pub struct ContainerInfo {
     pub path_matcher: Option<PathMatcher>,
     pub middlewares: Option<Vec<String>>,
     pub router_name: Option<String>,
+    /// 헬스 체크 설정
+    pub health_check: Option<ContainerHealthCheck>,
+    pub load_balancer: Option<LoadBalancerStrategy>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ContainerHealthCheck {
+    pub enabled: bool,
+    pub check_type: HealthCheckType,
+    pub interval: u64,
+    pub timeout: u64,
 }
 
 // 순수 함수들의 모음
@@ -19,6 +33,18 @@ pub trait ContainerInfoExtractor: Send + Sync {
     // 부수 효과가 없는 순수 함수들
     fn extract_info(&self, container: &ContainerSummary) -> Result<ContainerInfo, DockerError>;
     fn create_backend(&self, info: &ContainerInfo) -> Result<BackendService, DockerError>;
+    
+    // 새로운 메서드 추가 (반환 타입 명시)
+    fn parse_socket_addr(&self, ip: &str, port: u16) -> Result<SocketAddr, DockerError> {
+        let addr: SocketAddr = format!("{}:{}", ip, port)
+            .parse::<SocketAddr>()
+            .map_err(|e: std::net::AddrParseError| DockerError::ContainerConfigError {
+                container_id: "unknown".to_string(),
+                reason: format!("잘못된 소켓 주소: {}:{}", ip, port),
+                context: Some(e.to_string()),
+            })?;
+        Ok(addr)
+    }
 }
 
 impl Clone for Box<dyn ContainerInfoExtractor> {
@@ -161,7 +187,141 @@ impl  DefaultExtractor {
                         .collect())
             })
     }
-    
+
+    fn extract_health_check(&self, labels: &Option<std::collections::HashMap<String, String>>) -> Option<ContainerHealthCheck> {
+        let labels = labels.as_ref()?;
+        
+        debug!("헬스체크 설정 추출 시작, 라벨: {:?}", labels);
+        
+        let enabled = labels.get(&format!("{}health.enabled", self.label_prefix))
+            .map(|v| v.to_lowercase() == "true")
+            .unwrap_or(false);
+
+        debug!("헬스체크 활성화 여부: {}", enabled);
+        
+        if !enabled {
+            return None;
+        }
+
+        // 체크 타입 결정
+        let check_type = if let Some(path) = labels.get(&format!("{}health.http.path", self.label_prefix)) {
+            // HTTP 체크
+            HealthCheckType::Http {
+                path: path.clone(),
+                method: labels.get(&format!("{}health.http.method", self.label_prefix))
+                    .cloned()
+                    .unwrap_or_else(|| "GET".to_string()),
+                expected_status: labels.get(&format!("{}health.http.expected_status", self.label_prefix))
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(200),
+            }
+        } else if let Some(port) = labels.get(&format!("{}health.tcp.port", self.label_prefix))
+            .and_then(|v| v.parse().ok()) 
+        {
+            // TCP 체크
+            HealthCheckType::Tcp { port }
+        } else {
+            // 기본값으로 HTTP 체크
+            HealthCheckType::Http {
+                path: "/health".to_string(),
+                method: "GET".to_string(),
+                expected_status: 200,
+            }
+        };
+
+        Some(ContainerHealthCheck {
+            enabled,
+            check_type,
+            interval: labels.get(&format!("{}health.interval", self.label_prefix))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30),
+            timeout: labels.get(&format!("{}health.timeout", self.label_prefix))
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5),
+        })
+    }
+
+    // 서비스 이름으로 로드밸런서 활성화 여부 확인
+    fn is_load_balancer_enabled(&self, labels: &Option<std::collections::HashMap<String, String>>) -> bool {
+        // 서비스 이름이 있으면 자동으로 로드밸런싱 활성화
+        labels.as_ref()
+            .and_then(|l| l.get(&format!("{}http.services", self.label_prefix)))
+            .is_some()
+    }
+
+    // 기본적으로 라운드 로빈 전략 사용
+    fn extract_load_balancer(&self, _labels: &Option<std::collections::HashMap<String, String>>, _service_name: &str) -> Option<LoadBalancerStrategy> {
+        Some(LoadBalancerStrategy::RoundRobin {
+            current_index: AtomicUsize::new(0),
+        })
+    }
+
+    fn extract_info(&self, container: &ContainerSummary) -> Result<ContainerInfo, DockerError> {
+        let labels = &container.labels;
+        
+        // 먼저 로드밸런서 활성화 여부 확인
+        let load_balancer_enabled = self.is_load_balancer_enabled(labels);
+        
+        let host = self.extract_host(labels)?;
+        let port = self.extract_port(labels);
+        let router_name = self.extract_router_name(labels);
+        let middlewares = router_name
+            .as_ref()
+            .and_then(|name| self.extract_middlewares(labels, name));
+        
+        let ip = self.extract_container_ip(container)?;
+
+        // 로드밸런서가 활성화된 경우에만 설정 추출
+        let load_balancer = if load_balancer_enabled {
+            router_name.as_ref()
+                .and_then(|name| self.extract_load_balancer(labels, name))
+        } else {
+            None
+        };
+
+        Ok(ContainerInfo {
+            host,
+            ip,
+            port,
+            path_matcher: self.extract_path_matcher(labels),
+            middlewares,
+            router_name,
+            health_check: self.extract_health_check(labels),
+            load_balancer,
+        })
+    }
+
+    fn extract_container_ip(&self, container: &ContainerSummary) -> Result<String, DockerError> {
+        let networks = container.network_settings
+            .as_ref()
+            .and_then(|settings| settings.networks.as_ref())
+            .ok_or_else(|| DockerError::ContainerConfigError {
+                container_id: container.id.clone().unwrap_or_default(),
+                reason: "네트워크 설정을 찾을 수 없음".to_string(),
+                context: None,
+            })?;
+
+        // 지정된 네트워크의 IP 주소 찾기
+        if let Some(network) = networks.get(&self.network_name) {
+            if let Some(ip) = &network.ip_address {
+                return Ok(ip.clone());
+            }
+        }
+
+        // 대체 IP 주소 찾기 (첫 번째 사용 가능한 IP)
+        for network in networks.values() {
+            if let Some(ip) = &network.ip_address {
+                return Ok(ip.clone());
+            }
+        }
+
+        Err(DockerError::ContainerConfigError {
+            container_id: container.id.clone().unwrap_or_default(),
+            reason: format!("네트워크 {}에서 IP 주소를 찾을 수 없음", self.network_name),
+            context: None,
+        })
+    }
+
     pub fn new(network_name: String, label_prefix: String) -> Self {
         
         Self {
@@ -177,43 +337,23 @@ impl ContainerInfoExtractor for DefaultExtractor {
     }
 
     fn extract_info(&self, container: &ContainerSummary) -> Result<ContainerInfo, DockerError> {
-        let labels = &container.labels;
-        let host = self.extract_host(labels)?;
-        let port = self.extract_port(labels);
-        let router_name = self.extract_router_name(labels);
-        let middlewares = router_name
-            .as_ref()
-            .and_then(|name| self.extract_middlewares(labels, name));
-        
-        let ip = container
-            .network_settings
-            .as_ref()
-            .and_then(|settings| settings.networks.as_ref())
-            .and_then(|networks| networks.get(&self.network_name))
-            .and_then(|network| network.ip_address.as_ref())
-            .ok_or_else(|| DockerError::NetworkError {
-                container_id: container.id.as_deref().unwrap_or("unknown").to_string(),
-                network: self.network_name.clone(),
-                reason: "IP 주소를 찾을 수 없음".to_string(),
-                context: None,
-            })?;
-
-        Ok(ContainerInfo {
-            host,
-            ip: ip.clone(),
-            port,
-            path_matcher: self.extract_path_matcher(labels),
-            middlewares,
-            router_name,
-        })
+        DefaultExtractor::extract_info(self, container)
     }
 
     fn create_backend(&self, info: &ContainerInfo) -> Result<BackendService, DockerError> {
         let addr = self.parse_socket_addr(&info.ip, info.port)?;
         let mut service = BackendService::with_router(addr, info.router_name.clone());
+        
+        // 미들웨어 설정
         if let Some(middlewares) = &info.middlewares {
             service.set_middlewares(middlewares.clone());
         }
+
+        // 로드밸런서 설정이 있으면 활성화
+        if let Some(strategy) = &info.load_balancer {
+            service.enable_load_balancer(strategy.clone());
+        }
+
         Ok(service)
     }
 } 

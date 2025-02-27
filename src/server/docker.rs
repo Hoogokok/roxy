@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use crate::{
-    docker::DockerEvent,
+    docker::{DockerEvent, HealthStatus},
     routing_v2::RoutingTable,
     middleware::MiddlewareManager,
 };
@@ -82,6 +82,49 @@ impl DockerEventHandler {
                 manager.update_configs(&configs);
                 manager.print_chain_status();
                 info!("미들웨어 설정 업데이트 완료");
+            }
+            
+            DockerEvent::ContainerHealthChanged { container_id, status, message, host, consecutive_failures } => {
+                match status {
+                    HealthStatus::Healthy => {
+                        info!(
+                            container_id = %container_id,
+                            status = ?status,
+                            message = %message,
+                            "컨테이너 헬스 체크 성공"
+                        );
+                    }
+                    HealthStatus::Unhealthy => {
+                        warn!(
+                            container_id = %container_id,
+                            status = ?status,
+                            message = %message,
+                            consecutive_failures = %consecutive_failures,
+                            max_failures = 3,
+                            remaining_attempts = %(3 - consecutive_failures),
+                            "컨테이너 헬스 체크 실패: {}", message
+                        );
+                        
+                        if consecutive_failures >= 3 {
+                            table.remove_route(&host);
+                            info!(
+                                container_id = %container_id,
+                                host = %host,
+                                failures = %consecutive_failures,
+                                max_failures = 3,
+                                "컨테이너 제거됨: 연속 {} 실패 (최대 허용: {})", consecutive_failures, 3
+                            );
+                        }
+                    }
+                    _ => {
+                        info!(
+                            container_id = %container_id,
+                            status = ?status,
+                            message = %message,
+                            "컨테이너 헬스 상태 변경"
+                        );
+                    }
+                }
             }
             
             DockerEvent::Error(e) => {

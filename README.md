@@ -17,6 +17,54 @@ Docker 컨테이너를 위한 동적 리버스 프록시 서버입니다. 호스
 - Docker 이벤트 실시간 모니터링
 - 컨테이너 시작/중지/업데이트에 따른 자동 라우팅 설정
 - 라우팅 테이블 실시간 업데이트
+- 재시도 메커니즘으로 일시적인 오류 처리
+
+## 로드밸런싱 기능
+
+리버스 프록시는 두 가지 로드밸런싱 전략을 지원합니다:
+
+### 1. 라운드로빈 (Round Robin)
+요청을 순차적으로 각 백엔드 서버에 분배합니다.
+
+```yaml
+services:
+  web1:
+    image: nginx
+    labels:
+      - "rproxy.http.routers.web.rule=Host(`web.example.com`)"
+      - "rproxy.http.services.web.loadbalancer.server.port=80"
+  
+  web2:
+    image: nginx
+    labels:
+      - "rproxy.http.routers.web.rule=Host(`web.example.com`)"
+      - "rproxy.http.services.web.loadbalancer.server.port=80"
+```
+
+### 2. 가중치 기반 (Weighted)
+각 서버에 가중치를 부여하여 트래픽을 비율에 맞게 분배합니다.
+
+```yaml
+services:
+  web1:
+    image: nginx
+    labels:
+      - "rproxy.http.routers.web.rule=Host(`web.example.com`)"
+      - "rproxy.http.services.web.loadbalancer.server.port=80"
+      - "rproxy.http.services.web.loadbalancer.server.weight=2"  # 2배 더 많은 트래픽
+  
+  web2:
+    image: nginx
+    labels:
+      - "rproxy.http.routers.web.rule=Host(`web.example.com`)"
+      - "rproxy.http.services.web.loadbalancer.server.port=80"
+      - "rproxy.http.services.web.loadbalancer.server.weight=1"
+```
+
+### 설정 방법
+1. 동일한 라우터 이름(`web`)을 가진 컨테이너들이 자동으로 로드밸런싱 그룹으로 구성됩니다.
+2. 각 서버의 가중치는 `loadbalancer.server.weight` 라벨로 설정할 수 있습니다 (기본값: 1).
+3. 포트는 `loadbalancer.server.port` 라벨로 지정합니다.
 
 ## 설정
 
@@ -30,6 +78,10 @@ label_prefix = "reverse-proxy."
 http_port = 80
 https_enabled = false
 https_port = 443
+
+[retry]
+max_attempts = 3     # 최대 재시도 횟수
+interval = 1         # 재시도 간격 (초)
 
 [logging]
 format = "text"  # "text" 또는 "json"
@@ -339,4 +391,73 @@ services:
       - "rproxy.http.middlewares.api-ratelimit.rateLimit.burst=100"   # 최대 100개 버스트
       - "rproxy.http.routers.api.middlewares=api-ratelimit"
 ```
+
+### 재시도 메커니즘
+
+일시적인 오류가 발생했을 때 자동으로 재시도를 수행합니다:
+
+#### 재시도 가능한 오류
+- 연결 실패
+- 타임아웃
+- 일시적인 서비스 불가
+
+#### 재시도 설정
+| 설정 | 설명 | 기본값 |
+|------|------|--------|
+| `max_attempts` | 최대 재시도 횟수 | 3 |
+| `interval` | 재시도 간격 (초) | 1 |
+
+#### 동작 방식
+1. 작업 실행 시도
+2. 실패 시 재시도 가능 여부 확인
+3. 재시도 가능한 경우 설정된 간격만큼 대기 후 재시도
+4. 최대 시도 횟수 도달 또는 성공할 때까지 반복
+
+## 헬스 체크
+
+컨테이너의 상태를 주기적으로 모니터링하고 비정상 컨테이너를 자동으로 제거합니다.
+
+### 헬스 체크 설정
+
+Docker 라벨을 통해 헬스 체크를 설정할 수 있습니다:
+
+```yaml
+services:
+  api:
+    image: nginx
+    labels:
+      # 헬스 체크 활성화
+      - "rproxy.health.enabled=true"
+      
+      # HTTP 체크 설정
+      - "rproxy.health.http.path=/health"
+      - "rproxy.health.http.method=GET"
+      - "rproxy.health.http.expected_status=200"
+      
+      # 또는 TCP 체크 설정
+      - "rproxy.health.tcp.port=80"
+      
+      # 체크 간격 및 타임아웃
+      - "rproxy.health.interval=30"  # 30초마다 체크
+      - "rproxy.health.timeout=5"    # 5초 타임아웃
+      
+      # 연속 실패 허용 횟수
+      - "rproxy.health.max_failures=3"  # 3회 연속 실패시 제거
+```
+
+### 헬스 체크 타입
+
+1. HTTP 체크
+   - 지정된 경로로 HTTP 요청을 보내 상태 확인
+   - 응답 상태 코드로 정상 여부 판단
+
+2. TCP 체크
+   - 지정된 포트로 TCP 연결을 시도
+   - 연결 성공 여부로 정상 여부 판단
+
+### 실패 처리
+
+- 연속 실패 횟수가 `max_failures`를 초과하면 라우팅 테이블에서 제거
+- 컨테이너가 정상 상태로 복구되면 자동으로 라우팅 테이블에 다시 추가
+- 모든 상태 변경은 로그에 기록됨
 
