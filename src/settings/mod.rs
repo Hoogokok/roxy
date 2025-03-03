@@ -1,6 +1,6 @@
 use std::{collections::HashMap, env, fs, path::Path};
 use serde::Deserialize;
-use tracing::debug;
+use tracing::{debug, info};
 use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
 
 mod server;
@@ -8,12 +8,14 @@ pub mod logging;
 mod tls;
 mod error;
 pub mod docker;
+mod json;
 
 pub use server::ServerSettings;
 pub use logging::LogSettings;
 pub use tls::TlsSettings;
 pub use docker::DockerSettings;
 pub use error::SettingsError;
+pub use json::JsonConfig;
 
 pub type Result<T> = std::result::Result<T, SettingsError>;
 pub use server::parse_env_var;
@@ -43,6 +45,7 @@ pub struct Settings {
     #[serde(default)]
     pub router_middlewares: HashMap<String, Vec<String>>,
 }
+
 
 impl Settings {
     pub async fn load() -> Result<Self> {
@@ -191,11 +194,92 @@ impl Settings {
         
         router_middlewares
     }
+
+    /// JSON 설정 파일 로드
+    pub async fn load_json_config<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
+        let path_ref = path.as_ref();
+        debug!("JSON 설정 파일 로드: {}", path_ref.display());
+        
+        let config = JsonConfig::from_file(&path).await?;
+        config.validate()?;
+        
+        let config_id = config.get_id(path_ref);
+        debug!("설정 ID: {}", config_id);
+        
+        // 미들웨어 설정 병합
+        for (name, middleware_config) in config.middlewares {
+            let full_name = if name.contains('.') {
+                name
+            } else {
+                format!("{}.{}", config_id, name)
+            };
+            
+            debug!("미들웨어 추가: {}", full_name);
+            self.add_middleware(full_name, middleware_config)?;
+        }
+        
+        // 라우터-미들웨어 매핑 병합
+        for (router_name, router_config) in config.routers {
+            if let Some(middlewares) = router_config.middlewares {
+                let full_name = if router_name.contains('.') {
+                    router_name
+                } else {
+                    format!("{}.{}", config_id, router_name)
+                };
+                
+                debug!(
+                    router = %full_name,
+                    middlewares = ?middlewares,
+                    "라우터-미들웨어 매핑 추가"
+                );
+                
+                self.router_middlewares.insert(full_name, middlewares);
+            }
+        }
+        
+        info!("JSON 설정 파일 로드 완료: {}", path_ref.display());
+        Ok(())
+    }
+    
+    /// 디렉토리에서 모든 JSON 설정 파일 로드
+    pub async fn load_config_directory<P: AsRef<Path>>(&mut self, dir_path: P) -> Result<()> {
+        let dir_path = dir_path.as_ref();
+        debug!("설정 디렉토리 로드: {}", dir_path.display());
+        
+        let mut read_dir = tokio::fs::read_dir(dir_path).await.map_err(|e| 
+            SettingsError::FileError {
+                path: dir_path.to_string_lossy().to_string(),
+                error: e,
+            }
+        )?;
+        
+        let mut loaded_files = 0;
+        
+        while let Some(entry) = read_dir.next_entry().await.map_err(|e| 
+            SettingsError::FileError {
+                path: dir_path.to_string_lossy().to_string(),
+                error: e,
+            }
+        )? {
+            let path = entry.path();
+            
+            if path.is_file() && path.extension().map_or(false, |ext| ext == "json") {
+                self.load_json_config(&path).await?;
+                loaded_files += 1;
+            }
+        }
+        
+        info!("{} JSON 설정 파일 로드됨", loaded_files);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
+    use std::io::Write;
+    use tempfile::tempdir;
 
     #[test]
     fn test_settings_from_toml() {
@@ -215,7 +299,7 @@ mod tests {
             order = 1
             
             [middleware.auth.settings]
-            users = { "admin" = "password" }
+            users = "admin:password"
         "#;
 
         let settings: Settings = toml::from_str(toml_content).unwrap();
@@ -223,4 +307,163 @@ mod tests {
         assert!(settings.server.https_enabled);
         assert_eq!(settings.middleware.len(), 1);
     }
-} 
+
+    #[tokio::test]
+    async fn test_load_json_config() {
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test-config.json");
+        
+        let json_content = r#"{
+            "version": "1.0",
+            "middlewares": {
+                "test-middleware": {
+                    "middleware_type": "headers",
+                    "enabled": true,
+                    "settings": {
+                        "headers.customResponseHeaders.X-Test": "value"
+                    }
+                }
+            },
+            "routers": {
+                "test-router": {
+                    "rule": "Host(`example.com`)",
+                    "middlewares": ["test-middleware"],
+                    "service": "test-service"
+                }
+            },
+            "services": {
+                "test-service": {
+                    "loadbalancer": {
+                        "server": {
+                            "port": 8080,
+                            "weight": 2
+                        }
+                    }
+                }
+            }
+        }"#;
+        
+        let mut file = File::create(&file_path).unwrap();
+        file.write_all(json_content.as_bytes()).unwrap();
+        
+        let mut settings = Settings {
+            server: ServerSettings::default(),
+            logging: LogSettings::default(),
+            tls: TlsSettings::default(),
+            docker: DockerSettings::default(),
+            middleware: HashMap::new(),
+            router_middlewares: HashMap::new(),
+        };
+        
+        // JSON 설정 로드
+        settings.load_json_config(&file_path).await.unwrap();
+        
+        // 설정이 제대로 로드되었는지 검증
+        assert_eq!(settings.middleware.len(), 1);
+        assert!(settings.middleware.contains_key("test-config.test-middleware"));
+        
+        let middleware = &settings.middleware["test-config.test-middleware"];
+        assert_eq!(middleware.middleware_type, MiddlewareType::Headers);
+        assert!(middleware.enabled);
+        assert_eq!(middleware.settings.get("headers.customResponseHeaders.X-Test"), Some(&"value".to_string()));
+        
+        // 라우터-미들웨어 매핑 검증
+        assert_eq!(settings.router_middlewares.len(), 1);
+        assert!(settings.router_middlewares.contains_key("test-config.test-router"));
+        assert_eq!(settings.router_middlewares["test-config.test-router"], vec!["test-middleware"]);
+    }
+    
+    #[tokio::test]
+    async fn test_load_config_directory() {
+        let dir = tempdir().unwrap();
+        
+        // 첫 번째 설정 파일 생성
+        let first_file_path = dir.path().join("config1.json");
+        let first_json = r#"{
+            "version": "1.0",
+            "middlewares": {
+                "cors": {
+                    "middleware_type": "cors",
+                    "enabled": true,
+                    "settings": {
+                        "cors.allowOrigins": "*"
+                    }
+                }
+            }
+        }"#;
+        let mut file = File::create(&first_file_path).unwrap();
+        file.write_all(first_json.as_bytes()).unwrap();
+        
+        // 두 번째 설정 파일 생성
+        let second_file_path = dir.path().join("config2.json");
+        let second_json = r#"{
+            "version": "1.0",
+            "middlewares": {
+                "auth": {
+                    "middleware_type": "basic-auth",
+                    "enabled": true,
+                    "settings": {
+                        "users": "admin:password"
+                    }
+                }
+            },
+            "routers": {
+                "api": {
+                    "rule": "Host(`api.example.com`)",
+                    "middlewares": ["auth"],
+                    "service": "test-service"
+                }
+            },
+            "services": {
+                "test-service": {
+                    "loadbalancer": {
+                        "server": {
+                            "port": 8080,
+                            "weight": 2
+                        }
+                    }
+                }
+            }
+        }"#;
+        let mut file = File::create(&second_file_path).unwrap();
+        file.write_all(second_json.as_bytes()).unwrap();
+        
+        // 설정이 아닌 파일 생성 (무시되어야 함)
+        let non_json_path = dir.path().join("README.md");
+        let mut file = File::create(&non_json_path).unwrap();
+        file.write_all(b"# Test README").unwrap();
+        
+        // 디렉토리 로드 테스트
+        let mut settings = Settings {
+            server: ServerSettings::default(),
+            logging: LogSettings::default(),
+            tls: TlsSettings::default(),
+            docker: DockerSettings::default(),
+            middleware: HashMap::new(),
+            router_middlewares: HashMap::new(),
+        };
+        
+        settings.load_config_directory(dir.path()).await.unwrap();
+        
+        // 설정이 제대로 로드되었는지 검증
+        assert_eq!(settings.middleware.len(), 2);
+        assert!(settings.middleware.contains_key("config1.cors"));
+        assert!(settings.middleware.contains_key("config2.auth"));
+        
+        // 각 설정의 내용 검증
+        let cors = &settings.middleware["config1.cors"];
+        assert_eq!(cors.middleware_type, MiddlewareType::Cors);
+        assert!(cors.enabled);
+        assert_eq!(cors.settings.get("cors.allowOrigins"), Some(&"*".to_string()));
+        
+        let auth = &settings.middleware["config2.auth"];
+        assert_eq!(auth.middleware_type, MiddlewareType::BasicAuth);
+        assert!(auth.enabled);
+        assert_eq!(auth.settings.get("users"), Some(&"admin:password".to_string()));
+        
+        // 라우터-미들웨어 매핑 검증
+        assert_eq!(settings.router_middlewares.len(), 1);
+        assert!(settings.router_middlewares.contains_key("config2.api"));
+        assert_eq!(settings.router_middlewares["config2.api"], vec!["auth"]);
+    }
+}
