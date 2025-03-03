@@ -299,7 +299,7 @@ mod tests {
             order = 1
             
             [middleware.auth.settings]
-            users = { "admin" = "password" }
+            users = "admin:password"
         "#;
 
         let settings: Settings = toml::from_str(toml_content).unwrap();
@@ -410,7 +410,18 @@ mod tests {
             "routers": {
                 "api": {
                     "rule": "Host(`api.example.com`)",
-                    "service": "api"
+                    "middlewares": ["auth"],
+                    "service": "test-service"
+                }
+            },
+            "services": {
+                "test-service": {
+                    "loadbalancer": {
+                        "server": {
+                            "port": 8080,
+                            "weight": 2
+                        }
+                    }
                 }
             }
         }"#;
@@ -450,7 +461,9 @@ mod tests {
         assert!(auth.enabled);
         assert_eq!(auth.settings.get("users"), Some(&"admin:password".to_string()));
         
-        // 라우터 설정 검증
-        assert_eq!(settings.router_middlewares.len(), 0); // 라우터에 미들웨어가 없으므로 0
+        // 라우터-미들웨어 매핑 검증
+        assert_eq!(settings.router_middlewares.len(), 1);
+        assert!(settings.router_middlewares.contains_key("config2.api"));
+        assert_eq!(settings.router_middlewares["config2.api"], vec!["auth"]);
     }
-} 
+}
