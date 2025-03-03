@@ -8,7 +8,7 @@ pub mod logging;
 mod tls;
 mod error;
 pub mod docker;
-mod json;
+pub mod json;
 pub mod watcher;
 
 pub use server::ServerSettings;
