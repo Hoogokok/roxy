@@ -9,6 +9,7 @@ mod tls;
 mod error;
 pub mod docker;
 mod json;
+mod watcher;
 
 pub use server::ServerSettings;
 pub use logging::LogSettings;
@@ -634,5 +635,20 @@ mod tests {
         // 환경변수 정리
         env::remove_var("PROXY_JSON_CONFIG");
         env::remove_var("PROXY_CONFIG_PRIORITY");
+    }
+
+    #[tokio::test]
+    async fn test_config_watcher_basic() {
+        use super::watcher::ConfigWatcher;
+        use tempfile::tempdir;
+        
+        let temp_dir = tempdir().unwrap();
+        let mut watcher = ConfigWatcher::new();
+        
+        // 감시 경로 추가
+        watcher.add_path(temp_dir.path());
+        
+        // 감시 시작
+        watcher.start().await.unwrap();
     }
 }
