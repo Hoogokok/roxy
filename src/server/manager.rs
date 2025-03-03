@@ -52,9 +52,13 @@ impl ServerManager {
             error!(error = %e, "초기 헬스체크 설정 실패");
         }
 
-        // 3. Docker 라벨에서 설정 로드 (우선순위 높음)
+        // 3. 설정 소스 병합 (환경변수, JSON, Docker 라벨)
         if let Ok(labels) = docker_manager.get_container_labels().await {
-            settings.merge_docker_labels(&labels)?;
+            // 모든 설정 소스를 병합
+            settings.merge_all_config_sources(&labels).await?;
+        } else {
+            // Docker 라벨이 없는 경우, 환경변수에서 JSON 설정만 로드
+            settings.load_json_from_env().await?;
         }
 
         // 4. 라우팅 테이블 초기화
