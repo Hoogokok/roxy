@@ -46,6 +46,18 @@ pub struct Settings {
     pub router_middlewares: HashMap<String, Vec<String>>,
 }
 
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            server: ServerSettings::default(),
+            logging: LogSettings::default(),
+            tls: TlsSettings::default(),
+            docker: DockerSettings::default(),
+            middleware: HashMap::new(),
+            router_middlewares: HashMap::new(),
+        }
+    }
+}
 
 impl Settings {
     pub async fn load() -> Result<Self> {
@@ -169,6 +181,15 @@ impl Settings {
         Ok(())
     }
 
+    /// 미들웨어 추가 (덮어쓰기 옵션)
+    pub fn add_middleware_with_override(&mut self, name: String, config: MiddlewareConfig, override_existing: bool) -> Result<()> {
+        if self.middleware.contains_key(&name) && !override_existing {
+            return Err(SettingsError::DuplicateMiddleware(name));
+        }
+        self.middleware.insert(name, config);
+        Ok(())
+    }
+
     fn parse_router_middlewares(labels: &HashMap<String, String>) -> HashMap<String, Vec<String>> {
         let mut router_middlewares = HashMap::new();
         
@@ -195,8 +216,8 @@ impl Settings {
         router_middlewares
     }
 
-    /// JSON 설정 파일 로드
-    pub async fn load_json_config<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
+    /// JSON 설정 파일 로드 (덮어쓰기 옵션 추가)
+    pub async fn load_json_config_with_override<P: AsRef<Path>>(&mut self, path: P, override_existing: bool) -> Result<()> {
         let path_ref = path.as_ref();
         debug!("JSON 설정 파일 로드: {}", path_ref.display());
         
@@ -215,7 +236,7 @@ impl Settings {
             };
             
             debug!("미들웨어 추가: {}", full_name);
-            self.add_middleware(full_name, middleware_config)?;
+            self.add_middleware_with_override(full_name, middleware_config, override_existing)?;
         }
         
         // 라우터-미들웨어 매핑 병합
@@ -233,12 +254,18 @@ impl Settings {
                     "라우터-미들웨어 매핑 추가"
                 );
                 
+                // 라우터-미들웨어 매핑은 항상 덮어씀
                 self.router_middlewares.insert(full_name, middlewares);
             }
         }
         
         info!("JSON 설정 파일 로드 완료: {}", path_ref.display());
         Ok(())
+    }
+
+    /// 원래의 load_json_config는 덮어쓰기 옵션을 추가한 메서드를 호출
+    pub async fn load_json_config<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
+        self.load_json_config_with_override(path, false).await
     }
     
     /// 디렉토리에서 모든 JSON 설정 파일 로드
@@ -270,6 +297,71 @@ impl Settings {
         }
         
         info!("{} JSON 설정 파일 로드됨", loaded_files);
+        Ok(())
+    }
+
+    /// 환경변수에서 JSON 설정 로드
+    pub async fn load_json_from_env(&mut self) -> Result<()> {
+        // 단일 JSON 파일 환경변수
+        if let Ok(json_path) = env::var("PROXY_JSON_CONFIG") {
+            debug!("환경변수 PROXY_JSON_CONFIG에서 JSON 파일 로드: {}", json_path);
+            self.load_json_config(json_path).await?;
+        }
+        
+        // JSON 디렉토리 환경변수
+        if let Ok(dir_path) = env::var("PROXY_CONFIG_DIR") {
+            debug!("환경변수 PROXY_CONFIG_DIR에서 JSON 디렉토리 로드: {}", dir_path);
+            self.load_config_directory(dir_path).await?;
+        }
+        
+        Ok(())
+    }
+
+    /// Docker 라벨에서 참조된 JSON 파일 로드
+    pub async fn load_json_from_labels(&mut self, labels: &HashMap<String, String>) -> Result<()> {
+        for (key, value) in labels {
+            if key == "rproxy.config" {
+                debug!("Docker 라벨 rproxy.config에서 JSON 파일 로드: {}", value);
+                self.load_json_config(value).await?;
+            } else if let Some(_) = key.strip_prefix("rproxy.config.file.") {
+                debug!("Docker 라벨 {}에서 JSON 파일 로드: {}", key, value);
+                self.load_json_config(value).await?;
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// 모든 설정 소스 병합 (환경변수, JSON, Docker 라벨)
+    pub async fn merge_all_config_sources(&mut self, labels: &HashMap<String, String>) -> Result<()> {
+        // 우선순위 설정 (기본값: json)
+        let priority = env::var("PROXY_CONFIG_PRIORITY")
+            .unwrap_or_else(|_| "json".to_string());
+            
+        debug!("설정 우선순위: {}", priority);
+        
+        if priority == "label" {
+            // 라벨이 우선순위가 높은 경우: JSON을 먼저 로드하고 라벨로 덮어씀
+            self.load_json_from_env().await?;
+            self.load_json_from_labels(labels).await?;
+            self.merge_docker_labels(labels)?;
+        } else {
+            // JSON이 우선순위가 높은 경우: 라벨을 먼저 로드하고 JSON으로 덮어씀
+            self.merge_docker_labels(labels)?;
+            self.load_json_from_labels(labels).await?;
+            
+            // 환경변수에서 JSON 로드 시 덮어쓰기 활성화
+            if let Ok(json_path) = env::var("PROXY_JSON_CONFIG") {
+                debug!("환경변수 PROXY_JSON_CONFIG에서 JSON 파일 로드 (덮어쓰기): {}", json_path);
+                self.load_json_config_with_override(json_path, true).await?;
+            }
+            
+            if let Ok(dir_path) = env::var("PROXY_CONFIG_DIR") {
+                debug!("환경변수 PROXY_CONFIG_DIR에서 JSON 디렉토리 로드 (덮어쓰기)");
+                self.load_config_directory(dir_path).await?;
+            }
+        }
+        
         Ok(())
     }
 }
@@ -465,5 +557,82 @@ mod tests {
         assert_eq!(settings.router_middlewares.len(), 1);
         assert!(settings.router_middlewares.contains_key("config2.api"));
         assert_eq!(settings.router_middlewares["config2.api"], vec!["auth"]);
+    }
+
+    #[tokio::test]
+    async fn test_load_json_from_env() {
+        use std::env;
+        use tempfile::tempdir;
+        
+        // 테스트 파일 생성
+        let temp_dir = tempdir().unwrap();
+        let json_path = temp_dir.path().join("test_env.json");
+        std::fs::write(&json_path, r#"{
+            "version": "1.0",
+            "middlewares": {
+                "env-mid": {
+                    "middleware_type": "cors",
+                    "enabled": true,
+                    "settings": {}
+                }
+            }
+        }"#).unwrap();
+        
+        // 환경변수 설정
+        env::set_var("PROXY_JSON_CONFIG", json_path.to_str().unwrap());
+        
+        // 테스트 실행
+        let mut settings = Settings::default();
+        settings.load_json_from_env().await.unwrap();
+        
+        // 검증
+        assert!(settings.middleware.contains_key("test_env.env-mid"));
+        assert_eq!(
+            settings.middleware["test_env.env-mid"].middleware_type, 
+            crate::middleware::config::MiddlewareType::Cors
+        );
+        
+        // 환경변수 정리
+        env::remove_var("PROXY_JSON_CONFIG");
+    }
+
+    #[tokio::test]
+    async fn test_merge_all_config_sources() {
+        use std::env;
+        use tempfile::tempdir;
+        
+        // 테스트 파일 생성
+        let temp_dir = tempdir().unwrap();
+        let json_path = temp_dir.path().join("test.json");
+        std::fs::write(&json_path, r#"{
+            "version": "1.0",
+            "middlewares": {
+                "json-mid": {
+                    "middleware_type": "cors",
+                    "enabled": true,
+                    "settings": {}
+                }
+            }
+        }"#).unwrap();
+        
+        // 환경변수 설정
+        env::set_var("PROXY_JSON_CONFIG", json_path.to_str().unwrap());
+        env::set_var("PROXY_CONFIG_PRIORITY", "label");
+        
+        // 레이블 설정
+        let mut labels = HashMap::new();
+        labels.insert("rproxy.http.middlewares.label-mid.cors.enabled".to_string(), "true".to_string());
+        
+        // 테스트 실행
+        let mut settings = Settings::default();
+        settings.merge_all_config_sources(&labels).await.unwrap();
+        
+        // 검증
+        assert!(settings.middleware.contains_key("test.json-mid"));
+        assert!(settings.middleware.contains_key("label-mid"));
+        
+        // 환경변수 정리
+        env::remove_var("PROXY_JSON_CONFIG");
+        env::remove_var("PROXY_CONFIG_PRIORITY");
     }
 }
