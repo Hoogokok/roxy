@@ -22,6 +22,7 @@ pub enum SettingsError {
     },
     InvalidConfig(String),
     DuplicateMiddleware(String),
+    WatchError(String),
 }
 
 impl fmt::Display for SettingsError {
@@ -39,6 +40,7 @@ impl fmt::Display for SettingsError {
                 write!(f, "JSON 설정 파싱 오류: {}", source),
             Self::InvalidConfig(msg) => write!(f, "Invalid configuration: {}", msg),
             Self::DuplicateMiddleware(name) => write!(f, "Duplicate middleware: {}", name),
+            Self::WatchError(msg) => write!(f, "Watch error: {}", msg),
         }
     }
 }
