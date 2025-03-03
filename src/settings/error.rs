@@ -17,6 +17,9 @@ pub enum SettingsError {
     ParseError {
         source: toml::de::Error,
     },
+    JsonParseError {
+        source: serde_json::Error,
+    },
     InvalidConfig(String),
     DuplicateMiddleware(String),
 }
@@ -31,7 +34,9 @@ impl fmt::Display for SettingsError {
             Self::FileError { path, error } => 
                 write!(f, "설정 파일 {} 오류: {}", path, error),
             Self::ParseError { source } => 
-                write!(f, "설정 파싱 오류: {}", source),
+                write!(f, "TOML 설정 파싱 오류: {}", source),
+            Self::JsonParseError { source } => 
+                write!(f, "JSON 설정 파싱 오류: {}", source),
             Self::InvalidConfig(msg) => write!(f, "Invalid configuration: {}", msg),
             Self::DuplicateMiddleware(name) => write!(f, "Duplicate middleware: {}", name),
         }
@@ -42,6 +47,7 @@ impl std::error::Error for SettingsError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::ParseError { source } => Some(source),
+            Self::JsonParseError { source } => Some(source),
             Self::FileError { error, .. } => Some(error),
             _ => None,
         }
