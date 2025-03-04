@@ -461,3 +461,154 @@ services:
 - 컨테이너가 정상 상태로 복구되면 자동으로 라우팅 테이블에 다시 추가
 - 모든 상태 변경은 로그에 기록됨
 
+## JSON 설정 파일 지원
+
+리버스 프록시는 JSON 형식의 설정 파일을 통한 고급 구성을 지원합니다. JSON 설정은 TOML 설정 및 Docker 라벨과 함께 사용할 수 있으며, 복잡한 라우팅과 미들웨어 체인을 구성하는 데 적합합니다.
+
+### JSON 설정 파일 형식
+
+```json
+{
+  "version": "1.0",
+  "id": "main-config",
+  "middlewares": {
+    "api-cors": {
+      "type": "cors",
+      "enabled": true,
+      "settings": {
+        "cors.allowOrigins": "http://localhost:3000,https://example.com",
+        "cors.allowMethods": "GET,POST,PUT,DELETE"
+      }
+    }
+  },
+  "routers": {
+    "api": {
+      "rule": "Host(`test.localhost`) && PathPrefix(`/api`)",
+      "service": "api",
+      "middlewares": ["api-cors"]
+    }
+  },
+  "services": {
+    "api": {
+      "loadbalancer": {
+        "server": {
+          "port": 80,
+          "weight": 1
+        }
+      }
+    }
+  },
+  "router_middlewares": {
+    "api": ["api-cors"]
+  }
+}
+```
+
+### 설정 소스 관계 및 우선순위
+
+리버스 프록시는 세 가지 설정 소스를 제공합니다:
+
+| 설정 소스 | 주요 용도 | 형식 | 장점 |
+|----------|----------|------|------|
+| **환경 변수** | 전역 설정 및 기본 동작 제어 | `KEY=VALUE` | 간단하고 빠른 구성 변경 |
+| **Docker 라벨** | 컨테이너별 라우팅 및 미들웨어 설정 | `prefix.section.name=value` | 컨테이너 단위 구성 가능 |
+| **JSON 설정 파일** | 복잡한 구성 및 미들웨어 체인 정의 | 구조화된 JSON 객체 | 복잡한 구성을 체계적으로 관리 |
+
+#### 설정 우선순위
+
+`PROXY_CONFIG_PRIORITY` 환경 변수로 우선순위를 설정할 수 있습니다:
+
+- `json` (기본값): JSON 설정이 Docker 라벨보다 우선함
+- `label`: Docker 라벨이 JSON 설정보다 우선함
+
+### JSON 설정 관련 환경 변수
+
+| 환경 변수 | 설명 | 기본값 |
+|-----------|------|--------|
+| `PROXY_JSON_CONFIG` | JSON 설정 파일 경로 | `./config/config.json` |
+| `PROXY_CONFIG_DIR` | JSON 설정 파일 디렉토리 | - |
+| `PROXY_CONFIG_PRIORITY` | 설정 우선순위 (`json` 또는 `label`) | `json` |
+| `PROXY_CONFIG_WATCH_ENABLED` | 설정 파일 감시 활성화 여부 | `true` |
+| `PROXY_CONFIG_WATCH_TIMEOUT` | 설정 변경 디바운스 타임아웃(ms) | `300` |
+| `PROXY_CONFIG_WATCH_INTERVAL` | 설정 파일 폴링 간격(ms) | `200` |
+
+### Docker 라벨과 JSON 설정 매핑
+
+JSON 설정과 Docker 라벨은 서로 변환 가능합니다. 예를 들어:
+
+#### JSON 설정:
+```json
+{
+  "middlewares": {
+    "api-cors": {
+      "type": "cors",
+      "settings": {
+        "cors.allowOrigins": "http://localhost:3000"
+      }
+    }
+  }
+}
+```
+
+#### 동일한 Docker 라벨:
+```yaml
+labels:
+  - "rproxy.http.middlewares.api-cors.type=cors"
+  - "rproxy.http.middlewares.api-cors.cors.allowOrigins=http://localhost:3000"
+```
+
+### 설정 자동 감지 및 리로드
+
+JSON 설정 파일이 변경되면 자동으로 감지하여 설정을 다시 로드합니다. 이 기능은 기본적으로 활성화되어 있으며, 환경 변수를 통해 제어할 수 있습니다:
+
+```yaml
+environment:
+  - PROXY_CONFIG_WATCH_ENABLED=true  # 설정 파일 감시 활성화
+  - PROXY_CONFIG_WATCH_TIMEOUT=300   # 디바운스 타임아웃(밀리초)
+  - PROXY_CONFIG_WATCH_INTERVAL=200  # 폴링 간격(밀리초)
+```
+
+### 환경설정 적용 예시
+
+#### 시나리오 1: JSON 설정과 Docker 라벨 함께 사용 (JSON 우선)
+
+```yaml
+# docker-compose.yml
+services:
+  reverse-proxy:
+    environment:
+      - PROXY_JSON_CONFIG=/app/config/base.json
+      - PROXY_CONFIG_PRIORITY=json  # JSON 우선
+    volumes:
+      - ./config:/app/config
+
+  api:
+    labels:
+      - "rproxy.http.services.api.loadbalancer.server.port=3000"
+      # 컨테이너별 특수 설정만 라벨로 정의
+```
+
+#### 시나리오 2: JSON 설정과 Docker 라벨 함께 사용 (라벨 우선)
+
+```yaml
+# docker-compose.yml
+services:
+  reverse-proxy:
+    environment:
+      - PROXY_JSON_CONFIG=/app/config/defaults.json
+      - PROXY_CONFIG_PRIORITY=label  # 라벨 우선
+    volumes:
+      - ./config:/app/config
+
+  api:
+    labels:
+      - "rproxy.http.routers.api.rule=Host(`api.example.com`)"
+      # 라벨 설정이 JSON 설정을 덮어씀
+```
+
+### 권장 사용 패턴
+
+- **환경 변수**: 서버 포트, TLS 설정 등 기본 서버 구성
+- **JSON 설정 파일**: 공통 미들웨어, 복잡한 라우팅 규칙, 기본 설정
+- **Docker 라벨**: 컨테이너별 특정 설정, 동적으로 변경되는 설정
+
