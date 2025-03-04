@@ -12,7 +12,17 @@ use super::{
     error::Error,
 };
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
+use tokio::sync::mpsc;
+
+/// 설정 파일 감시 설정
+struct WatcherConfig {
+    enabled: bool,
+    debounce_timeout: Duration,
+    poll_interval: Duration,
+    config_path: PathBuf,
+}
 
 pub struct ServerManager {
     pub config: Settings,
@@ -89,58 +99,262 @@ impl ServerManager {
         ))
     }
 
+    /// 환경 변수에서 설정 파일 감시 설정 가져오기
+    fn get_watcher_config_from_env() -> WatcherConfig {
+        // 감시 기능 활성화 여부 확인
+        let enabled = env::var("PROXY_CONFIG_WATCH_ENABLED")
+            .map(|val| val.to_lowercase() != "false")
+            .unwrap_or(true);
+        
+        // 디바운싱 타임아웃 설정
+        let debounce_timeout_ms = env::var("PROXY_CONFIG_WATCH_TIMEOUT")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(300);
+        
+        // 폴링 간격 설정
+        let poll_interval_ms = env::var("PROXY_CONFIG_WATCH_INTERVAL")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(200);
+        
+        // 설정 파일 경로
+        let config_path = env::var("PROXY_JSON_CONFIG")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                let mut path = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                path.push("config");
+                path.push("config.json");
+                path
+            });
+        
+        WatcherConfig {
+            enabled,
+            debounce_timeout: Duration::from_millis(debounce_timeout_ms),
+            poll_interval: Duration::from_millis(poll_interval_ms),
+            config_path,
+        }
+    }
+
+    /// 파일 감시자 초기화
+    async fn initialize_watcher(config: &WatcherConfig) -> Result<ConfigWatcher> {
+        let mut watcher = ConfigWatcher::new();
+        watcher.add_path(&config.config_path);
+        watcher.start_with_interval(config.poll_interval).await
+            .map_err(|e| Error::ConfigWatchError(format!("파일 감시 시작 실패: {}", e)))?;
+        Ok(watcher)
+    }
+
+    /// 이벤트 로깅
+    fn log_config_events(events: &[ConfigEvent]) {
+        info!("설정 파일 이벤트 감지: {} 개의 이벤트", events.len());
+        
+        for event in events {
+            match event {
+                ConfigEvent::Created(path) => info!("설정 파일 생성됨: {}", path.display()),
+                ConfigEvent::Modified(path) => info!("설정 파일 수정됨: {}", path.display()),
+                ConfigEvent::Deleted(path) => warn!("설정 파일 삭제됨: {}", path.display()),
+            }
+        }
+    }
+
+    /// 이벤트 분류 및 처리할 파일 목록 작성
+    fn classify_events(events: Vec<ConfigEvent>) -> (Vec<PathBuf>, bool) {
+        let mut paths_to_process = Vec::new();
+        let mut has_deleted = false;
+        
+        for event in events {
+            match event {
+                ConfigEvent::Created(path) | ConfigEvent::Modified(path) => {
+                    if !paths_to_process.contains(&path) && path.exists() {
+                        paths_to_process.push(path);
+                    }
+                },
+                ConfigEvent::Deleted(_) => {
+                    has_deleted = true;
+                }
+            }
+        }
+        
+        (paths_to_process, has_deleted)
+    }
+
+    /// 미들웨어 매니저 업데이트
+    async fn update_middleware_manager(
+        shared_config: &Arc<RwLock<Settings>>,
+        shared_middleware_manager: &Arc<RwLock<MiddlewareManager>>
+    ) -> Result<()> {
+        let config = shared_config.read().await;
+        let mut middleware_lock = shared_middleware_manager.write().await;
+        *middleware_lock = MiddlewareManager::new(
+            &config.middleware,
+            &config.router_middlewares
+        );
+        
+        debug!("미들웨어 매니저 업데이트 완료");
+        Ok(())
+    }
+
+    /// 단일 설정 파일 처리
+    async fn process_config_file(
+        path: &Path, 
+        shared_config: &Arc<RwLock<Settings>>
+    ) -> Result<bool> {
+        info!("설정 파일 처리 중: {}", path.display());
+        
+        // JsonConfig 로드
+        let json_config = JsonConfig::from_file(path).await
+            .map_err(|e| Error::ConfigError(format!("설정 파일 로드 실패: {}: {}", path.display(), e)))?;
+        
+        info!("JSON 설정 로드됨: {}", path.display());
+        
+        // 설정 ID 추출
+        let config_id = json_config.get_id(path);
+        debug!("설정 ID: {}", config_id);
+        
+        // 설정 유효성 검증
+        if let Err(e) = json_config.validate() {
+            return Err(Error::ConfigError(format!("설정 유효성 검증 실패: {}: {}", path.display(), e)));
+        }
+        
+        // 공유 설정 업데이트
+        let mut config_updated = false;
+        {
+            // 설정 백업 (롤백용)
+            let config_backup = {
+                let config_lock = shared_config.read().await;
+                config_lock.clone()
+            };
+            
+            let mut config_lock = shared_config.write().await;
+            
+            // 미들웨어 설정 업데이트 시도
+            let mut _update_success = true;
+            
+            // 미들웨어 설정 업데이트
+            for (name, middleware_config) in json_config.middlewares {
+                let full_name = if name.contains('.') {
+                    name
+                } else {
+                    format!("{}.{}", config_id, name)
+                };
+                
+                debug!("미들웨어 업데이트: {}, 설정: {:?}", full_name, middleware_config.settings);
+                if let Some(settings) = &middleware_config.settings.get("users") {
+                    debug!("미들웨어 users 설정 값: {}", settings);
+                }
+                
+                // 기존 설정 항목 제거 후 새 설정으로 교체
+                config_lock.middleware.remove(&full_name);
+                config_lock.middleware.insert(full_name, middleware_config);
+                config_updated = true;
+            }
+            
+            // 라우터-미들웨어 매핑 업데이트
+            for (router_name, router_config) in json_config.routers {
+                if let Some(middlewares) = router_config.middlewares {
+                    let full_name = if router_name.contains('.') {
+                        router_name
+                    } else {
+                        format!("{}.{}", config_id, router_name)
+                    };
+                    
+                    config_lock.router_middlewares.insert(full_name, middlewares);
+                    config_updated = true;
+                }
+            }
+            
+            // 미들웨어 매니저 업데이트 시도
+            if config_updated {
+                // 새 설정으로 미들웨어 매니저 갱신 시도
+                let new_middleware_manager = MiddlewareManager::new(
+                    &config_lock.middleware,
+                    &config_lock.router_middlewares
+                );
+                
+                // 롤백 필요한지 검사 (실제 애플리케이션에서는 미들웨어 초기화 등에서 오류가 발생할 수 있음)
+                if let Err(e) = new_middleware_manager.validate() {
+                    error!("미들웨어 매니저 업데이트 실패, 롤백 수행: {}", e);
+                    
+                    // 롤백: 백업에서 설정 복원
+                    *config_lock = config_backup;
+                    _update_success = false;
+                    config_updated = false;
+                }
+            }
+        }
+        
+        Ok(config_updated)
+    }
+
+    /// 여러 설정 파일 처리
+    async fn process_config_files(
+        paths: Vec<PathBuf>,
+        shared_config: Arc<RwLock<Settings>>,
+        shared_middleware_manager: Arc<RwLock<MiddlewareManager>>
+    ) -> Result<bool> {
+        let mut configs_updated = false;
+        
+        // 모든 변경된 파일에 대해 처리
+        for path in paths {
+            match Self::process_config_file(&path, &shared_config).await {
+                Ok(updated) => {
+                    if updated {
+                        configs_updated = true;
+                    }
+                },
+                Err(e) => {
+                    error!("{}", e.to_string());
+                }
+            }
+        }
+        
+        // 설정이 업데이트되었으면 미들웨어 매니저도 업데이트
+        if configs_updated {
+            Self::update_middleware_manager(&shared_config, &shared_middleware_manager).await?;
+        }
+        
+        Ok(configs_updated)
+    }
+
+    /// 설정 업데이트 알림 전송
+    async fn send_config_update_notification(
+        tx: &mpsc::Sender<()>, 
+        updated: bool
+    ) -> Result<()> {
+        if updated {
+            // 설정 변경 알림
+            debug!("설정 변경 알림 전송 시작");
+            tx.send(()).await
+                .map_err(|e| Error::ConfigWatchError(format!("설정 변경 알림 전송 실패: {}", e)))?;
+            
+            debug!("설정 변경 알림 전송 성공");
+            info!("설정 리로드 완료");
+        } else {
+            debug!("유효한 설정 변경이 없어 알림을 전송하지 않습니다.");
+        }
+        
+        Ok(())
+    }
+
     /// 설정 파일 변경 감시 시작
     pub async fn start_config_watcher(&mut self) -> Result<(tokio::sync::mpsc::Receiver<()>, tokio::task::JoinHandle<()>)> {
-        // 환경 변수를 통해 감시 기능 활성화 여부 확인
-        let watch_enabled = match env::var("PROXY_CONFIG_WATCH_ENABLED") {
-            Ok(val) => val.to_lowercase() != "false",
-            Err(_) => true, // 기본적으로 활성화
-        };
-
-        if !watch_enabled {
+        // 환경 변수에서 설정 가져오기
+        let watcher_config = Self::get_watcher_config_from_env();
+        
+        if !watcher_config.enabled {
             return Err(Error::ConfigWatchError("설정 파일 감시 기능이 비활성화되었습니다".to_string()));
         }
 
+        // 파일 존재 확인
+        if !watcher_config.config_path.exists() {
+            return Err(Error::ConfigError(format!("설정 파일을 찾을 수 없습니다: {}", watcher_config.config_path.display())));
+        }
+        
         info!("설정 파일 감시 시작");
         
-        // 환경변수에서 설정 파일 경로 가져오기
-        let config_path = match env::var("PROXY_JSON_CONFIG") {
-            Ok(path) => PathBuf::from(path),
-            Err(_) => {
-                // 기본 경로 설정
-                let mut config_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                config_dir.push("config");
-                config_dir.push("config.json");
-                config_dir
-            }
-        };
-        
-        // 파일 존재 확인
-        if !config_path.exists() {
-            return Err(Error::ConfigError(format!("설정 파일을 찾을 수 없습니다: {}", config_path.display())));
-        }
-        
-        // 디바운싱 타임아웃 설정 (환경 변수에서 가져옴)
-        let debounce_timeout_ms = match env::var("PROXY_CONFIG_WATCH_TIMEOUT") {
-            Ok(val) => val.parse::<u64>().unwrap_or(300),
-            Err(_) => 300, // 기본값 300ms
-        };
-        let debounce_timeout = std::time::Duration::from_millis(debounce_timeout_ms);
-        
-        // 폴링 간격 설정 (환경 변수에서 가져옴)
-        let poll_interval_ms = match env::var("PROXY_CONFIG_WATCH_INTERVAL") {
-            Ok(val) => val.parse::<u64>().unwrap_or(200),
-            Err(_) => 200, // 기본값 200ms
-        };
-        
-        // 파일 감시 설정
-        let mut watcher = ConfigWatcher::new();
-        watcher.add_path(config_path.clone());
-        
-        // 환경 변수로 설정된 폴링 간격 적용
-        if let Err(e) = watcher.start_with_interval(std::time::Duration::from_millis(poll_interval_ms)).await {
-            return Err(Error::ConfigWatchError(format!("파일 감시 시작 실패: {}", e)));
-        }
+        // 파일 감시자 초기화
+        let mut watcher = Self::initialize_watcher(&watcher_config).await?;
         
         // 설정 변경 알림 채널
         let (notify_tx, notify_rx) = tokio::sync::mpsc::channel(1);
@@ -159,164 +373,40 @@ impl ServerManager {
         // 설정 감시 태스크 시작
         let handle = tokio::spawn(async move {
             info!("설정 감시 태스크 시작됨 (디바운싱 타임아웃: {}ms, 폴링 간격: {}ms)", 
-                  debounce_timeout_ms, poll_interval_ms);
+                  watcher_config.debounce_timeout.as_millis(), 
+                  watcher_config.poll_interval.as_millis());
             
-            while let Some(events) = watcher.watch_debounced(debounce_timeout).await {
-                info!("설정 파일 이벤트 감지: {} 개의 이벤트", events.len());
+            while let Some(events) = watcher.watch_debounced(watcher_config.debounce_timeout).await {
+                // 이벤트 로깅
+                ServerManager::log_config_events(&events);
                 
-                // 이벤트 타입 로깅
-                for event in &events {
-                    match event {
-                        ConfigEvent::Created(path) => info!("설정 파일 생성됨: {}", path.display()),
-                        ConfigEvent::Modified(path) => info!("설정 파일 수정됨: {}", path.display()),
-                        ConfigEvent::Deleted(path) => warn!("설정 파일 삭제됨: {}", path.display()),
-                    }
-                }
+                // 이벤트 분류
+                let (paths_to_process, has_deleted) = ServerManager::classify_events(events);
                 
-                // 모든 경로와 파일 상태 추적
-                let mut paths_to_process = Vec::new();
-                let mut has_deleted = false;
-                
-                // 이벤트 분류 및 처리할 파일 목록 작성
-                for event in events {
-                    match event {
-                        ConfigEvent::Created(path) | ConfigEvent::Modified(path) => {
-                            if !paths_to_process.contains(&path) && path.exists() {
-                                paths_to_process.push(path);
-                            }
-                        },
-                        ConfigEvent::Deleted(_) => {
-                            has_deleted = true;
-                        }
-                    }
-                }
-                
-                // 삭제된 파일이 있는 경우 처리 (필요한 경우)
                 if has_deleted {
                     warn!("일부 설정 파일이 삭제되었습니다. 현재 이런 경우 특별한 처리는 하지 않습니다.");
                 }
                 
-                // 변경된 파일이 있는 경우 처리
+                // 설정 파일 처리
                 if !paths_to_process.is_empty() {
-                    let mut configs_updated = false;
-                    
-                    // 모든 변경된 파일에 대해 처리
-                    for path in paths_to_process {
-                        info!("설정 파일 처리 중: {}", path.display());
-                        
-                        // JsonConfig 로드
-                        match JsonConfig::from_file(&path).await {
-                            Ok(json_config) => {
-                                info!("JSON 설정 로드됨: {}", path.display());
-                                
-                                // 설정 ID 추출
-                                let config_id = json_config.get_id(&path);
-                                debug!("설정 ID: {}", config_id);
-                                
-                                // 설정 유효성 검증
-                                if let Err(e) = json_config.validate() {
-                                    error!("설정 유효성 검증 실패: {}: {}", path.display(), e);
-                                    continue;
-                                }
-                                
-                                // 공유 설정 업데이트
-                                let mut config_updated = false;
-                                {
-                                    // 설정 백업 (롤백용)
-                                    let config_backup = {
-                                        let config_lock = shared_config.read().await;
-                                        config_lock.clone()
-                                    };
-                                    
-                                    let mut config_lock = shared_config.write().await;
-                                    
-                                    // 미들웨어 설정 업데이트 시도
-                                    let mut _update_success = true;
-                                    
-                                    // 미들웨어 설정 업데이트
-                                    for (name, middleware_config) in json_config.middlewares {
-                                        let full_name = if name.contains('.') {
-                                            name
-                                        } else {
-                                            format!("{}.{}", config_id, name)
-                                        };
-                                        
-                                        debug!("미들웨어 업데이트: {}, 설정: {:?}", full_name, middleware_config.settings);
-                                        if let Some(settings) = &middleware_config.settings.get("users") {
-                                            debug!("미들웨어 users 설정 값: {}", settings);
-                                        }
-                                        
-                                        // 기존 설정 항목 제거 후 새 설정으로 교체
-                                        config_lock.middleware.remove(&full_name);
-                                        config_lock.middleware.insert(full_name, middleware_config);
-                                        config_updated = true;
-                                    }
-                                    
-                                    // 라우터-미들웨어 매핑 업데이트
-                                    for (router_name, router_config) in json_config.routers {
-                                        if let Some(middlewares) = router_config.middlewares {
-                                            let full_name = if router_name.contains('.') {
-                                                router_name
-                                            } else {
-                                                format!("{}.{}", config_id, router_name)
-                                            };
-                                            
-                                            config_lock.router_middlewares.insert(full_name, middlewares);
-                                            config_updated = true;
-                                        }
-                                    }
-                                    
-                                    // 미들웨어 매니저 업데이트 시도
-                                    if config_updated {
-                                        // 새 설정으로 미들웨어 매니저 갱신 시도
-                                        let new_middleware_manager = MiddlewareManager::new(
-                                            &config_lock.middleware,
-                                            &config_lock.router_middlewares
-                                        );
-                                        
-                                        // 롤백 필요한지 검사 (실제 애플리케이션에서는 미들웨어 초기화 등에서 오류가 발생할 수 있음)
-                                        if let Err(e) = new_middleware_manager.validate() {
-                                            error!("미들웨어 매니저 업데이트 실패, 롤백 수행: {}", e);
-                                            
-                                            // 롤백: 백업에서 설정 복원
-                                            *config_lock = config_backup;
-                                            _update_success = false;
-                                        } else {
-                                            configs_updated = true;
-                                        }
-                                    }
-                                }
-                                
-                                if config_updated && configs_updated {
-                                    // 새 설정으로 미들웨어 매니저 갱신
-                                    let config = shared_config.read().await;
-                                    let mut middleware_lock = shared_middleware_manager.write().await;
-                                    *middleware_lock = MiddlewareManager::new(
-                                        &config.middleware,
-                                        &config.router_middlewares
-                                    );
-                                    
-                                    debug!("미들웨어 매니저 업데이트 완료");
-                                }
-                            },
-                            Err(e) => {
-                                error!("설정 파일 로드 실패: {}: {}", path.display(), e);
-                            }
+                    // 설정 파일 처리 - 데이터 흐름 문제 해결
+                    let should_notify = match ServerManager::process_config_files(
+                        paths_to_process, 
+                        shared_config.clone(), 
+                        shared_middleware_manager.clone()
+                    ).await {
+                        Ok(updated) => updated,
+                        Err(e) => {
+                            error!("설정 파일 처리 실패: {}", e.to_string());
+                            false
                         }
-                    }
+                    };
                     
-                    // 설정이 하나라도 업데이트 되었으면 알림 전송
-                    if configs_updated {
-                        // 설정 변경 알림
-                        debug!("설정 변경 알림 전송 시작");
-                        match notify_tx.send(()).await {
-                            Ok(_) => debug!("설정 변경 알림 전송 성공"),
-                            Err(e) => error!("설정 변경 알림 전송 실패: {}", e),
+                    // 비동기 호출을 데이터 처리와 분리
+                    if should_notify {
+                        if let Err(e) = ServerManager::send_config_update_notification(&notify_tx, true).await {
+                            error!("알림 전송 실패: {}", e.to_string());
                         }
-                        
-                        info!("설정 리로드 완료");
-                    } else {
-                        debug!("유효한 설정 변경이 없어 알림을 전송하지 않습니다.");
                     }
                 }
             }
