@@ -51,8 +51,14 @@ impl ConfigWatcher {
         self.event_tx.clone()
     }
 
-    /// 감시 시작
+    /// 감시 시작 (기본 설정)
     pub async fn start(&mut self) -> Result<()> {
+        // 기본 폴링 간격 200ms로 시작
+        self.start_with_interval(Duration::from_millis(200)).await
+    }
+    
+    /// 사용자 정의 폴링 간격으로 감시 시작
+    pub async fn start_with_interval(&mut self, poll_interval: Duration) -> Result<()> {
         let event_tx = self.event_tx.clone();
         
         // notify의 이벤트를 ConfigEvent로 변환하여 채널로 전송하는 핸들러
@@ -85,7 +91,7 @@ impl ConfigWatcher {
 
         // 기본 권장 감시자가 제대로 작동하지 않을 경우를 대비해 PollWatcher 사용
         let config = Config::default()
-            .with_poll_interval(Duration::from_millis(200))  // 폴링 간격 설정
+            .with_poll_interval(poll_interval)  // 사용자 정의 폴링 간격 설정
             .with_compare_contents(true);  // 내용 비교 활성화
 
         // PollWatcher 생성 (파일 변경 감지 정확도 향상)
@@ -94,7 +100,7 @@ impl ConfigWatcher {
 
         // 모든 경로에 대해 감시 설정
         for path in &self.paths {
-            debug!("경로 감시 시작 (PollWatcher): {}", path.display());
+            debug!("경로 감시 시작 (PollWatcher, 간격: {:?}): {}", poll_interval, path.display());
             watcher.watch(path, RecursiveMode::Recursive)
                 .map_err(|e| SettingsError::WatchError(e.to_string()))?;
         }
