@@ -10,6 +10,7 @@ mod error;
 pub mod docker;
 pub mod json;
 pub mod watcher;
+pub mod converter;
 
 pub use server::ServerSettings;
 pub use logging::LogSettings;
@@ -17,6 +18,7 @@ pub use tls::TlsSettings;
 pub use docker::DockerSettings;
 pub use error::SettingsError;
 pub use json::JsonConfig;
+pub use converter::{label_key_to_json_path, convert_value, labels_to_json, json_to_labels};
 
 pub type Result<T> = std::result::Result<T, SettingsError>;
 pub use server::parse_env_var;
