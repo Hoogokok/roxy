@@ -48,35 +48,37 @@ pub fn label_key_to_json_path(label_key: &str) -> (String, Vec<String>) {
 }
 
 /// 문자열 값을 적절한 타입으로 변환
-pub fn convert_value(value: &str) -> Value {
-    // 불리언 변환
+pub fn convert_value(value: &str, key: &str) -> Value {
+    // 특수 경우 처리: 미들웨어 목록은 쉼표로 구분된 문자열
+    if key.ends_with(".middlewares") {
+        // 쉼표로 구분된 문자열을 배열로 변환
+        let values: Vec<Value> = value
+            .split(',')
+            .map(|s| Value::String(s.trim().to_string()))
+            .collect();
+        return Value::Array(values);
+    }
+
+    // 불리언 값 처리
     if value.eq_ignore_ascii_case("true") {
         return Value::Bool(true);
-    }
-    if value.eq_ignore_ascii_case("false") {
+    } else if value.eq_ignore_ascii_case("false") {
         return Value::Bool(false);
     }
     
-    // 숫자 변환 시도
+    // 숫자 값 처리
     if let Ok(num) = value.parse::<i64>() {
         return Value::Number(num.into());
     }
     
     if let Ok(num) = value.parse::<f64>() {
-        if let Some(num_value) = serde_json::Number::from_f64(num) {
-            return Value::Number(num_value);
+        // serde_json은 f64를 Number로 변환할 수 있는지 확인
+        if let Some(num) = serde_json::Number::from_f64(num) {
+            return Value::Number(num);
         }
     }
     
-    // 쉼표로 구분된 목록 -> 배열
-    if value.contains(',') {
-        let items: Vec<Value> = value.split(',')
-            .map(|s| convert_value(s.trim()))
-            .collect();
-        return Value::Array(items);
-    }
-    
-    // 기본값은 문자열
+    // 기본값은 문자열로 처리
     Value::String(value.to_string())
 }
 
@@ -96,8 +98,8 @@ pub fn labels_to_json(labels: &HashMap<String, String>, prefix: &str) -> Value {
             continue;
         }
         
-        // 값 변환
-        let converted_value = convert_value(value);
+        // 값 변환 - 키도 함께 전달
+        let converted_value = convert_value(value, key);
         
         // 루트 객체에 해당 타입 맵이 없으면 생성
         if !root.contains_key(&root_key) {
@@ -264,27 +266,30 @@ mod tests {
     #[test]
     fn test_convert_value() {
         // 불리언 변환 테스트
-        assert_eq!(convert_value("true"), Value::Bool(true));
-        assert_eq!(convert_value("false"), Value::Bool(false));
-        assert_eq!(convert_value("True"), Value::Bool(true));
+        assert_eq!(convert_value("true", "rproxy.http.middlewares.cors.enabled"), Value::Bool(true));
+        assert_eq!(convert_value("false", "rproxy.http.middlewares.cors.enabled"), Value::Bool(false));
+        assert_eq!(convert_value("True", "rproxy.http.middlewares.cors.enabled"), Value::Bool(true));
         
         // 숫자 변환 테스트
-        assert_eq!(convert_value("123"), Value::Number(123.into()));
-        assert_eq!(convert_value("-10"), Value::Number((-10).into()));
+        assert_eq!(convert_value("123", "rproxy.http.middlewares.cors.enabled"), Value::Number(123.into()));
+        assert_eq!(convert_value("-10", "rproxy.http.middlewares.cors.enabled"), Value::Number((-10).into()));
         
-        // 쉼표 구분 목록 변환 테스트
-        let array = convert_value("a,b,c");
-        if let Value::Array(items) = array {
+        // 미들웨어 목록 변환 테스트 (쉼표 구분 문자열 -> 배열)
+        let middlewares_array = convert_value("auth,cors,rate-limit", "rproxy.http.routers.api.middlewares");
+        if let Value::Array(items) = middlewares_array {
             assert_eq!(items.len(), 3);
-            assert_eq!(items[0], Value::String("a".to_string()));
-            assert_eq!(items[1], Value::String("b".to_string()));
-            assert_eq!(items[2], Value::String("c".to_string()));
+            assert_eq!(items[0], Value::String("auth".to_string()));
+            assert_eq!(items[1], Value::String("cors".to_string()));
+            assert_eq!(items[2], Value::String("rate-limit".to_string()));
         } else {
-            panic!("Expected array");
+            panic!("Expected array for middlewares");
         }
         
+        // 일반 쉼표 구분 문자열은 그대로 문자열로 취급
+        assert_eq!(convert_value("a,b,c", "rproxy.http.middlewares.cors.setting"), Value::String("a,b,c".to_string()));
+        
         // 문자열 변환 테스트
-        assert_eq!(convert_value("hello"), Value::String("hello".to_string()));
+        assert_eq!(convert_value("hello", "rproxy.http.middlewares.cors.enabled"), Value::String("hello".to_string()));
     }
     
     #[test]
