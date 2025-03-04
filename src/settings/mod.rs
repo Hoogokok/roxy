@@ -8,7 +8,8 @@ pub mod logging;
 mod tls;
 mod error;
 pub mod docker;
-mod json;
+pub mod json;
+pub mod watcher;
 
 pub use server::ServerSettings;
 pub use logging::LogSettings;
@@ -364,6 +365,62 @@ impl Settings {
         
         Ok(())
     }
+
+    /// 설정 파일 변경 시 리로드
+    pub async fn reload_config<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
+        debug!("설정 파일 리로드: {}", path.as_ref().display());
+        
+        // 1. 새로운 설정 로드
+        let new_settings = match path.as_ref().extension().and_then(|ext| ext.to_str()) {
+            Some("json") => {
+                let config = JsonConfig::from_file(&path).await?;
+                config.validate()?;
+                
+                let mut settings = Settings::default();
+                let config_id = config.get_id(path.as_ref());
+                
+                // 미들웨어 설정 적용
+                for (name, middleware_config) in config.middlewares {
+                    let full_name = if name.contains('.') {
+                        name
+                    } else {
+                        format!("{}.{}", config_id, name)
+                    };
+                    settings.add_middleware(full_name, middleware_config)?;
+                }
+                
+                // 라우터-미들웨어 매핑 적용
+                for (router_name, router_config) in config.routers {
+                    if let Some(middlewares) = router_config.middlewares {
+                        let full_name = if router_name.contains('.') {
+                            router_name
+                        } else {
+                            format!("{}.{}", config_id, router_name)
+                        };
+                        settings.router_middlewares.insert(full_name, middlewares);
+                    }
+                }
+                
+                settings
+            }
+            Some("toml") => {
+                Self::from_toml_file(&path).await?
+            }
+            _ => return Err(SettingsError::InvalidConfig(
+                format!("지원하지 않는 설정 파일 형식: {}", path.as_ref().display())
+            )),
+        };
+
+        // 2. 새로운 설정 검증
+        new_settings.validate().await?;
+
+        // 3. 설정 적용
+        self.middleware = new_settings.middleware;
+        self.router_middlewares = new_settings.router_middlewares;
+        
+        debug!("설정 리로드 완료");
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -634,5 +691,20 @@ mod tests {
         // 환경변수 정리
         env::remove_var("PROXY_JSON_CONFIG");
         env::remove_var("PROXY_CONFIG_PRIORITY");
+    }
+
+    #[tokio::test]
+    async fn test_config_watcher_basic() {
+        use super::watcher::ConfigWatcher;
+        use tempfile::tempdir;
+        
+        let temp_dir = tempdir().unwrap();
+        let mut watcher = ConfigWatcher::new();
+        
+        // 감시 경로 추가
+        watcher.add_path(temp_dir.path());
+        
+        // 감시 시작
+        watcher.start().await.unwrap();
     }
 }
