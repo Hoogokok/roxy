@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, warn, info, debug};
+use tracing::{error, warn, info, debug, instrument};
 use crate::{
     docker::DockerManager, middleware::MiddlewareManager, routing_v2::RoutingTable, settings::{watcher::{ConfigEvent, ConfigWatcher}, JsonConfig, Settings}
 };
@@ -17,6 +17,7 @@ use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// Config file watcher settings
+#[derive(Debug)]
 struct WatcherConfig {
     enabled: bool,
     debounce_timeout: Duration,
@@ -35,7 +36,10 @@ pub struct ServerManager {
 }
 
 impl ServerManager {
-    // 순수 함수: 모든 의존성을 매개변수로 받음
+    /// Create a new ServerManager with explicit dependencies
+    /// 
+    /// This is a pure function that takes all dependencies as parameters,
+    /// following the dependency injection pattern.
     pub fn new(
         config: Settings,
         docker_manager: DockerManager,
@@ -54,6 +58,7 @@ impl ServerManager {
     }
 
     // Factory method for application use
+    #[instrument(skip(settings), level = "debug", err)]
     pub async fn with_defaults(mut settings: Settings) -> Result<Self> {
         // 1. Initialize Docker manager
         let docker_manager = DockerManager::with_defaults(settings.docker.clone())
@@ -137,6 +142,7 @@ impl ServerManager {
     }
 
     /// Initialize file watcher
+    #[instrument(level = "debug", err)]
     async fn initialize_watcher(config: &WatcherConfig) -> Result<ConfigWatcher> {
         let mut watcher = ConfigWatcher::new();
         watcher.add_path(&config.config_path);
@@ -180,6 +186,7 @@ impl ServerManager {
     }
 
     /// Update middleware manager from shared config
+    #[instrument(skip(shared_config, shared_middleware_manager), level = "debug", err)]
     async fn update_middleware_manager(
         shared_config: &Arc<RwLock<Settings>>,
         shared_middleware_manager: &Arc<RwLock<MiddlewareManager>>
@@ -195,15 +202,16 @@ impl ServerManager {
         Ok(())
     }
 
-    /// 설정 파일에서 JSON 설정을 로드하고 유효성을 검증합니다.
+    /// Load JSON configuration from file and validate it
+    #[instrument(level = "debug", err)]
     async fn load_and_validate_json_config(path: &Path) -> Result<JsonConfig> {
-        // JsonConfig 로드
+        // Load JsonConfig
         let json_config = JsonConfig::from_file(path).await
             .map_err(|e| Error::ConfigError(format!("Failed to load config file: {}: {}", path.display(), e)))?;
         
         info!("JSON config loaded: {}", path.display());
         
-        // 설정 유효성 검증
+        // Validate configuration
         if let Err(e) = json_config.validate() {
             return Err(Error::ConfigError(format!("Config validation failed: {}: {}", path.display(), e)));
         }
@@ -211,7 +219,7 @@ impl ServerManager {
         Ok(json_config)
     }
     
-    /// 미들웨어 설정을 업데이트합니다.
+    /// Update middleware settings
     fn update_middleware_settings(
         config_lock: &mut Settings,
         json_config: &JsonConfig,
@@ -219,7 +227,7 @@ impl ServerManager {
     ) -> bool {
         let mut updated = false;
         
-        // 미들웨어 설정 업데이트
+        // Update middleware settings
         for (name, middleware_config) in &json_config.middlewares {
             let full_name = if name.contains('.') {
                 name.clone()
@@ -232,7 +240,7 @@ impl ServerManager {
                 debug!("Middleware users settings value: {}", settings);
             }
             
-            // 기존 설정 항목 제거 후 새 설정으로 교체
+            // Remove existing config and replace with new one
             config_lock.middleware.remove(&full_name);
             config_lock.middleware.insert(full_name, middleware_config.clone());
             updated = true;
@@ -241,7 +249,7 @@ impl ServerManager {
         updated
     }
     
-    /// 라우터-미들웨어 매핑을 업데이트합니다.
+    /// Update router-middleware mappings
     fn update_router_middleware_mappings(
         config_lock: &mut Settings,
         json_config: &JsonConfig,
@@ -249,7 +257,7 @@ impl ServerManager {
     ) -> bool {
         let mut updated = false;
         
-        // 라우터-미들웨어 매핑 업데이트
+        // Update router-middleware mappings
         for (router_name, router_config) in &json_config.routers {
             if let Some(middlewares) = &router_config.middlewares {
                 let full_name = if router_name.contains('.') {
@@ -266,7 +274,7 @@ impl ServerManager {
         updated
     }
     
-    /// 미들웨어 매니저를 검증하고 필요시 롤백합니다.
+    /// Validate middleware manager and handle rollback if needed
     fn validate_middleware_manager(
         config_lock: &mut Settings,
         config_backup: &Settings,
@@ -276,17 +284,17 @@ impl ServerManager {
             return false;
         }
         
-        // 새 설정으로 미들웨어 매니저 갱신 시도
+        // Try to update middleware manager with new settings
         let new_middleware_manager = MiddlewareManager::new(
             &config_lock.middleware,
             &config_lock.router_middlewares
         );
         
-        // 롤백 필요한지 검사
+        // Check if rollback is needed
         if let Err(e) = new_middleware_manager.validate() {
             error!("Middleware manager update failed, rolling back: {}", e);
             
-            // 롤백: 백업에서 설정 복원
+            // Rollback: restore settings from backup
             *config_lock = config_backup.clone();
             return false;
         }
@@ -294,24 +302,25 @@ impl ServerManager {
         true
     }
 
-    /// 단일 설정 파일 처리
+    /// Process a single configuration file
+    #[instrument(skip(shared_config), level = "debug", err, fields(path = %path.display()))]
     async fn process_config_file(
         path: &Path, 
         shared_config: &Arc<RwLock<Settings>>
     ) -> Result<bool> {
         info!("Processing config file: {}", path.display());
         
-        // JSON 설정 로드 및 유효성 검증
+        // Load and validate JSON configuration
         let json_config = Self::load_and_validate_json_config(path).await?;
         
-        // 설정 ID 추출
+        // Extract configuration ID
         let config_id = json_config.get_id(path);
         debug!("Config ID: {}", config_id);
         
-        // 공유 설정 업데이트
+        // Update shared configuration
         let mut config_updated = false;
         {
-            // 설정 백업 (롤백용)
+            // Create backup for rollback
             let config_backup = {
                 let config_lock = shared_config.read().await;
                 config_lock.clone()
@@ -319,16 +328,16 @@ impl ServerManager {
             
             let mut config_lock = shared_config.write().await;
             
-            // 미들웨어 설정 업데이트
+            // Update middleware settings
             let middleware_updated = Self::update_middleware_settings(&mut config_lock, &json_config, &config_id);
             
-            // 라우터-미들웨어 매핑 업데이트
+            // Update router-middleware mappings
             let router_updated = Self::update_router_middleware_mappings(&mut config_lock, &json_config, &config_id);
             
-            // 설정이 업데이트됐는지 확인
+            // Check if configuration was updated
             config_updated = middleware_updated || router_updated;
             
-            // 미들웨어 매니저 검증 및 롤백 처리
+            // Validate middleware manager and handle rollback
             if config_updated {
                 config_updated = Self::validate_middleware_manager(&mut config_lock, &config_backup, config_updated);
             }
@@ -337,7 +346,9 @@ impl ServerManager {
         Ok(config_updated)
     }
 
-    /// 여러 설정 파일 처리
+    /// Process multiple configuration files
+    #[instrument(skip(paths, shared_config, shared_middleware_manager), level = "debug", err, 
+                fields(file_count = paths.len()))]
     async fn process_config_files(
         paths: Vec<PathBuf>,
         shared_config: Arc<RwLock<Settings>>,
@@ -345,7 +356,7 @@ impl ServerManager {
     ) -> Result<bool> {
         let mut configs_updated = false;
         
-        // 모든 변경된 파일에 대해 처리
+        // Process all changed files
         for path in paths {
             match Self::process_config_file(&path, &shared_config).await {
                 Ok(updated) => {
@@ -359,7 +370,7 @@ impl ServerManager {
             }
         }
         
-        // 설정이 업데이트되었으면 미들웨어 매니저도 업데이트
+        // If configuration was updated, update middleware manager as well
         if configs_updated {
             Self::update_middleware_manager(&shared_config, &shared_middleware_manager).await?;
         }
@@ -368,6 +379,7 @@ impl ServerManager {
     }
 
     /// Send config update notification
+    #[instrument(skip(tx), level = "debug", err, fields(updated = updated))]
     async fn send_config_update_notification(
         tx: &mpsc::Sender<()>, 
         updated: bool
@@ -388,6 +400,7 @@ impl ServerManager {
     }
 
     /// Start config file watcher
+    #[instrument(skip(self), level = "debug", err)]
     pub async fn start_config_watcher(&mut self) -> Result<(tokio::sync::mpsc::Receiver<()>, tokio::task::JoinHandle<()>)> {
         // Get config from environment variables
         let watcher_config = Self::get_watcher_config_from_env();
@@ -468,6 +481,7 @@ impl ServerManager {
     }
 
     /// Run server
+    #[instrument(skip(self), level = "info", err)]
     pub async fn run(mut self) -> Result<()> {
         // Start config file watcher
         if let Err(e) = self.start_config_watcher().await {
