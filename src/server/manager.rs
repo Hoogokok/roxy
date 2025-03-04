@@ -195,27 +195,118 @@ impl ServerManager {
         Ok(())
     }
 
+    /// 설정 파일에서 JSON 설정을 로드하고 유효성을 검증합니다.
+    async fn load_and_validate_json_config(path: &Path) -> Result<JsonConfig> {
+        // JsonConfig 로드
+        let json_config = JsonConfig::from_file(path).await
+            .map_err(|e| Error::ConfigError(format!("Failed to load config file: {}: {}", path.display(), e)))?;
+        
+        info!("JSON config loaded: {}", path.display());
+        
+        // 설정 유효성 검증
+        if let Err(e) = json_config.validate() {
+            return Err(Error::ConfigError(format!("Config validation failed: {}: {}", path.display(), e)));
+        }
+        
+        Ok(json_config)
+    }
+    
+    /// 미들웨어 설정을 업데이트합니다.
+    fn update_middleware_settings(
+        config_lock: &mut Settings,
+        json_config: &JsonConfig,
+        config_id: &str
+    ) -> bool {
+        let mut updated = false;
+        
+        // 미들웨어 설정 업데이트
+        for (name, middleware_config) in &json_config.middlewares {
+            let full_name = if name.contains('.') {
+                name.clone()
+            } else {
+                format!("{}.{}", config_id, name)
+            };
+            
+            debug!("Updating middleware: {}, config: {:?}", full_name, middleware_config.settings);
+            if let Some(settings) = &middleware_config.settings.get("users") {
+                debug!("Middleware users settings value: {}", settings);
+            }
+            
+            // 기존 설정 항목 제거 후 새 설정으로 교체
+            config_lock.middleware.remove(&full_name);
+            config_lock.middleware.insert(full_name, middleware_config.clone());
+            updated = true;
+        }
+        
+        updated
+    }
+    
+    /// 라우터-미들웨어 매핑을 업데이트합니다.
+    fn update_router_middleware_mappings(
+        config_lock: &mut Settings,
+        json_config: &JsonConfig,
+        config_id: &str
+    ) -> bool {
+        let mut updated = false;
+        
+        // 라우터-미들웨어 매핑 업데이트
+        for (router_name, router_config) in &json_config.routers {
+            if let Some(middlewares) = &router_config.middlewares {
+                let full_name = if router_name.contains('.') {
+                    router_name.clone()
+                } else {
+                    format!("{}.{}", config_id, router_name)
+                };
+                
+                config_lock.router_middlewares.insert(full_name, middlewares.clone());
+                updated = true;
+            }
+        }
+        
+        updated
+    }
+    
+    /// 미들웨어 매니저를 검증하고 필요시 롤백합니다.
+    fn validate_middleware_manager(
+        config_lock: &mut Settings,
+        config_backup: &Settings,
+        config_updated: bool
+    ) -> bool {
+        if !config_updated {
+            return false;
+        }
+        
+        // 새 설정으로 미들웨어 매니저 갱신 시도
+        let new_middleware_manager = MiddlewareManager::new(
+            &config_lock.middleware,
+            &config_lock.router_middlewares
+        );
+        
+        // 롤백 필요한지 검사
+        if let Err(e) = new_middleware_manager.validate() {
+            error!("Middleware manager update failed, rolling back: {}", e);
+            
+            // 롤백: 백업에서 설정 복원
+            *config_lock = config_backup.clone();
+            return false;
+        }
+        
+        true
+    }
+
     /// 단일 설정 파일 처리
     async fn process_config_file(
         path: &Path, 
         shared_config: &Arc<RwLock<Settings>>
     ) -> Result<bool> {
-        info!("설정 파일 처리 중: {}", path.display());
+        info!("Processing config file: {}", path.display());
         
-        // JsonConfig 로드
-        let json_config = JsonConfig::from_file(path).await
-            .map_err(|e| Error::ConfigError(format!("설정 파일 로드 실패: {}: {}", path.display(), e)))?;
-        
-        info!("JSON 설정 로드됨: {}", path.display());
+        // JSON 설정 로드 및 유효성 검증
+        let json_config = Self::load_and_validate_json_config(path).await?;
         
         // 설정 ID 추출
         let config_id = json_config.get_id(path);
-        debug!("설정 ID: {}", config_id);
-        
-        // 설정 유효성 검증
-        if let Err(e) = json_config.validate() {
-            return Err(Error::ConfigError(format!("설정 유효성 검증 실패: {}: {}", path.display(), e)));
-        }
+        debug!("Config ID: {}", config_id);
         
         // 공유 설정 업데이트
         let mut config_updated = false;
@@ -228,59 +319,18 @@ impl ServerManager {
             
             let mut config_lock = shared_config.write().await;
             
-            // 미들웨어 설정 업데이트 시도
-            let mut _update_success = true;
-            
             // 미들웨어 설정 업데이트
-            for (name, middleware_config) in json_config.middlewares {
-                let full_name = if name.contains('.') {
-                    name
-                } else {
-                    format!("{}.{}", config_id, name)
-                };
-                
-                debug!("미들웨어 업데이트: {}, 설정: {:?}", full_name, middleware_config.settings);
-                if let Some(settings) = &middleware_config.settings.get("users") {
-                    debug!("미들웨어 users 설정 값: {}", settings);
-                }
-                
-                // 기존 설정 항목 제거 후 새 설정으로 교체
-                config_lock.middleware.remove(&full_name);
-                config_lock.middleware.insert(full_name, middleware_config);
-                config_updated = true;
-            }
+            let middleware_updated = Self::update_middleware_settings(&mut config_lock, &json_config, &config_id);
             
             // 라우터-미들웨어 매핑 업데이트
-            for (router_name, router_config) in json_config.routers {
-                if let Some(middlewares) = router_config.middlewares {
-                    let full_name = if router_name.contains('.') {
-                        router_name
-                    } else {
-                        format!("{}.{}", config_id, router_name)
-                    };
-                    
-                    config_lock.router_middlewares.insert(full_name, middlewares);
-                    config_updated = true;
-                }
-            }
+            let router_updated = Self::update_router_middleware_mappings(&mut config_lock, &json_config, &config_id);
             
-            // 미들웨어 매니저 업데이트 시도
+            // 설정이 업데이트됐는지 확인
+            config_updated = middleware_updated || router_updated;
+            
+            // 미들웨어 매니저 검증 및 롤백 처리
             if config_updated {
-                // 새 설정으로 미들웨어 매니저 갱신 시도
-                let new_middleware_manager = MiddlewareManager::new(
-                    &config_lock.middleware,
-                    &config_lock.router_middlewares
-                );
-                
-                // 롤백 필요한지 검사 (실제 애플리케이션에서는 미들웨어 초기화 등에서 오류가 발생할 수 있음)
-                if let Err(e) = new_middleware_manager.validate() {
-                    error!("미들웨어 매니저 업데이트 실패, 롤백 수행: {}", e);
-                    
-                    // 롤백: 백업에서 설정 복원
-                    *config_lock = config_backup;
-                    _update_success = false;
-                    config_updated = false;
-                }
+                config_updated = Self::validate_middleware_manager(&mut config_lock, &config_backup, config_updated);
             }
         }
         
