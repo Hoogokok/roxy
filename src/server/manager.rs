@@ -327,69 +327,7 @@ impl ServerManager {
         Ok((notify_rx, handle))
     }
 
-    /// 설정 변경 완료 대기
-    pub async fn wait_for_config_update(&mut self, mut notify_rx: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
-        if let Some(_) = notify_rx.recv().await {
-            info!("설정 변경 알림 수신됨");
-            
-            // 공유 설정에서 설정 복사
-            let config_clone = {
-                let shared_config = match &self.shared_config {
-                    Some(config) => config,
-                    None => {
-                        error!("공유 설정이 없습니다");
-                        return Err(Error::ConfigWatchError("공유 설정이 없습니다".to_string()));
-                    }
-                };
-                
-                let config_lock = shared_config.read().await;
-                debug!("공유 설정 미들웨어 수: {}", config_lock.middleware.len());
-                
-                // 디버깅용 로그: 미들웨어 설정 상세 정보
-                for (key, value) in &config_lock.middleware {
-                    debug!("공유 설정 미들웨어: {}", key);
-                    
-                    // 특정 미들웨어의 경우 더 상세히 로깅
-                    if key == "test1.auth" {
-                        if let Some(users) = value.settings.get("users") {
-                            info!("🔍 공유 설정 test1.auth users 값: {}", users);
-                        }
-                    }
-                }
-                
-                // 미들웨어 설정 모두 비우고 새로 복사
-                self.config.middleware.clear();
-                for (key, value) in &config_lock.middleware {
-                    self.config.middleware.insert(key.clone(), value.clone());
-                }
-                
-                // 라우터-미들웨어 매핑도 업데이트
-                self.config.router_middlewares = config_lock.router_middlewares.clone();
-                
-                config_lock.clone()
-            };
-            
-            // 설정 업데이트
-            self.config = config_clone;
-            
-            // 업데이트 후 설정 상태 로깅
-            debug!("📌 업데이트 후 self.config 미들웨어 수: {}", self.config.middleware.len());
-            
-            // 테스트를 위한 특정 미들웨어 상세 정보 로깅
-            if let Some(auth_middleware) = self.config.middleware.get("test1.auth") {
-                if let Some(users) = auth_middleware.settings.get("users") {
-                    info!("📌 업데이트 후 test1.auth users 값: {}", users);
-                }
-            }
-            
-            info!("설정 업데이트 완료");
-            Ok(())
-        } else {
-            error!("설정 변경 알림 수신 실패");
-            Err(Error::ConfigWatchError("설정 변경 알림 수신 실패".to_string()))
-        }
-    }
-
+    /// 서버 실행
     pub async fn run(mut self) -> Result<()> {
         // 설정 파일 감시 시작
         if let Err(e) = self.start_config_watcher().await {
