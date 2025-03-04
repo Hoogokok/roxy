@@ -318,8 +318,7 @@ impl ServerManager {
         debug!("Config ID: {}", config_id);
         
         // Update shared configuration
-        let mut config_updated = false;
-        {
+        let config_updated = {
             // Create backup for rollback
             let config_backup = {
                 let config_lock = shared_config.read().await;
@@ -335,13 +334,15 @@ impl ServerManager {
             let router_updated = Self::update_router_middleware_mappings(&mut config_lock, &json_config, &config_id);
             
             // Check if configuration was updated
-            config_updated = middleware_updated || router_updated;
+            let changes_detected = middleware_updated || router_updated;
             
             // Validate middleware manager and handle rollback
-            if config_updated {
-                config_updated = Self::validate_middleware_manager(&mut config_lock, &config_backup, config_updated);
+            if changes_detected {
+                Self::validate_middleware_manager(&mut config_lock, &config_backup, changes_detected)
+            } else {
+                false
             }
-        }
+        };
         
         Ok(config_updated)
     }
