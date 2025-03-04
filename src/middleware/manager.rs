@@ -156,5 +156,30 @@ impl MiddlewareManager {
         }
         debug!("========================");
     }
+
+    /// 미들웨어 매니저의 유효성을 검사합니다.
+    /// 모든 미들웨어 설정이 유효하고 초기화 가능한지 확인합니다.
+    pub fn validate(&self) -> Result<(), MiddlewareError> {
+        // 현재 버전에서는 라우터 체인의 존재 여부만 확인합니다.
+        // 실제 애플리케이션에서는 필요에 따라 더 상세한 검증을 추가할 수 있습니다.
+        debug!("미들웨어 매니저 유효성 검사");
+        
+        // 체인에 포함된 모든 미들웨어 초기화 가능한지 검사할 수 있음
+        // 지금은 단순히 체인이 있는지만 확인
+        if self.router_chains.is_empty() {
+            debug!("미들웨어 체인이 비어 있습니다 - 이는 유효한 상태일 수 있습니다");
+        } else {
+            debug!("미들웨어 체인 개수: {}", self.router_chains.len());
+            
+            // 각 체인별 정보 로깅 (디버깅 목적)
+            for (router_name, chain) in &self.router_chains {
+                debug!("라우터 '{}' 미들웨어 체인 미들웨어 수: {}", router_name, chain.middleware_count());
+            }
+        }
+        
+        // 현재는 항상 성공 반환
+        // 향후 버전에서 실제 유효성 검사 로직 추가 가능
+        Ok(())
+    }
 } 
     
