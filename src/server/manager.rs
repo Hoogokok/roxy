@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-/// 설정 파일 감시 설정
+/// Config file watcher settings
 struct WatcherConfig {
     enabled: bool,
     debounce_timeout: Duration,
@@ -53,34 +53,34 @@ impl ServerManager {
         }
     }
 
-    // 실제 애플리케이션에서 사용할 팩토리 메서드
+    // Factory method for application use
     pub async fn with_defaults(mut settings: Settings) -> Result<Self> {
-        // 1. Docker 매니저 초기화
+        // 1. Initialize Docker manager
         let docker_manager = DockerManager::with_defaults(settings.docker.clone())
             .await
             .map_err(|e| {
-                error!(error = %e, "Docker 매니저 초기화 실패");
+                error!(error = %e, "Failed to initialize Docker manager");
                 e
             })?;
 
-        // 2. 초기 헬스체크 설정
+        // 2. Setup initial health checks
         if let Err(e) = docker_manager.setup_initial_health_checks().await {
-            error!(error = %e, "초기 헬스체크 설정 실패");
+            error!(error = %e, "Failed to setup initial health checks");
         }
 
-        // 3. 설정 소스 병합 (환경변수, JSON, Docker 라벨)
+        // 3. Merge config sources (env vars, JSON, Docker labels)
         if let Ok(labels) = docker_manager.get_container_labels().await {
-            // 모든 설정 소스를 병합
+            // Merge all config sources
             settings.merge_all_config_sources(&labels).await?;
         } else {
-            // Docker 라벨이 없는 경우, 환경변수에서 JSON 설정만 로드
+            // If Docker labels not available, load JSON config from env only
             settings.load_json_from_env().await?;
         }
 
-        // 4. 라우팅 테이블 초기화
+        // 4. Initialize routing table
         let routing_table = Arc::new(RwLock::new(RoutingTable::new()));
         
-        // 5. 초기 라우트 설정
+        // 5. Setup initial routes
         let initial_routes = docker_manager.get_container_routes().await?;
         
         {
@@ -88,7 +88,7 @@ impl ServerManager {
             table.sync_docker_routes(initial_routes);
         }
 
-        // 6. 미들웨어 매니저 초기화
+        // 6. Initialize middleware manager
         let middleware_manager = MiddlewareManager::new(&settings.middleware, &settings.router_middlewares);
 
         Ok(Self::new(
@@ -99,26 +99,26 @@ impl ServerManager {
         ))
     }
 
-    /// 환경 변수에서 설정 파일 감시 설정 가져오기
+    /// Get config watcher settings from environment variables
     fn get_watcher_config_from_env() -> WatcherConfig {
-        // 감시 기능 활성화 여부 확인
+        // Check if watcher is enabled
         let enabled = env::var("PROXY_CONFIG_WATCH_ENABLED")
             .map(|val| val.to_lowercase() != "false")
             .unwrap_or(true);
         
-        // 디바운싱 타임아웃 설정
+        // Debounce timeout setting
         let debounce_timeout_ms = env::var("PROXY_CONFIG_WATCH_TIMEOUT")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(300);
         
-        // 폴링 간격 설정
+        // Polling interval setting
         let poll_interval_ms = env::var("PROXY_CONFIG_WATCH_INTERVAL")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap_or(200);
         
-        // 설정 파일 경로
+        // Config file path
         let config_path = env::var("PROXY_JSON_CONFIG")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
@@ -136,50 +136,50 @@ impl ServerManager {
         }
     }
 
-    /// 파일 감시자 초기화
+    /// Initialize file watcher
     async fn initialize_watcher(config: &WatcherConfig) -> Result<ConfigWatcher> {
         let mut watcher = ConfigWatcher::new();
         watcher.add_path(&config.config_path);
         watcher.start_with_interval(config.poll_interval).await
-            .map_err(|e| Error::ConfigWatchError(format!("파일 감시 시작 실패: {}", e)))?;
+            .map_err(|e| Error::ConfigWatchError(format!("Failed to start file watcher: {}", e)))?;
         Ok(watcher)
     }
 
-    /// 이벤트 로깅
+    /// Log configuration events
     fn log_config_events(events: &[ConfigEvent]) {
-        info!("설정 파일 이벤트 감지: {} 개의 이벤트", events.len());
+        info!("Detected configuration file events: {} events", events.len());
         
         for event in events {
             match event {
-                ConfigEvent::Created(path) => info!("설정 파일 생성됨: {}", path.display()),
-                ConfigEvent::Modified(path) => info!("설정 파일 수정됨: {}", path.display()),
-                ConfigEvent::Deleted(path) => warn!("설정 파일 삭제됨: {}", path.display()),
+                ConfigEvent::Created(path) => info!("Config file created: {}", path.display()),
+                ConfigEvent::Modified(path) => info!("Config file modified: {}", path.display()),
+                ConfigEvent::Deleted(path) => warn!("Config file deleted: {}", path.display()),
             }
         }
     }
 
-    /// 이벤트 분류 및 처리할 파일 목록 작성
+    /// Classify events and create a list of files to process
     fn classify_events(events: Vec<ConfigEvent>) -> (Vec<PathBuf>, bool) {
-        let mut paths_to_process = Vec::new();
-        let mut has_deleted = false;
+        let mut files_to_process = Vec::new();
+        let mut has_deleted_files = false;
         
         for event in events {
             match event {
                 ConfigEvent::Created(path) | ConfigEvent::Modified(path) => {
-                    if !paths_to_process.contains(&path) && path.exists() {
-                        paths_to_process.push(path);
+                    if !files_to_process.contains(&path) && path.exists() {
+                        files_to_process.push(path);
                     }
                 },
                 ConfigEvent::Deleted(_) => {
-                    has_deleted = true;
+                    has_deleted_files = true;
                 }
             }
         }
         
-        (paths_to_process, has_deleted)
+        (files_to_process, has_deleted_files)
     }
 
-    /// 미들웨어 매니저 업데이트
+    /// Update middleware manager from shared config
     async fn update_middleware_manager(
         shared_config: &Arc<RwLock<Settings>>,
         shared_middleware_manager: &Arc<RwLock<MiddlewareManager>>
@@ -191,7 +191,7 @@ impl ServerManager {
             &config.router_middlewares
         );
         
-        debug!("미들웨어 매니저 업데이트 완료");
+        debug!("Middleware manager updated successfully");
         Ok(())
     }
 
@@ -367,140 +367,140 @@ impl ServerManager {
         Ok(configs_updated)
     }
 
-    /// 설정 업데이트 알림 전송
+    /// Send config update notification
     async fn send_config_update_notification(
         tx: &mpsc::Sender<()>, 
         updated: bool
     ) -> Result<()> {
         if updated {
-            // 설정 변경 알림
-            debug!("설정 변경 알림 전송 시작");
+            // Config change notification
+            debug!("Sending config update notification");
             tx.send(()).await
-                .map_err(|e| Error::ConfigWatchError(format!("설정 변경 알림 전송 실패: {}", e)))?;
+                .map_err(|e| Error::ConfigWatchError(format!("Failed to send config update notification: {}", e)))?;
             
-            debug!("설정 변경 알림 전송 성공");
-            info!("설정 리로드 완료");
+            debug!("Config update notification sent successfully");
+            info!("Configuration reload completed");
         } else {
-            debug!("유효한 설정 변경이 없어 알림을 전송하지 않습니다.");
+            debug!("No valid configuration changes, skipping notification");
         }
         
         Ok(())
     }
 
-    /// 설정 파일 변경 감시 시작
+    /// Start config file watcher
     pub async fn start_config_watcher(&mut self) -> Result<(tokio::sync::mpsc::Receiver<()>, tokio::task::JoinHandle<()>)> {
-        // 환경 변수에서 설정 가져오기
+        // Get config from environment variables
         let watcher_config = Self::get_watcher_config_from_env();
         
         if !watcher_config.enabled {
-            return Err(Error::ConfigWatchError("설정 파일 감시 기능이 비활성화되었습니다".to_string()));
+            return Err(Error::ConfigWatchError("Config file watching is disabled".to_string()));
         }
 
-        // 파일 존재 확인
+        // Check if file exists
         if !watcher_config.config_path.exists() {
-            return Err(Error::ConfigError(format!("설정 파일을 찾을 수 없습니다: {}", watcher_config.config_path.display())));
+            return Err(Error::ConfigError(format!("Config file not found: {}", watcher_config.config_path.display())));
         }
         
-        info!("설정 파일 감시 시작");
+        info!("Starting config file watcher");
         
-        // 파일 감시자 초기화
+        // Initialize file watcher
         let mut watcher = Self::initialize_watcher(&watcher_config).await?;
         
-        // 설정 변경 알림 채널
+        // Config change notification channel
         let (notify_tx, notify_rx) = tokio::sync::mpsc::channel(1);
         
-        // 공유 설정 및 미들웨어 매니저 생성
+        // Create shared config and middleware manager
         let shared_config = Arc::new(RwLock::new(self.config.clone()));
         let shared_middleware_manager = Arc::new(RwLock::new(self.middleware_manager.clone()));
         
-        // 공유 설정을 ServerManager에 저장
+        // Store shared config in ServerManager
         self.shared_config = Some(shared_config.clone());
         self.shared_middleware_manager = Some(shared_middleware_manager.clone());
 
-        // ConfigWatcher를 클론해서 사용하지 않고, 소유권을 이전함
+        // Transfer ownership of ConfigWatcher
         self.config_watcher = None;
         
-        // 설정 감시 태스크 시작
+        // Start config watching task
         let handle = tokio::spawn(async move {
-            info!("설정 감시 태스크 시작됨 (디바운싱 타임아웃: {}ms, 폴링 간격: {}ms)", 
+            info!("Config watch task started (debounce timeout: {}ms, polling interval: {}ms)", 
                   watcher_config.debounce_timeout.as_millis(), 
                   watcher_config.poll_interval.as_millis());
             
             while let Some(events) = watcher.watch_debounced(watcher_config.debounce_timeout).await {
-                // 이벤트 로깅
+                // Log events
                 ServerManager::log_config_events(&events);
                 
-                // 이벤트 분류
-                let (paths_to_process, has_deleted) = ServerManager::classify_events(events);
+                // Classify events
+                let (files_to_process, has_deleted_files) = ServerManager::classify_events(events);
                 
-                if has_deleted {
-                    warn!("일부 설정 파일이 삭제되었습니다. 현재 이런 경우 특별한 처리는 하지 않습니다.");
+                if has_deleted_files {
+                    warn!("Some config files were deleted. No special handling implemented for this case.");
                 }
                 
-                // 설정 파일 처리
-                if !paths_to_process.is_empty() {
-                    // 설정 파일 처리 - 데이터 흐름 문제 해결
+                // Process config files
+                if !files_to_process.is_empty() {
+                    // Process config files and handle data flow
                     let should_notify = match ServerManager::process_config_files(
-                        paths_to_process, 
+                        files_to_process, 
                         shared_config.clone(), 
                         shared_middleware_manager.clone()
                     ).await {
                         Ok(updated) => updated,
                         Err(e) => {
-                            error!("설정 파일 처리 실패: {}", e.to_string());
+                            error!("Failed to process config file: {}", e.to_string());
                             false
                         }
                     };
                     
-                    // 비동기 호출을 데이터 처리와 분리
+                    // Separate data processing from async call
                     if should_notify {
                         if let Err(e) = ServerManager::send_config_update_notification(&notify_tx, true).await {
-                            error!("알림 전송 실패: {}", e.to_string());
+                            error!("Failed to send notification: {}", e.to_string());
                         }
                     }
                 }
             }
             
-            info!("설정 감시 태스크 종료");
+            info!("Config watch task terminated");
         });
         
         Ok((notify_rx, handle))
     }
 
-    /// 서버 실행
+    /// Run server
     pub async fn run(mut self) -> Result<()> {
-        // 설정 파일 감시 시작
+        // Start config file watcher
         if let Err(e) = self.start_config_watcher().await {
-            error!("설정 파일 감시 시작 실패: {}", e);
+            error!("Failed to start config watcher: {}", e);
         }
 
-        // Docker 이벤트 구독 설정
+        // Subscribe to Docker events
         let mut event_rx = self.docker_manager.subscribe_to_events().await;
         let event_handler = DockerEventHandler::new(
             self.routing_table.clone(),
             Arc::new(RwLock::new(self.middleware_manager.clone())),
         );
 
-        // Docker 이벤트 처리 태스크 시작
+        // Start Docker event handling task
         tokio::spawn(async move {
             while let Some(event) = event_rx.recv().await {
                 if let Err(e) = event_handler.handle_event(event).await {
-                    error!("이벤트 처리 오류: {}", e);
+                    error!("Event handling error: {}", e);
                 }
             }
-            warn!("Docker 이벤트 스트림 종료");
+            warn!("Docker event stream ended");
         });
 
-        // 리스너 생성
+        // Create listener
         let listener = ServerListener::new(&self.config).await?;
         
-        // RequestHandler 생성
+        // Create RequestHandler
         let handler = Arc::new(RequestHandler::new(
             self.routing_table,
             self.middleware_manager,
         ));
 
-        // 리스너 실행
+        // Run listener
         listener.run(handler).await
     }
 } 
