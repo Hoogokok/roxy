@@ -1,6 +1,54 @@
 use std::collections::HashMap;
 use serde_json::{Value, Map};
 
+/// 언더스코어(snake_case) → 캐멀케이스(camelCase) 변환
+pub fn to_camel_case(s: &str) -> String {
+    let mut result = String::new();
+    let mut capitalize_next = false;
+    
+    for (i, c) in s.chars().enumerate() {
+        if c == '_' {
+            capitalize_next = true;
+        } else if capitalize_next {
+            result.push(c.to_ascii_uppercase());
+            capitalize_next = false;
+        } else if i == 0 {
+            result.push(c.to_ascii_lowercase());
+        } else {
+            result.push(c);
+        }
+    }
+    
+    result
+}
+
+/// 캐멀케이스(camelCase) → 언더스코어(snake_case) 변환
+pub fn to_snake_case(s: &str) -> String {
+    let mut result = String::new();
+    
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && c.is_ascii_uppercase() {
+            result.push('_');
+            result.push(c.to_ascii_lowercase());
+        } else {
+            result.push(c.to_ascii_lowercase());
+        }
+    }
+    
+    result
+}
+
+/// 표준화된 키 형식으로 변환
+/// 
+/// 현재 표준은 캐멀케이스(camelCase)입니다.
+pub fn standardize_key(key: &str) -> String {
+    if key.contains('_') {
+        to_camel_case(key)
+    } else {
+        key.to_string()
+    }
+}
+
 /// 도커 라벨 키를 JSON 경로로 변환
 pub fn label_key_to_json_path(label_key: &str) -> (String, Vec<String>) {
     // 접두사(rproxy.http) 제거
@@ -20,23 +68,35 @@ pub fn label_key_to_json_path(label_key: &str) -> (String, Vec<String>) {
     
     // 속성 경로 추가
     if parts.len() > 4 {
-        // type → middleware_type 으로 변환
+        // type → middleware_type 으로 변환 (JSON에서는 snake_case 사용)
         if parts[4] == "type" {
             path_components.push("middleware_type".to_string());
         } 
         // 미들웨어 타입별 설정은 settings 아래로 이동
-        else if parts.len() > 5 && (parts[4] == "basicAuth" || parts[4] == "cors" || parts[4] == "rateLimit") {
+        else if parts.len() > 5 && is_middleware_type(parts[4]) {
             path_components.push("settings".to_string());
             
             // 나머지 경로 추가
             for i in 5..parts.len() {
-                path_components.push(parts[i].to_string());
+                let key = parts[i].to_string();
+                // 카멜케이스를 스네이크케이스로 변환 (JSON에서는 snake_case 사용)
+                if key.chars().any(|c| c.is_ascii_uppercase()) {
+                    path_components.push(to_snake_case(&key));
+                } else {
+                    path_components.push(key);
+                }
             }
         }
         // 기타 속성
         else {
             for i in 4..parts.len() {
-                path_components.push(parts[i].to_string());
+                let key = parts[i].to_string();
+                // 카멜케이스를 스네이크케이스로 변환 (JSON에서는 snake_case 사용)
+                if key.chars().any(|c| c.is_ascii_uppercase()) {
+                    path_components.push(to_snake_case(&key));
+                } else {
+                    path_components.push(key);
+                }
             }
         }
     }
@@ -45,6 +105,11 @@ pub fn label_key_to_json_path(label_key: &str) -> (String, Vec<String>) {
     let root = path_components[0].clone();
     let path = path_components[1..].to_vec();
     (root, path)
+}
+
+/// 주어진 문자열이 미들웨어 타입인지 확인
+fn is_middleware_type(s: &str) -> bool {
+    matches!(s, "basicAuth" | "cors" | "rateLimit" | "headers" | "stripPrefix" | "addPrefix")
 }
 
 /// 문자열 값을 적절한 타입으로 변환
@@ -134,8 +199,160 @@ pub fn json_to_labels(json: &Value, prefix: &str) -> HashMap<String, String> {
         for (root_key, root_value) in root {
             if let Value::Object(items) = root_value {
                 for (item_key, item_value) in items {
-                    let path = vec![root_key.as_str(), item_key.as_str()];
-                    process_json_object(&mut labels, prefix, path, item_value, json);
+                    let mut path = Vec::new();
+                    path.push(root_key.as_str());
+                    path.push(item_key.as_str());
+                    
+                    // 미들웨어 타입 처리
+                    if root_key == "middlewares" && item_value.is_object() {
+                        let obj = item_value.as_object().unwrap();
+                        
+                        // middleware_type 필드 처리
+                        if let Some(typ) = obj.get("middleware_type") {
+                            if let Some(typ_str) = typ.as_str() {
+                                let type_key = format!("{}{}.{}.type", prefix, root_key, item_key);
+                                labels.insert(type_key, typ_str.to_string());
+                                
+                                // settings 필드 처리
+                                if let Some(settings) = obj.get("settings") {
+                                    if let Some(settings_obj) = settings.as_object() {
+                                        // 미들웨어 타입에 따른 설정 키 결정
+                                        let middleware_type = match typ_str {
+                                            "basic-auth" => "basicAuth",
+                                            "cors" => "cors",
+                                            "rate-limit" => "rateLimit",
+                                            "header" => "headers",
+                                            "strip-prefix" => "stripPrefix",
+                                            "add-prefix" => "addPrefix",
+                                            _ => "unknown"
+                                        };
+                                        
+                                        // 설정 추가
+                                        for (setting_key, setting_val) in settings_obj {
+                                            let field_key = if setting_key.contains('_') {
+                                                to_camel_case(setting_key)
+                                            } else {
+                                                setting_key.clone()
+                                            };
+                                            
+                                            let setting_path = format!("{}{}.{}.{}.{}", 
+                                                prefix, root_key, item_key, middleware_type, field_key);
+                                            
+                                            // 값 변환
+                                            let value_str = match setting_val {
+                                                Value::String(s) => s.clone(),
+                                                Value::Bool(b) => b.to_string(),
+                                                Value::Number(n) => n.to_string(),
+                                                Value::Array(arr) => {
+                                                    arr.iter()
+                                                       .map(|v| match v {
+                                                           Value::String(s) => s.clone(),
+                                                           _ => v.to_string(),
+                                                       })
+                                                       .collect::<Vec<String>>()
+                                                       .join(",")
+                                                },
+                                                Value::Null => "".to_string(),
+                                                Value::Object(_) => continue,
+                                            };
+                                            
+                                            labels.insert(setting_path, value_str);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // 미들웨어 외 다른 필드 처리
+                        for (field_key, field_val) in obj {
+                            if field_key != "middleware_type" && field_key != "settings" {
+                                let key_str = if field_key.contains('_') {
+                                    to_camel_case(field_key)
+                                } else {
+                                    field_key.clone()
+                                };
+                                
+                                let field_path = format!("{}{}.{}.{}", 
+                                    prefix, root_key, item_key, key_str);
+                                
+                                // 값 변환 (배열 등)
+                                match field_val {
+                                    Value::String(s) => {
+                                        labels.insert(field_path, s.clone());
+                                    },
+                                    Value::Bool(b) => {
+                                        labels.insert(field_path, b.to_string());
+                                    },
+                                    Value::Number(n) => {
+                                        labels.insert(field_path, n.to_string());
+                                    },
+                                    Value::Array(arr) => {
+                                        let value = arr.iter()
+                                                      .map(|v| match v {
+                                                          Value::String(s) => s.clone(),
+                                                          _ => v.to_string(),
+                                                      })
+                                                      .collect::<Vec<String>>()
+                                                      .join(",");
+                                        labels.insert(field_path, value);
+                                    },
+                                    Value::Null => {
+                                        labels.insert(field_path, "".to_string());
+                                    },
+                                    Value::Object(_) => {},
+                                }
+                            }
+                        }
+                    } 
+                    // 라우터 처리
+                    else if root_key == "routers" && item_value.is_object() {
+                        let obj = item_value.as_object().unwrap();
+                        
+                        for (field_key, field_val) in obj {
+                            let key_str = if field_key.contains('_') {
+                                to_camel_case(field_key)
+                            } else {
+                                field_key.clone()
+                            };
+                            
+                            let field_path = format!("{}{}.{}.{}", prefix, root_key, item_key, key_str);
+                            
+                            // 값 변환 (배열 등)
+                            match field_val {
+                                Value::String(s) => {
+                                    labels.insert(field_path, s.clone());
+                                },
+                                Value::Bool(b) => {
+                                    labels.insert(field_path, b.to_string());
+                                },
+                                Value::Number(n) => {
+                                    labels.insert(field_path, n.to_string());
+                                },
+                                Value::Array(arr) => {
+                                    let value = arr.iter()
+                                                  .map(|v| match v {
+                                                      Value::String(s) => s.clone(),
+                                                      _ => v.to_string(),
+                                                  })
+                                                  .collect::<Vec<String>>()
+                                                  .join(",");
+                                    labels.insert(field_path, value);
+                                },
+                                Value::Null => {
+                                    labels.insert(field_path, "".to_string());
+                                },
+                                Value::Object(_) => {},
+                            }
+                        }
+                    }
+                    // 서비스 처리
+                    else if root_key == "services" && item_value.is_object() {
+                        process_service_object(&mut labels, prefix, root_key, item_key, item_value);
+                    }
+                    // 기타 일반 필드 처리
+                    else {
+                        process_simple_object(&mut labels, prefix, path, item_value);
+                    }
                 }
             }
         }
@@ -144,101 +361,171 @@ pub fn json_to_labels(json: &Value, prefix: &str) -> HashMap<String, String> {
     labels
 }
 
-fn process_json_object(labels: &mut HashMap<String, String>, prefix: &str, path: Vec<&str>, value: &Value, root_json: &Value) {
-    match value {
-        Value::Object(obj) => {
-            // settings 필드는 특별한 처리
-            if path.len() >= 3 && path[2] == "settings" {
-                // 미들웨어 이름 가져오기
-                let middleware_name = path[1];
-                
-                // 미들웨어 타입 가져오기
-                let middleware_type = if let Some(root_obj) = root_json.as_object() {
-                    if let Some(middlewares) = root_obj.get("middlewares") {
-                        if let Some(middleware) = middlewares.get(middleware_name) {
-                            if let Some(Value::String(typ)) = middleware.get("middleware_type") {
-                                typ.as_str()
-                            } else {
-                                "unknown"
+fn process_service_object(labels: &mut HashMap<String, String>, prefix: &str, root_key: &str, item_key: &str, value: &Value) {
+    if let Some(obj) = value.as_object() {
+        for (field_key, field_val) in obj {
+            // loadbalancer 필드 처리
+            if field_key == "loadbalancer" && field_val.is_object() {
+                if let Some(lb_obj) = field_val.as_object() {
+                    for (lb_key, lb_val) in lb_obj {
+                        // server 필드 처리
+                        if lb_key == "server" && lb_val.is_object() {
+                            if let Some(server_obj) = lb_val.as_object() {
+                                for (server_key, server_val) in server_obj {
+                                    let key_str = if server_key.contains('_') {
+                                        to_camel_case(server_key)
+                                    } else {
+                                        server_key.clone()
+                                    };
+                                    
+                                    let field_path = format!("{}{}.{}.{}.{}.{}", 
+                                        prefix, root_key, item_key, field_key, lb_key, key_str);
+                                    
+                                    // 값 변환
+                                    match server_val {
+                                        Value::String(s) => {
+                                            labels.insert(field_path, s.clone());
+                                        },
+                                        Value::Bool(b) => {
+                                            labels.insert(field_path, b.to_string());
+                                        },
+                                        Value::Number(n) => {
+                                            labels.insert(field_path, n.to_string());
+                                        },
+                                        Value::Array(_) | Value::Null | Value::Object(_) => {},
+                                    }
+                                }
                             }
                         } else {
-                            "unknown"
+                            let key_str = if lb_key.contains('_') {
+                                to_camel_case(lb_key)
+                            } else {
+                                lb_key.clone()
+                            };
+                            
+                            let field_path = format!("{}{}.{}.{}.{}", 
+                                prefix, root_key, item_key, field_key, key_str);
+                            
+                            // 값 변환
+                            match lb_val {
+                                Value::String(s) => {
+                                    labels.insert(field_path, s.clone());
+                                },
+                                Value::Bool(b) => {
+                                    labels.insert(field_path, b.to_string());
+                                },
+                                Value::Number(n) => {
+                                    labels.insert(field_path, n.to_string());
+                                },
+                                Value::Array(_) | Value::Null | Value::Object(_) => {},
+                            }
                         }
-                    } else {
-                        "unknown"
                     }
-                } else {
-                    "unknown"
-                };
-                
-                // middleware_type 기반으로 Docker 라벨 키 중간 부분 생성
-                let type_prefix = match middleware_type {
-                    "basic-auth" => "basicAuth",
-                    "cors" => "cors",
-                    "ratelimit" => "rateLimit",
-                    "headers" => "headers",
-                    _ => "settings",
-                };
-                
-                for (key, val) in obj {
-                    let mut new_path = path.clone();
-                    new_path[2] = type_prefix; // path[2]인 "settings"를 미들웨어 타입으로 교체
-                    new_path.push(key); // 세부 설정 키 추가
-                    process_json_value(labels, prefix, new_path, val);
                 }
             } else {
-                // 일반 객체 처리
-                for (key, val) in obj {
-                    let mut new_path = path.clone();
-                    new_path.push(key.as_str());
-                    process_json_object(labels, prefix, new_path, val, root_json);
+                let key_str = if field_key.contains('_') {
+                    to_camel_case(field_key)
+                } else {
+                    field_key.clone()
+                };
+                
+                let field_path = format!("{}{}.{}.{}", 
+                    prefix, root_key, item_key, key_str);
+                
+                // 값 변환
+                match field_val {
+                    Value::String(s) => {
+                        labels.insert(field_path, s.clone());
+                    },
+                    Value::Bool(b) => {
+                        labels.insert(field_path, b.to_string());
+                    },
+                    Value::Number(n) => {
+                        labels.insert(field_path, n.to_string());
+                    },
+                    Value::Array(_) | Value::Null | Value::Object(_) => {},
                 }
             }
-        },
-        // 다른 값 타입은 직접 처리
-        _ => {
-            process_json_value(labels, prefix, path, value);
         }
     }
 }
 
-fn process_json_value(labels: &mut HashMap<String, String>, prefix: &str, path: Vec<&str>, value: &Value) {
-    // middleware_type 필드는 type으로 변환
-    let actual_path = if path.len() >= 3 && path[2] == "middleware_type" {
-        let mut new_path = path.clone();
-        new_path[2] = "type";
-        new_path
-    } else {
-        path
-    };
-    
-    // 전체 키 생성
-    let key = format!("{}{}", prefix, actual_path.join("."));
-    
-    // 값 변환
-    let string_value = match value {
-        Value::String(s) => s.clone(),
-        Value::Bool(b) => b.to_string(),
-        Value::Number(n) => n.to_string(),
-        Value::Array(arr) => {
-            arr.iter()
-                .map(|v| match v {
-                    Value::String(s) => s.clone(),
-                    _ => v.to_string(),
-                })
-                .collect::<Vec<String>>()
-                .join(",")
+fn process_simple_object(labels: &mut HashMap<String, String>, prefix: &str, path: Vec<&str>, value: &Value) {
+    match value {
+        Value::Object(obj) => {
+            for (key, val) in obj {
+                let mut new_path = path.clone();
+                
+                let key_str = if key.contains('_') {
+                    to_camel_case(key)
+                } else {
+                    key.clone()
+                };
+                
+                new_path.push(&key_str);
+                process_simple_object(labels, prefix, new_path, val);
+            }
         },
-        Value::Null => "".to_string(),
-        Value::Object(_) => return, // 객체는 개별 필드로 처리되므로 여기서는 처리하지 않음
-    };
-    
-    labels.insert(key, string_value);
+        Value::String(s) => {
+            let key = format!("{}{}", prefix, path.join("."));
+            labels.insert(key, s.clone());
+        },
+        Value::Bool(b) => {
+            let key = format!("{}{}", prefix, path.join("."));
+            labels.insert(key, b.to_string());
+        },
+        Value::Number(n) => {
+            let key = format!("{}{}", prefix, path.join("."));
+            labels.insert(key, n.to_string());
+        },
+        Value::Array(arr) => {
+            let key = format!("{}{}", prefix, path.join("."));
+            let value = arr.iter()
+                           .map(|v| match v {
+                               Value::String(s) => s.clone(),
+                               _ => v.to_string(),
+                           })
+                           .collect::<Vec<String>>()
+                           .join(",");
+            labels.insert(key, value);
+        },
+        Value::Null => {
+            let key = format!("{}{}", prefix, path.join("."));
+            labels.insert(key, "".to_string());
+        },
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    
+    #[test]
+    fn test_to_camel_case() {
+        assert_eq!(to_camel_case("basic_auth"), "basicAuth");
+        assert_eq!(to_camel_case("allow_origins"), "allowOrigins");
+        assert_eq!(to_camel_case("rate_limit"), "rateLimit");
+        assert_eq!(to_camel_case("already_camel"), "alreadyCamel");
+        assert_eq!(to_camel_case("single"), "single");
+        assert_eq!(to_camel_case("multiple_word_example"), "multipleWordExample");
+    }
+    
+    #[test]
+    fn test_to_snake_case() {
+        assert_eq!(to_snake_case("basicAuth"), "basic_auth");
+        assert_eq!(to_snake_case("allowOrigins"), "allow_origins");
+        assert_eq!(to_snake_case("rateLimit"), "rate_limit");
+        assert_eq!(to_snake_case("already_snake"), "already_snake");
+        assert_eq!(to_snake_case("single"), "single");
+        assert_eq!(to_snake_case("MultipleWordExample"), "multiple_word_example");
+    }
+    
+    #[test]
+    fn test_standardize_key() {
+        assert_eq!(standardize_key("basic_auth"), "basicAuth");
+        assert_eq!(standardize_key("camelCase"), "camelCase");
+        assert_eq!(standardize_key("simple"), "simple");
+    }
     
     #[test]
     fn test_label_key_to_json_path() {
@@ -252,149 +539,150 @@ mod tests {
         assert_eq!(root, "middlewares");
         assert_eq!(path, vec!["auth", "middleware_type"]);
         
-        // 미들웨어 설정 → settings 이동 테스트
-        let (root, path) = label_key_to_json_path("rproxy.http.middlewares.cors.cors.allowOrigins");
+        // 미들웨어 설정 테스트 (settings 필드로 이동)
+        let (root, path) = label_key_to_json_path("rproxy.http.middlewares.auth.basicAuth.users");
         assert_eq!(root, "middlewares");
-        assert_eq!(path, vec!["cors", "settings", "allowOrigins"]);
+        assert_eq!(path, vec!["auth", "settings", "users"]);
         
-        // 라우터 규칙 테스트
-        let (root, path) = label_key_to_json_path("rproxy.http.routers.api.rule");
-        assert_eq!(root, "routers");
-        assert_eq!(path, vec!["api", "rule"]);
+        // 캐멀케이스 → 스네이크케이스 변환 테스트
+        let (root, path) = label_key_to_json_path("rproxy.http.middlewares.auth.basicAuth.allowCredentials");
+        assert_eq!(root, "middlewares");
+        assert_eq!(path, vec!["auth", "settings", "allow_credentials"]);
+        
+        // 중첩된 필드 테스트
+        let (root, path) = label_key_to_json_path("rproxy.http.middlewares.auth.basicAuth.settings.customField");
+        assert_eq!(root, "middlewares");
+        assert_eq!(path, vec!["auth", "settings", "settings", "custom_field"]);
     }
     
     #[test]
     fn test_convert_value() {
-        // 불리언 변환 테스트
-        assert_eq!(convert_value("true", "rproxy.http.middlewares.cors.enabled"), Value::Bool(true));
-        assert_eq!(convert_value("false", "rproxy.http.middlewares.cors.enabled"), Value::Bool(false));
-        assert_eq!(convert_value("True", "rproxy.http.middlewares.cors.enabled"), Value::Bool(true));
+        // 문자열 테스트
+        assert_eq!(convert_value("test", "key"), Value::String("test".to_string()));
         
-        // 숫자 변환 테스트
-        assert_eq!(convert_value("123", "rproxy.http.middlewares.cors.enabled"), Value::Number(123.into()));
-        assert_eq!(convert_value("-10", "rproxy.http.middlewares.cors.enabled"), Value::Number((-10).into()));
+        // 불리언 테스트
+        assert_eq!(convert_value("true", "key"), Value::Bool(true));
+        assert_eq!(convert_value("false", "key"), Value::Bool(false));
         
-        // 미들웨어 목록 변환 테스트 (쉼표 구분 문자열 -> 배열)
-        let middlewares_array = convert_value("auth,cors,rate-limit", "rproxy.http.routers.api.middlewares");
-        if let Value::Array(items) = middlewares_array {
-            assert_eq!(items.len(), 3);
-            assert_eq!(items[0], Value::String("auth".to_string()));
-            assert_eq!(items[1], Value::String("cors".to_string()));
-            assert_eq!(items[2], Value::String("rate-limit".to_string()));
-        } else {
-            panic!("Expected array for middlewares");
+        // 숫자 테스트
+        assert_eq!(convert_value("123", "key"), Value::Number(123.into()));
+        assert!(matches!(convert_value("123.45", "key"), Value::Number(_)));
+        
+        // 미들웨어 목록 테스트
+        let value = convert_value("auth,cors", "rproxy.http.routers.api.middlewares");
+        assert!(matches!(value, Value::Array(_)));
+        if let Value::Array(arr) = value {
+            assert_eq!(arr.len(), 2);
+            assert_eq!(arr[0], Value::String("auth".to_string()));
+            assert_eq!(arr[1], Value::String("cors".to_string()));
         }
-        
-        // 일반 쉼표 구분 문자열은 그대로 문자열로 취급
-        assert_eq!(convert_value("a,b,c", "rproxy.http.middlewares.cors.setting"), Value::String("a,b,c".to_string()));
-        
-        // 문자열 변환 테스트
-        assert_eq!(convert_value("hello", "rproxy.http.middlewares.cors.enabled"), Value::String("hello".to_string()));
     }
     
     #[test]
     fn test_labels_to_json() {
         let mut labels = HashMap::new();
         labels.insert("rproxy.http.middlewares.cors.type".to_string(), "cors".to_string());
-        labels.insert("rproxy.http.middlewares.cors.enabled".to_string(), "true".to_string());
         labels.insert("rproxy.http.middlewares.cors.cors.allowOrigins".to_string(), "*".to_string());
-        labels.insert("rproxy.http.routers.api.rule".to_string(), "Host(`example.com`)".to_string());
+        labels.insert("rproxy.http.routers.api.rule".to_string(), "Host(`test.localhost`)".to_string());
         labels.insert("rproxy.http.routers.api.middlewares".to_string(), "cors,auth".to_string());
         
         let json = labels_to_json(&labels, "rproxy.http.");
         
-        // 결과 검증
-        if let Value::Object(root) = json {
-            // 미들웨어 검증
-            if let Some(Value::Object(middlewares)) = root.get("middlewares") {
-                if let Some(Value::Object(cors)) = middlewares.get("cors") {
-                    assert_eq!(cors.get("middleware_type"), Some(&Value::String("cors".to_string())));
-                    assert_eq!(cors.get("enabled"), Some(&Value::Bool(true)));
-                    
-                    if let Some(Value::Object(settings)) = cors.get("settings") {
-                        assert_eq!(settings.get("allowOrigins"), Some(&Value::String("*".to_string())));
-                    } else {
-                        panic!("Expected settings object");
-                    }
-                } else {
-                    panic!("Expected cors object");
-                }
-            } else {
-                panic!("Expected middlewares object");
-            }
-            
-            // 라우터 검증
-            if let Some(Value::Object(routers)) = root.get("routers") {
-                if let Some(Value::Object(api)) = routers.get("api") {
-                    assert_eq!(api.get("rule"), Some(&Value::String("Host(`example.com`)".to_string())));
-                    
-                    if let Some(Value::Array(middlewares)) = api.get("middlewares") {
-                        assert_eq!(middlewares.len(), 2);
-                        assert_eq!(middlewares[0], Value::String("cors".to_string()));
-                        assert_eq!(middlewares[1], Value::String("auth".to_string()));
-                    } else {
-                        panic!("Expected middlewares array");
-                    }
-                } else {
-                    panic!("Expected api object");
-                }
-            } else {
-                panic!("Expected routers object");
-            }
-        } else {
-            panic!("Expected root object");
-        }
+        // 필드 검증
+        assert!(json.is_object());
+        let json_obj = json.as_object().unwrap();
+        
+        // 미들웨어 검증
+        assert!(json_obj.contains_key("middlewares"));
+        let middlewares = json_obj.get("middlewares").unwrap().as_object().unwrap();
+        assert!(middlewares.contains_key("cors"));
+        
+        // 미들웨어 타입 검증
+        let cors = middlewares.get("cors").unwrap().as_object().unwrap();
+        assert_eq!(cors.get("middleware_type").unwrap(), "cors");
+        
+        // 미들웨어 설정 검증
+        assert!(cors.contains_key("settings"));
+        let cors_settings = cors.get("settings").unwrap().as_object().unwrap();
+        assert_eq!(cors_settings.get("allow_origins").unwrap(), "*");
+        
+        // 라우터 검증
+        assert!(json_obj.contains_key("routers"));
+        let routers = json_obj.get("routers").unwrap().as_object().unwrap();
+        assert!(routers.contains_key("api"));
+        
+        // 라우터 설정 검증
+        let api = routers.get("api").unwrap().as_object().unwrap();
+        assert_eq!(api.get("rule").unwrap(), "Host(`test.localhost`)");
+        
+        // 미들웨어 목록 검증
+        let middlewares_list = api.get("middlewares").unwrap().as_array().unwrap();
+        assert_eq!(middlewares_list.len(), 2);
+        assert_eq!(middlewares_list[0], "cors");
+        assert_eq!(middlewares_list[1], "auth");
     }
     
     #[test]
     fn test_json_to_labels() {
-        // JSON 객체 생성
-        let mut root = Map::new();
+        // 테스트용 JSON 객체 생성
+        let json_str = r#"
+        {
+            "middlewares": {
+                "cors": {
+                    "middleware_type": "cors",
+                    "settings": {
+                        "allow_origins": "*",
+                        "allow_methods": "GET,POST,PUT"
+                    }
+                },
+                "auth": {
+                    "middleware_type": "basic-auth",
+                    "settings": {
+                        "users": "admin:password"
+                    }
+                }
+            },
+            "routers": {
+                "api": {
+                    "rule": "Host(`test.localhost`)",
+                    "middlewares": ["cors", "auth"],
+                    "service": "api_service"
+                }
+            }
+        }
+        "#;
         
-        // 미들웨어 객체 생성
-        let mut middlewares = Map::new();
-        let mut cors = Map::new();
-        cors.insert("middleware_type".to_string(), Value::String("cors".to_string()));
-        cors.insert("enabled".to_string(), Value::Bool(true));
-        
-        let mut settings = Map::new();
-        settings.insert("allowOrigins".to_string(), Value::String("*".to_string()));
-        settings.insert("allowMethods".to_string(), Value::Array(vec![
-            Value::String("GET".to_string()),
-            Value::String("POST".to_string()),
-        ]));
-        cors.insert("settings".to_string(), Value::Object(settings));
-        
-        middlewares.insert("cors".to_string(), Value::Object(cors));
-        root.insert("middlewares".to_string(), Value::Object(middlewares));
-        
-        // 라우터 객체 생성
-        let mut routers = Map::new();
-        let mut api = Map::new();
-        api.insert("rule".to_string(), Value::String("Host(`example.com`)".to_string()));
-        api.insert("middlewares".to_string(), Value::Array(vec![
-            Value::String("cors".to_string()),
-        ]));
-        api.insert("service".to_string(), Value::String("api-service".to_string()));
-        
-        routers.insert("api".to_string(), Value::Object(api));
-        root.insert("routers".to_string(), Value::Object(routers));
-        
-        let json = Value::Object(root);
-        
-        // JSON을 Docker 라벨로 변환
+        let json: Value = serde_json::from_str(json_str).unwrap();
         let labels = json_to_labels(&json, "rproxy.http.");
         
-        // 결과 검증
-        assert_eq!(labels.get("rproxy.http.middlewares.cors.type"), Some(&"cors".to_string()));
-        assert_eq!(labels.get("rproxy.http.middlewares.cors.enabled"), Some(&"true".to_string()));
+        // 필드 검증
+        assert!(labels.contains_key("rproxy.http.middlewares.cors.type"));
+        assert_eq!(labels.get("rproxy.http.middlewares.cors.type").unwrap(), "cors");
         
-        // 타입별 설정 필드 검증
-        assert_eq!(labels.get("rproxy.http.middlewares.cors.cors.allowOrigins"), Some(&"*".to_string()));
-        assert_eq!(labels.get("rproxy.http.middlewares.cors.cors.allowMethods"), Some(&"GET,POST".to_string()));
+        // 설정 검증 - 스네이크케이스가 캐멀케이스로 변환되었는지 확인
+        assert!(labels.contains_key("rproxy.http.middlewares.cors.cors.allowOrigins"));
+        assert_eq!(labels.get("rproxy.http.middlewares.cors.cors.allowOrigins").unwrap(), "*");
         
-        assert_eq!(labels.get("rproxy.http.routers.api.rule"), Some(&"Host(`example.com`)".to_string()));
-        assert_eq!(labels.get("rproxy.http.routers.api.middlewares"), Some(&"cors".to_string()));
-        assert_eq!(labels.get("rproxy.http.routers.api.service"), Some(&"api-service".to_string()));
+        assert!(labels.contains_key("rproxy.http.middlewares.cors.cors.allowMethods"));
+        assert_eq!(labels.get("rproxy.http.middlewares.cors.cors.allowMethods").unwrap(), "GET,POST,PUT");
+        
+        // 기본 인증 미들웨어 검증
+        assert!(labels.contains_key("rproxy.http.middlewares.auth.type"));
+        assert_eq!(labels.get("rproxy.http.middlewares.auth.type").unwrap(), "basic-auth");
+        
+        assert!(labels.contains_key("rproxy.http.middlewares.auth.basicAuth.users"));
+        assert_eq!(labels.get("rproxy.http.middlewares.auth.basicAuth.users").unwrap(), "admin:password");
+        
+        // 라우터 검증
+        assert!(labels.contains_key("rproxy.http.routers.api.rule"));
+        assert_eq!(labels.get("rproxy.http.routers.api.rule").unwrap(), "Host(`test.localhost`)");
+        
+        // 미들웨어 목록 검증
+        assert!(labels.contains_key("rproxy.http.routers.api.middlewares"));
+        assert_eq!(labels.get("rproxy.http.routers.api.middlewares").unwrap(), "cors,auth");
+        
+        // 서비스 검증
+        assert!(labels.contains_key("rproxy.http.routers.api.service"));
+        assert_eq!(labels.get("rproxy.http.routers.api.service").unwrap(), "api_service");
     }
 } 

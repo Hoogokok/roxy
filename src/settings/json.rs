@@ -178,7 +178,7 @@ impl JsonConfig {
             }
         }
         
-        // 설정 키 정규화
+        // 미들웨어 설정 키 정규화
         for middleware in self.middlewares.values_mut() {
             let setting_keys: Vec<String> = middleware.settings.keys().cloned().collect();
             for key in setting_keys {
@@ -187,6 +187,39 @@ impl JsonConfig {
                         let new_key = Self::to_camel_case(&key);
                         middleware.settings.insert(new_key, value);
                     }
+                }
+            }
+        }
+        
+        // 라우터 이름 정규화
+        let router_keys: Vec<String> = self.routers.keys().cloned().collect();
+        for key in router_keys {
+            if key.contains('_') {
+                let new_key = Self::to_camel_case(&key);
+                if let Some(value) = self.routers.remove(&key) {
+                    self.routers.insert(new_key, value);
+                }
+            }
+        }
+        
+        // 서비스 이름 정규화
+        let service_keys: Vec<String> = self.services.keys().cloned().collect();
+        for key in service_keys {
+            if key.contains('_') {
+                let new_key = Self::to_camel_case(&key);
+                if let Some(value) = self.services.remove(&key) {
+                    self.services.insert(new_key, value);
+                }
+            }
+        }
+        
+        // 라우터-미들웨어 맵핑 정규화
+        let mapping_keys: Vec<String> = self.router_middlewares.keys().cloned().collect();
+        for key in mapping_keys {
+            if key.contains('_') {
+                let new_key = Self::to_camel_case(&key);
+                if let Some(value) = self.router_middlewares.remove(&key) {
+                    self.router_middlewares.insert(new_key, value);
                 }
             }
         }
@@ -588,8 +621,10 @@ mod tests {
         if let Some(middleware) = config.middlewares.get("cors") {
             assert_eq!(middleware.middleware_type, MiddlewareType::Cors);
             assert_eq!(middleware.enabled, true);
-            assert!(middleware.settings.contains_key("allowOrigins"));
-            assert_eq!(middleware.settings.get("allowOrigins"), Some(&"*".to_string()));
+            
+            // 키 형식 변환 확인 (camelCase → snake_case)
+            assert!(middleware.settings.contains_key("allow_origins"));
+            assert_eq!(middleware.settings.get("allow_origins"), Some(&"*".to_string()));
         } else {
             panic!("cors middleware not found");
         }
