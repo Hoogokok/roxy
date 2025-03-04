@@ -91,12 +91,27 @@ impl ServerManager {
 
     /// 설정 파일 변경 감시 시작
     pub async fn start_config_watcher(&mut self) -> Result<(tokio::sync::mpsc::Receiver<()>, tokio::task::JoinHandle<()>)> {
-        // 환경 변수에서 설정 파일 경로 가져오기
+        // 환경 변수를 통해 감시 기능 활성화 여부 확인
+        let watch_enabled = match env::var("PROXY_CONFIG_WATCH_ENABLED") {
+            Ok(val) => val.to_lowercase() != "false",
+            Err(_) => true, // 기본적으로 활성화
+        };
+
+        if !watch_enabled {
+            return Err(Error::ConfigWatchError("설정 파일 감시 기능이 비활성화되었습니다".to_string()));
+        }
+
+        info!("설정 파일 감시 시작");
+        
+        // 환경변수에서 설정 파일 경로 가져오기
         let config_path = match env::var("PROXY_JSON_CONFIG") {
             Ok(path) => PathBuf::from(path),
             Err(_) => {
-                debug!("PROXY_JSON_CONFIG 환경 변수가 설정되지 않았습니다");
-                return Err(Error::ConfigError("설정 파일 경로가 지정되지 않았습니다".to_string()));
+                // 기본 경로 설정
+                let mut config_dir = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+                config_dir.push("config");
+                config_dir.push("config.json");
+                config_dir
             }
         };
         
@@ -105,11 +120,25 @@ impl ServerManager {
             return Err(Error::ConfigError(format!("설정 파일을 찾을 수 없습니다: {}", config_path.display())));
         }
         
+        // 디바운싱 타임아웃 설정 (환경 변수에서 가져옴)
+        let debounce_timeout_ms = match env::var("PROXY_CONFIG_WATCH_TIMEOUT") {
+            Ok(val) => val.parse::<u64>().unwrap_or(300),
+            Err(_) => 300, // 기본값 300ms
+        };
+        let debounce_timeout = std::time::Duration::from_millis(debounce_timeout_ms);
+        
+        // 폴링 간격 설정 (환경 변수에서 가져옴)
+        let poll_interval_ms = match env::var("PROXY_CONFIG_WATCH_INTERVAL") {
+            Ok(val) => val.parse::<u64>().unwrap_or(200),
+            Err(_) => 200, // 기본값 200ms
+        };
+        
         // 파일 감시 설정
         let mut watcher = ConfigWatcher::new();
         watcher.add_path(config_path.clone());
         
-        if let Err(e) = watcher.start().await {
+        // 환경 변수로 설정된 폴링 간격 적용
+        if let Err(e) = watcher.start_with_interval(std::time::Duration::from_millis(poll_interval_ms)).await {
             return Err(Error::ConfigWatchError(format!("파일 감시 시작 실패: {}", e)));
         }
         
@@ -129,128 +158,170 @@ impl ServerManager {
         
         // 설정 감시 태스크 시작
         let handle = tokio::spawn(async move {
-            debug!("설정 감시 태스크 시작됨");
+            info!("설정 감시 태스크 시작됨 (디바운싱 타임아웃: {}ms, 폴링 간격: {}ms)", 
+                  debounce_timeout_ms, poll_interval_ms);
             
-            while let Some(event) = watcher.watch().await {
-                debug!("설정 파일 이벤트 감지: {:?}", event);
+            while let Some(events) = watcher.watch_debounced(debounce_timeout).await {
+                info!("설정 파일 이벤트 감지: {} 개의 이벤트", events.len());
                 
-                match event {
-                    ConfigEvent::Created(path) | ConfigEvent::Modified(path) => {
-                        info!("설정 파일 변경됨: {}", path.display());
-                        
-                        // 파일 내용 직접 읽어서 확인
-                        match tokio::fs::read_to_string(&path).await {
-                            Ok(content) => {
-                                println!("파일 내용: {}", content);
+                // 이벤트 타입 로깅
+                for event in &events {
+                    match event {
+                        ConfigEvent::Created(path) => info!("설정 파일 생성됨: {}", path.display()),
+                        ConfigEvent::Modified(path) => info!("설정 파일 수정됨: {}", path.display()),
+                        ConfigEvent::Deleted(path) => warn!("설정 파일 삭제됨: {}", path.display()),
+                    }
+                }
+                
+                // 모든 경로와 파일 상태 추적
+                let mut paths_to_process = Vec::new();
+                let mut has_deleted = false;
+                
+                // 이벤트 분류 및 처리할 파일 목록 작성
+                for event in events {
+                    match event {
+                        ConfigEvent::Created(path) | ConfigEvent::Modified(path) => {
+                            if !paths_to_process.contains(&path) && path.exists() {
+                                paths_to_process.push(path);
                             }
-                            Err(e) => {
-                                println!("파일 읽기 오류: {}", e);
-                            }
+                        },
+                        ConfigEvent::Deleted(_) => {
+                            has_deleted = true;
                         }
+                    }
+                }
+                
+                // 삭제된 파일이 있는 경우 처리 (필요한 경우)
+                if has_deleted {
+                    warn!("일부 설정 파일이 삭제되었습니다. 현재 이런 경우 특별한 처리는 하지 않습니다.");
+                }
+                
+                // 변경된 파일이 있는 경우 처리
+                if !paths_to_process.is_empty() {
+                    let mut configs_updated = false;
+                    
+                    // 모든 변경된 파일에 대해 처리
+                    for path in paths_to_process {
+                        info!("설정 파일 처리 중: {}", path.display());
                         
-                        // JsonConfig 직접 로드
+                        // JsonConfig 로드
                         match JsonConfig::from_file(&path).await {
                             Ok(json_config) => {
-                                debug!("JSON 설정 로드됨");
-                                println!("새 JSON 설정 로드됨: {:?}", json_config);
+                                info!("JSON 설정 로드됨: {}", path.display());
                                 
                                 // 설정 ID 추출
                                 let config_id = json_config.get_id(&path);
                                 debug!("설정 ID: {}", config_id);
                                 
-                                // 공유 설정 업데이트
-                                let mut config_lock = shared_config.write().await;
+                                // 설정 유효성 검증
+                                if let Err(e) = json_config.validate() {
+                                    error!("설정 유효성 검증 실패: {}: {}", path.display(), e);
+                                    continue;
+                                }
                                 
-                                // 미들웨어 설정 업데이트
-                                for (name, middleware_config) in json_config.middlewares {
-                                    let full_name = if name.contains('.') {
-                                        name
-                                    } else {
-                                        format!("{}.{}", config_id, name)
+                                // 공유 설정 업데이트
+                                let mut config_updated = false;
+                                {
+                                    // 설정 백업 (롤백용)
+                                    let config_backup = {
+                                        let config_lock = shared_config.read().await;
+                                        config_lock.clone()
                                     };
                                     
-                                    println!("📢 미들웨어 업데이트: {}, 설정: {:?}", full_name, middleware_config.settings);
-                                    if let Some(settings) = &middleware_config.settings.get("users") {
-                                        println!("📢 미들웨어 users 설정 값: {}", settings);
-                                    }
+                                    let mut config_lock = shared_config.write().await;
                                     
-                                    // 업데이트 전 현재 값 확인 (특히 test1.auth 키를 주시)
-                                    if full_name == "test1.auth" {
-                                        if let Some(old_config) = config_lock.middleware.get(&full_name) {
-                                            if let Some(old_users) = old_config.settings.get("users") {
-                                                println!("업데이트 전 test1.auth 값: {}", old_users);
-                                            }
-                                        }
-                                    }
+                                    // 미들웨어 설정 업데이트 시도
+                                    let mut _update_success = true;
                                     
-                                    // 기존 설정 항목 제거 후 새 설정으로 교체
-                                    config_lock.middleware.remove(&full_name);
-                                    
-                                    // 미들웨어 설정 삽입 (full_name을 클론하여 사용)
-                                    let key_for_logging = full_name.clone();
-                                    println!("미들웨어 설정 삽입: {}", full_name);
-                                    config_lock.middleware.insert(full_name, middleware_config);
-                                    
-                                    // 업데이트 후 새 값 확인 (특히 test1.auth 키)
-                                    if key_for_logging == "test1.auth" {
-                                        if let Some(new_config) = config_lock.middleware.get(&key_for_logging) {
-                                            if let Some(new_users) = new_config.settings.get("users") {
-                                                println!("업데이트 후 test1.auth 값: {}", new_users);
-                                            }
-                                        }
-                                    }
-                                }
-                                
-                                debug!("공유 설정 업데이트 후 미들웨어 수: {}", config_lock.middleware.len());
-                                for (key, value) in &config_lock.middleware {
-                                    debug!("공유 설정 미들웨어: {}, 설정: {:?}", key, value.settings);
-                                }
-                                
-                                // 라우터-미들웨어 매핑 업데이트
-                                for (router_name, router_config) in json_config.routers {
-                                    if let Some(middlewares) = router_config.middlewares {
-                                        let full_name = if router_name.contains('.') {
-                                            router_name
+                                    // 미들웨어 설정 업데이트
+                                    for (name, middleware_config) in json_config.middlewares {
+                                        let full_name = if name.contains('.') {
+                                            name
                                         } else {
-                                            format!("{}.{}", config_id, router_name)
+                                            format!("{}.{}", config_id, name)
                                         };
                                         
-                                        config_lock.router_middlewares.insert(full_name, middlewares);
+                                        debug!("미들웨어 업데이트: {}, 설정: {:?}", full_name, middleware_config.settings);
+                                        if let Some(settings) = &middleware_config.settings.get("users") {
+                                            debug!("미들웨어 users 설정 값: {}", settings);
+                                        }
+                                        
+                                        // 기존 설정 항목 제거 후 새 설정으로 교체
+                                        config_lock.middleware.remove(&full_name);
+                                        config_lock.middleware.insert(full_name, middleware_config);
+                                        config_updated = true;
+                                    }
+                                    
+                                    // 라우터-미들웨어 매핑 업데이트
+                                    for (router_name, router_config) in json_config.routers {
+                                        if let Some(middlewares) = router_config.middlewares {
+                                            let full_name = if router_name.contains('.') {
+                                                router_name
+                                            } else {
+                                                format!("{}.{}", config_id, router_name)
+                                            };
+                                            
+                                            config_lock.router_middlewares.insert(full_name, middlewares);
+                                            config_updated = true;
+                                        }
+                                    }
+                                    
+                                    // 미들웨어 매니저 업데이트 시도
+                                    if config_updated {
+                                        // 새 설정으로 미들웨어 매니저 갱신 시도
+                                        let new_middleware_manager = MiddlewareManager::new(
+                                            &config_lock.middleware,
+                                            &config_lock.router_middlewares
+                                        );
+                                        
+                                        // 롤백 필요한지 검사 (실제 애플리케이션에서는 미들웨어 초기화 등에서 오류가 발생할 수 있음)
+                                        if let Err(e) = new_middleware_manager.validate() {
+                                            error!("미들웨어 매니저 업데이트 실패, 롤백 수행: {}", e);
+                                            
+                                            // 롤백: 백업에서 설정 복원
+                                            *config_lock = config_backup;
+                                            _update_success = false;
+                                        } else {
+                                            configs_updated = true;
+                                        }
                                     }
                                 }
                                 
-                                drop(config_lock);
-                                
-                                // 새 설정으로 미들웨어 매니저 갱신
-                                let config = shared_config.read().await;
-                                let mut middleware_lock = shared_middleware_manager.write().await;
-                                *middleware_lock = MiddlewareManager::new(
-                                    &config.middleware,
-                                    &config.router_middlewares
-                                );
-                                drop(middleware_lock);
-                                
-                                // 설정 변경 알림
-                                debug!("설정 변경 알림 전송 시작");
-                                match notify_tx.send(()).await {
-                                    Ok(_) => debug!("설정 변경 알림 전송 성공"),
-                                    Err(e) => error!("설정 변경 알림 전송 실패: {}", e),
+                                if config_updated && configs_updated {
+                                    // 새 설정으로 미들웨어 매니저 갱신
+                                    let config = shared_config.read().await;
+                                    let mut middleware_lock = shared_middleware_manager.write().await;
+                                    *middleware_lock = MiddlewareManager::new(
+                                        &config.middleware,
+                                        &config.router_middlewares
+                                    );
+                                    
+                                    debug!("미들웨어 매니저 업데이트 완료");
                                 }
-                                
-                                info!("설정 리로드 완료");
                             },
                             Err(e) => {
-                                error!("설정 파일 로드 실패: {}", e);
+                                error!("설정 파일 로드 실패: {}: {}", path.display(), e);
                             }
                         }
                     }
-                    ConfigEvent::Deleted(path) => {
-                        warn!("설정 파일 삭제됨: {}", path.display());
+                    
+                    // 설정이 하나라도 업데이트 되었으면 알림 전송
+                    if configs_updated {
+                        // 설정 변경 알림
+                        debug!("설정 변경 알림 전송 시작");
+                        match notify_tx.send(()).await {
+                            Ok(_) => debug!("설정 변경 알림 전송 성공"),
+                            Err(e) => error!("설정 변경 알림 전송 실패: {}", e),
+                        }
+                        
+                        info!("설정 리로드 완료");
+                    } else {
+                        debug!("유효한 설정 변경이 없어 알림을 전송하지 않습니다.");
                     }
                 }
             }
             
-            debug!("설정 감시 태스크 종료");
+            info!("설정 감시 태스크 종료");
         });
         
         Ok((notify_rx, handle))
@@ -259,84 +330,7 @@ impl ServerManager {
     /// 설정 변경 완료 대기
     pub async fn wait_for_config_update(&mut self, mut notify_rx: tokio::sync::mpsc::Receiver<()>) -> Result<()> {
         if let Some(_) = notify_rx.recv().await {
-            debug!("설정 변경 알림 수신됨");
-            
-            // ========== 파일 변경이 감지되지 않으므로 직접 파일 다시 읽기 ==========
-            println!("직접 설정 파일 다시 읽기");
-            
-            // 환경변수에서 설정 파일 경로 가져오기
-            if let Ok(config_path) = env::var("PROXY_JSON_CONFIG") {
-                let path = PathBuf::from(&config_path);
-                
-                // 파일 존재 확인
-                if !path.exists() {
-                    println!("설정 파일이 존재하지 않습니다: {}", path.display());
-                } else {
-                    // 파일 내용 확인
-                    match tokio::fs::read_to_string(&path).await {
-                        Ok(content) => {
-                            println!("현재 설정 파일 내용: {}", content);
-                            
-                            // 파일에서 JSON 설정 다시 로드
-                            match JsonConfig::from_file(&path).await {
-                                Ok(json_config) => {
-                                    println!("설정 파일 다시 로드됨: {:?}", json_config);
-                                    
-                                    // 미들웨어 설정 직접 업데이트
-                                    let config_id = json_config.get_id(&path);
-                                    
-                                    // 공유 설정 업데이트
-                                    if let Some(shared_config) = &self.shared_config {
-                                        let mut config_lock = shared_config.write().await;
-                                        
-                                        // 미들웨어 설정 업데이트
-                                        for (name, middleware_config) in json_config.middlewares {
-                                            let full_name = if name.contains('.') {
-                                                name
-                                            } else {
-                                                format!("{}.{}", config_id, name)
-                                            };
-                                            
-                                            println!("직접 미들웨어 업데이트: {}, 설정: {:?}", full_name, middleware_config.settings);
-                                            if let Some(settings) = &middleware_config.settings.get("users") {
-                                                println!("직접 미들웨어 users 설정 값: {}", settings);
-                                            }
-                                            
-                                            // 기존 설정 제거 후 새 설정 삽입
-                                            config_lock.middleware.remove(&full_name);
-                                            config_lock.middleware.insert(full_name, middleware_config);
-                                        }
-                                        
-                                        // 설정 변경 후 상태 확인
-                                        println!("직접 업데이트 후 미들웨어 수: {}", config_lock.middleware.len());
-                                        for (key, value) in &config_lock.middleware {
-                                            println!("직접 업데이트 후 미들웨어: {}, 설정: {:?}", key, value.settings);
-                                        }
-                                    } else {
-                                        println!("공유 설정이 없어 직접 업데이트할 수 없습니다");
-                                    }
-                                },
-                                Err(e) => println!("설정 파일 로드 실패: {}", e),
-                            }
-                        },
-                        Err(e) => println!("설정 파일 읽기 실패: {}", e),
-                    }
-                }
-            } else {
-                println!("PROXY_JSON_CONFIG 환경 변수가 설정되지 않았습니다");
-            }
-            // ===================================================================
-            
-            // 현재 설정 상태 로깅
-            debug!("현재 self.config 미들웨어 수: {}", self.config.middleware.len());
-            for (key, value) in &self.config.middleware {
-                debug!("현재 self.config 미들웨어: {}, 설정: {:?}", key, value.settings);
-                if key == "test1.auth" {
-                    if let Some(users) = value.settings.get("users") {
-                        debug!("현재 test1.auth users 값: {}", users);
-                    }
-                }
-            }
+            info!("설정 변경 알림 수신됨");
             
             // 공유 설정에서 설정 복사
             let config_clone = {
@@ -349,17 +343,21 @@ impl ServerManager {
                 };
                 
                 let config_lock = shared_config.read().await;
-                println!("공유 설정 미들웨어 수: {}", config_lock.middleware.len());
+                debug!("공유 설정 미들웨어 수: {}", config_lock.middleware.len());
+                
+                // 디버깅용 로그: 미들웨어 설정 상세 정보
                 for (key, value) in &config_lock.middleware {
-                    println!("공유 설정 미들웨어: {}, 설정: {:?}", key, value.settings);
+                    debug!("공유 설정 미들웨어: {}", key);
+                    
+                    // 특정 미들웨어의 경우 더 상세히 로깅
                     if key == "test1.auth" {
                         if let Some(users) = value.settings.get("users") {
-                            println!("🔍 공유 설정 test1.auth users 값: {}", users);
+                            info!("🔍 공유 설정 test1.auth users 값: {}", users);
                         }
                     }
                 }
                 
-                // 여기가 핵심 - 미들웨어 설정 모두 비우고 새로 복사
+                // 미들웨어 설정 모두 비우고 새로 복사
                 self.config.middleware.clear();
                 for (key, value) in &config_lock.middleware {
                     self.config.middleware.insert(key.clone(), value.clone());
@@ -371,20 +369,20 @@ impl ServerManager {
                 config_lock.clone()
             };
             
+            // 설정 업데이트
             self.config = config_clone;
             
             // 업데이트 후 설정 상태 로깅
-            println!("📌 업데이트 후 self.config 미들웨어 수: {}", self.config.middleware.len());
-            for (key, value) in &self.config.middleware {
-                println!("📌 업데이트 후 self.config 미들웨어: {}, 설정: {:?}", key, value.settings);
-                if key == "test1.auth" {
-                    if let Some(users) = value.settings.get("users") {
-                        println!("📌 업데이트 후 test1.auth users 값: {}", users);
-                    }
+            debug!("📌 업데이트 후 self.config 미들웨어 수: {}", self.config.middleware.len());
+            
+            // 테스트를 위한 특정 미들웨어 상세 정보 로깅
+            if let Some(auth_middleware) = self.config.middleware.get("test1.auth") {
+                if let Some(users) = auth_middleware.settings.get("users") {
+                    info!("📌 업데이트 후 test1.auth users 값: {}", users);
                 }
             }
             
-            debug!("설정 업데이트 완료");
+            info!("설정 업데이트 완료");
             Ok(())
         } else {
             error!("설정 변경 알림 수신 실패");
