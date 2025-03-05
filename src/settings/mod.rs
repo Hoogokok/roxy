@@ -11,6 +11,8 @@ pub mod docker;
 pub mod json;
 pub mod watcher;
 pub mod converter;
+mod validator;
+pub mod schema;
 
 pub use server::ServerSettings;
 pub use logging::LogSettings;
@@ -18,7 +20,6 @@ pub use tls::TlsSettings;
 pub use docker::DockerSettings;
 pub use error::SettingsError;
 pub use json::JsonConfig;
-pub use converter::{label_key_to_json_path, convert_value, labels_to_json, json_to_labels};
 
 pub type Result<T> = std::result::Result<T, SettingsError>;
 pub use server::parse_env_var;
@@ -224,7 +225,7 @@ impl Settings {
         let path_ref = path.as_ref();
         debug!("JSON 설정 파일 로드: {}", path_ref.display());
         
-        let config = JsonConfig::from_file(&path).await?;
+        let mut config = JsonConfig::from_file(&path)?;
         config.validate()?;
         
         let config_id = config.get_id(path_ref);
@@ -375,7 +376,7 @@ impl Settings {
         // 1. 새로운 설정 로드
         let new_settings = match path.as_ref().extension().and_then(|ext| ext.to_str()) {
             Some("json") => {
-                let config = JsonConfig::from_file(&path).await?;
+                let mut config = JsonConfig::from_file(&path)?;
                 config.validate()?;
                 
                 let mut settings = Settings::default();
