@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
 use super::error::SettingsError;
@@ -37,6 +38,14 @@ pub struct JsonConfig {
     /// 헬스체크 설정
     #[serde(default)]
     pub health: Option<HealthConfig>,
+    
+    /// 마지막 유효성 검사 시간
+    #[serde(skip)]
+    pub last_validated: Option<SystemTime>,
+    
+    /// 설정 로드 경로
+    #[serde(skip)]
+    pub source_path: Option<PathBuf>,
 }
 
 /// 라우터 설정
@@ -139,6 +148,8 @@ impl Default for JsonConfig {
             services: HashMap::new(),
             router_middlewares: HashMap::new(),
             health: None,
+            last_validated: None,
+            source_path: None,
         }
     }
 }
