@@ -1,18 +1,14 @@
-use std::collections::HashMap;
-use std::path::Path;
 use jsonschema::{
     JSONSchema,
     Draft,
     error::ValidationError as JSONValidationError,
-    paths::JSONPointer,
 };
-use serde_json::{Value, json, from_str};
-use tracing::{error, debug, warn};
+use serde_json::{Value, from_str};
+use tracing::debug;
 use std::result::Result as StdResult;
 
 use super::error::SettingsError;
 use super::Result;
-use super::json::JsonConfig;
 
 // schema.rs 모듈 가져오기
 use super::schema::CONFIG_SCHEMA;
