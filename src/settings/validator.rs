@@ -1,19 +1,28 @@
 use std::collections::HashMap;
 use std::path::Path;
-use jsonschema::{JSONSchema, Draft};
-use serde_json::Value;
-use tracing::{error, debug};
+use jsonschema::{
+    JSONSchema,
+    Draft,
+    error::ValidationError as JSONValidationError,
+    paths::JSONPointer,
+};
+use serde_json::{Value, json, from_str};
+use tracing::{error, debug, warn};
+use std::result::Result as StdResult;
 
 use super::error::SettingsError;
 use super::Result;
 use super::json::JsonConfig;
+
+// schema.rs 모듈 가져오기
+use super::schema::CONFIG_SCHEMA;
 
 /// JSON 설정 검증을 위한 구조체
 pub struct JsonConfigValidator {
     schema: JSONSchema,
 }
 
-/// 검증 오류 타입
+/// JSON 유효성 검증 오류 타입
 #[derive(Debug)]
 pub enum ValidationError {
     ParseError(String),
@@ -24,138 +33,23 @@ pub enum ValidationError {
 impl JsonConfigValidator {
     /// 새 validator 인스턴스 생성 
     pub fn new() -> Result<Self> {
-        // 내장 JSON 스키마 정의
-        let schema_str = r#"{
-            "$schema": "http://json-schema.org/draft-07/schema#",
-            "type": "object",
-            "required": ["version"],
-            "properties": {
-                "version": {
-                    "type": "string",
-                    "enum": ["1.0"]
-                },
-                "id": {
-                    "type": "string"
-                },
-                "server": {
-                    "type": "object",
-                    "properties": {
-                        "http_port": {"type": "integer", "minimum": 1, "maximum": 65535},
-                        "https_port": {"type": "integer", "minimum": 1, "maximum": 65535},
-                        "https_enabled": {"type": "boolean"},
-                        "retry_count": {"type": "integer", "minimum": 0},
-                        "retry_interval": {"type": "integer", "minimum": 0}
-                    }
-                },
-                "middlewares": {
-                    "type": "object",
-                    "additionalProperties": {
-                        "type": "object",
-                        "required": ["type"],
-                        "properties": {
-                            "type": {
-                                "type": "string",
-                                "enum": ["basic-auth", "cors", "ratelimit", "headers", "compress"]
-                            },
-                            "users": {
-                                "type": "array",
-                                "items": {"type": "string"}
-                            },
-                            "allow_origins": {
-                                "type": "array",
-                                "items": {"type": "string"}
-                            },
-                            "allow_methods": {
-                                "type": "array",
-                                "items": {"type": "string"}
-                            },
-                            "average": {"type": "integer", "minimum": 0},
-                            "burst": {"type": "integer", "minimum": 0},
-                            "headers": {
-                                "type": "object",
-                                "additionalProperties": {"type": "string"}
-                            }
-                        }
-                    }
-                },
-                "routers": {
-                    "type": "object",
-                    "additionalProperties": {
-                        "type": "object",
-                        "required": ["rule", "service"],
-                        "properties": {
-                            "rule": {"type": "string"},
-                            "service": {"type": "string"},
-                            "middlewares": {
-                                "type": "array",
-                                "items": {"type": "string"}
-                            },
-                            "priority": {"type": "integer"}
-                        }
-                    }
-                },
-                "services": {
-                    "type": "object",
-                    "additionalProperties": {
-                        "type": "object",
-                        "required": ["loadbalancer"],
-                        "properties": {
-                            "loadbalancer": {
-                                "type": "object",
-                                "required": ["servers"],
-                                "properties": {
-                                    "servers": {
-                                        "type": "array",
-                                        "items": {
-                                            "type": "object",
-                                            "required": ["url"],
-                                            "properties": {
-                                                "url": {"type": "string", "format": "uri"},
-                                                "weight": {"type": "integer", "minimum": 1}
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                },
-                "health": {
-                    "type": "object",
-                    "properties": {
-                        "enabled": {"type": "boolean"},
-                        "interval": {"type": "integer", "minimum": 1},
-                        "timeout": {"type": "integer", "minimum": 1},
-                        "max_failures": {"type": "integer", "minimum": 0},
-                        "http": {
-                            "type": "object",
-                            "properties": {
-                                "path": {"type": "string"}
-                            }
-                        }
-                    }
-                },
-                "router_middlewares": {
-                    "type": "object",
-                    "additionalProperties": {
-                        "type": "array",
-                        "items": {"type": "string"}
-                    }
-                }
-            }
-        }"#;
+        debug!("JsonConfigValidator 초기화 중");
         
-        // 스키마 컴파일
-        let schema_value: Value = serde_json::from_str(schema_str)
+        // schema.rs에서 정의된 스키마 문자열 사용
+        let schema_str = CONFIG_SCHEMA;
+        
+        // 스키마 파싱
+        let schema_value: Value = from_str(schema_str)
             .map_err(|e| SettingsError::SchemaCompileError { 
-                reason: format!("스키마 파싱 오류: {}", e) 
+                reason: format!("JSON 스키마 파싱 오류: {}", e) 
             })?;
             
+        // 스키마 컴파일
         let schema = JSONSchema::options()
             .with_draft(Draft::Draft7)
             .compile(&schema_value)
             .map_err(|e| SettingsError::SchemaCompileError { 
-                reason: format!("스키마 컴파일 오류: {}", e) 
+                reason: format!("JSON 스키마 컴파일 오류: {}", e) 
             })?;
             
         debug!("JSON 스키마 컴파일 성공");
@@ -163,41 +57,44 @@ impl JsonConfigValidator {
     }
     
     /// JSON 문자열 유효성 검사
-    pub fn validate(&self, json_str: &str) -> std::result::Result<Value, Vec<ValidationError>> {
+    pub fn validate(&self, json_str: &str) -> StdResult<Value, Vec<ValidationError>> {
         // JSON 파싱
-        let value = match serde_json::from_str::<Value>(json_str) {
+        let value: Value = match from_str(json_str) {
             Ok(v) => v,
             Err(e) => {
-                return Err(vec![ValidationError::ParseError(e.to_string())]);
+                return Err(vec![ValidationError::ParseError(
+                    format!("Failed to parse JSON: {}", e)
+                )]);
             }
         };
         
         // 스키마 검증
-        let result = self.schema.validate(&value);
-        if let Err(errors) = result {
-            let validation_errors = errors
-                .map(|error| {
-                    let path = error.instance_path.to_string();
-                    ValidationError::SchemaError {
-                        path,
-                        message: error.to_string(),
-                    }
-                })
-                .collect::<Vec<_>>();
+        let mut errors = Vec::new();
+        let validation_errors: Vec<JSONValidationError> = self.schema
+            .validate(&value)
+            .map(|_| Vec::new())
+            .unwrap_or_else(|e| e.into_iter().collect());
             
-            return Err(validation_errors);
+        for err in validation_errors {
+            let path = err.instance_path.to_string();
+            let message = err.to_string();
+            errors.push(ValidationError::SchemaError { path, message });
         }
         
-        // 참조 유효성 검사
-        if let Err(errors) = self.validate_references(&value) {
-            return Err(errors);
+        // 참조 검증
+        if let Err(ref_errors) = self.validate_references(&value) {
+            errors.extend(ref_errors);
         }
         
-        Ok(value.clone())
+        if errors.is_empty() {
+            Ok(value)
+        } else {
+            Err(errors)
+        }
     }
     
     /// 설정 객체의 참조 유효성 검사
-    fn validate_references(&self, value: &Value) -> std::result::Result<(), Vec<ValidationError>> {
+    fn validate_references(&self, value: &Value) -> StdResult<(), Vec<ValidationError>> {
         let mut errors = Vec::new();
         
         // 라우터 -> 서비스 참조 검증
@@ -254,17 +151,19 @@ impl JsonConfigValidator {
 
 impl From<Vec<ValidationError>> for SettingsError {
     fn from(errors: Vec<ValidationError>) -> Self {
-        let formatted_errors = errors.iter().map(|e| match e {
-            ValidationError::ParseError(msg) => format!("파싱 오류: {}", msg),
-            ValidationError::SchemaError { path, message } => 
-                format!("스키마 오류 (경로: {}): {}", path, message),
-            ValidationError::ReferenceError { path, reference, message } => 
-                format!("참조 오류 (경로: {}, 참조: {}): {}", path, reference, message),
-        }).collect();
-        
+        let error_messages = errors.iter()
+            .map(|e| match e {
+                ValidationError::ParseError(msg) => format!("파싱 오류: {}", msg),
+                ValidationError::SchemaError { path, message } => 
+                    format!("스키마 오류 (경로: {}): {}", path, message),
+                ValidationError::ReferenceError { path, reference, message } => 
+                    format!("참조 오류 (경로: {}, 참조: {}): {}", path, reference, message),
+            })
+            .collect::<Vec<String>>();
+            
         SettingsError::ValidationErrors { 
-            errors: formatted_errors,
-            file: "settings.json".to_string(), // 기본값, 실제로는 파일경로가 전달되어야 함
+            errors: error_messages,
+            file: String::from("unknown")
         }
     }
 }
