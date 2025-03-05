@@ -23,6 +23,18 @@ pub enum SettingsError {
     InvalidConfig(String),
     DuplicateMiddleware(String),
     WatchError(String),
+    SchemaCompileError {
+        reason: String,
+    },
+    ValidationErrors {
+        errors: Vec<String>,
+        file: String,
+    },
+    ReferenceError {
+        entity: String,
+        reference: String,
+        message: String,
+    },
 }
 
 impl fmt::Display for SettingsError {
@@ -41,6 +53,17 @@ impl fmt::Display for SettingsError {
             Self::InvalidConfig(msg) => write!(f, "Invalid configuration: {}", msg),
             Self::DuplicateMiddleware(name) => write!(f, "Duplicate middleware: {}", name),
             Self::WatchError(msg) => write!(f, "Watch error: {}", msg),
+            Self::SchemaCompileError { reason } => 
+                write!(f, "스키마 컴파일 오류: {}", reason),
+            Self::ValidationErrors { errors, file } => {
+                writeln!(f, "설정 파일 '{}' 검증 오류:", file)?;
+                for (i, error) in errors.iter().enumerate() {
+                    writeln!(f, "  {}. {}", i+1, error)?;
+                }
+                Ok(())
+            },
+            Self::ReferenceError { entity, reference, message } => 
+                write!(f, "참조 오류 - 엔티티: {}, 참조: {}, 이유: {}", entity, reference, message),
         }
     }
 }
