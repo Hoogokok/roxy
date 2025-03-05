@@ -82,61 +82,100 @@ fn default_realm() -> String {
 impl BasicAuthConfig {
     /// Docker 라벨에서 설정을 파싱
     pub fn from_labels(labels: &HashMap<String, String>) -> Result<Self, MiddlewareError> {
-        let mut config = Self::default();
-        let mut htpasswd_path = String::new();
+        let extract_key = |key: &str| -> Option<String> {
+            key.strip_prefix("rproxy.http.middlewares.")
+                .and_then(|stripped_key| {
+                    stripped_key.find(".basicAuth.").map(move |pos| stripped_key[pos + 11..].to_string())
+                })
+                .or_else(|| key.strip_prefix("basicAuth.").map(|s| s.to_string()))
+        };
         
-        for (key, value) in labels {
-            let middleware_part = if let Some(stripped_key) = key.strip_prefix("rproxy.http.middlewares.") {
-                // 라벨이 전체 경로를 포함하는 경우
-                if let Some(pos) = stripped_key.find(".basicAuth.") {
-                    &stripped_key[pos + 11..]  // ".basicAuth." 이후의 부분
-                } else {
-                    continue;  // basicAuth 관련 필드가 아닌 경우 건너뜀
-                }
-            } else if let Some(stripped) = key.strip_prefix("basicAuth.") {
-                // 짧은 키 형식 사용
-                stripped
-            } else {
-                continue;  // 관련 없는 키 건너뜀
-            };
-            
-            match middleware_part {
-                "users" => {
-                    // 사용자:비밀번호 형식 파싱
-                    for user_str in value.split(',') {
-                        let parts: Vec<&str> = user_str.trim().split(':').collect();
-                        if parts.len() == 2 {
-                            config.users.insert(parts[0].to_string(), parts[1].to_string());
-                        } else {
-                            return Err(MiddlewareError::Config {
-                                message: format!("Invalid user format: {}", user_str)
-                            });
-                        }
-                    }
-                }
-                "realm" => {
-                    config.realm = value.clone();
-                }
-                "source" => {
-                    config.source = match value.as_str() {
-                        "htpasswd" => AuthSource::HtpasswdFile(htpasswd_path.clone()),
-                        "env" => AuthSource::EnvVar(String::new()),
-                        "secret" => AuthSource::DockerSecret(String::new()),
-                        _ => AuthSource::Labels,
-                    };
-                }
-                "htpasswd.path" => {
-                    htpasswd_path = value.clone();
-                    // 이미 소스가 HtpasswdFile로 설정되어 있으면 경로도 업데이트
-                    if let AuthSource::HtpasswdFile(_) = config.source {
-                        config.source = AuthSource::HtpasswdFile(value.clone());
-                    }
-                }
-                _ => {}  // 다른 설정들은 무시
-            }
+           // 필요한 값들을 추출
+           let users = labels.iter()
+           .filter_map(|(key, value)| {
+               extract_key(key).filter(|k| k == "users").map(move |_| value.clone())
+           })
+           .flat_map(|users_str| {
+               // 문자열을 소유하는 벡터로 먼저 수집하여 라이프타임 문제 해결
+               let user_entries = users_str.split(',')
+                   .map(|s| s.trim().to_string())
+                   .collect::<Vec<String>>();
+               
+               // 이제 벡터에서 사용자/비밀번호 쌍 추출
+               user_entries.into_iter().filter_map(move |user_str| {
+                   let parts: Vec<&str> = user_str.split(':').collect();
+                   if parts.len() == 2 {
+                       Some((parts[0].to_string(), parts[1].to_string()))
+                   } else {
+                       None
+                   }
+               })
+           })
+           .collect::<HashMap<String, String>>();
+        
+        // 유효하지 않은 사용자 형식 확인
+        if labels.iter().any(|(key, value)| {
+            extract_key(key).filter(|k| k == "users").is_some() && 
+            value.split(',').any(move |user_str| {
+                user_str.trim().split(':').count() != 2
+            })
+        }) {
+            return Err(MiddlewareError::Config {
+                message: "Invalid user format in labels".to_string()
+            });
         }
         
-        Ok(config)
+        // realm 설정 추출
+        let realm = labels.iter()
+            .find_map(|(key, value)| {
+                extract_key(key).filter(|k| k == "realm").map(move |_| value.clone())
+            })
+            .unwrap_or_else(default_realm);
+        
+        // htpasswd 경로 추출
+        let htpasswd_path = labels.iter()
+            .find_map(|(key, value)| {
+                extract_key(key).filter(|k| k == "htpasswd.path").map(move |_| value.clone())
+            })
+            .unwrap_or_default();
+        
+        // 환경 변수 접두사 추출
+        let env_prefix = labels.iter()
+            .find_map(|(key, value)| {
+                extract_key(key).filter(|k| k == "env.prefix").map(move |_| value.clone())
+            })
+            .unwrap_or_default();
+        
+        // 시크릿 경로 추출
+        let secret_path = labels.iter()
+            .find_map(|(key, value)| {
+                extract_key(key).filter(|k| k == "secret.path").map(move |_| value.clone())
+            })
+            .unwrap_or_default();
+        
+        // 소스 유형 결정
+        let source = labels.iter()
+        .find_map(|(key, value)| {
+            let htpasswd_path_clone = htpasswd_path.clone();
+            let env_prefix_clone = env_prefix.clone();
+            let secret_path_clone = secret_path.clone();
+            
+            extract_key(key).filter(|k| k == "source").map(move |_| {
+                match value.as_str() {
+                    "htpasswd" => AuthSource::HtpasswdFile(htpasswd_path_clone),
+                    "env" => AuthSource::EnvVar(env_prefix_clone),
+                    "docker-secret" => AuthSource::DockerSecret(secret_path_clone),
+                    _ => AuthSource::Labels,
+                }
+            })
+        })
+        .unwrap_or_default();
+        
+        Ok(BasicAuthConfig {
+            users,
+            realm,
+            source,
+        })
     }
 }
 
