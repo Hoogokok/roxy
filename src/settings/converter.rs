@@ -155,43 +155,63 @@ pub fn convert_value(value: &str, key: &str) -> Value {
     Value::String(value.to_string())
 }
 
-/// 도커 라벨 맵을 JSON 객체로 변환
+/// 도커 라벨 맵을 JSON 객체로 변환 - 함수형 패러다임 적용 버전
 pub fn labels_to_json(labels: &HashMap<String, String>, prefix: &str) -> Value {
-    let mut root = Map::new();
+    // 접두사 표준화
+    let normalized_prefix = normalize_prefix(prefix);
     
-    // 먼저 loadbalancer.server 라벨을 처리하기 위해 분리
-    let mut server_labels: HashMap<String, HashMap<String, String>> = HashMap::new();
+    // 접두사로 시작하는 라벨만 필터링
+    let filtered_labels = filter_labels_by_prefix(labels, &normalized_prefix);
     
-    for (key, value) in labels {
-        // 접두사로 시작하는 키만 처리
-        if !key.starts_with(prefix) {
-            continue;
-        }
-        
-        // loadbalancer.server 라벨 처리 위해 별도 수집
-        if key.contains(".loadbalancer.server.") {
-            let parts: Vec<&str> = key.split('.').collect();
-            if parts.len() >= 7 {
-                let service_name = parts[3].to_string();
-                let server_property = parts[6].to_string();
-                
-                server_labels
-                    .entry(service_name)
-                    .or_insert_with(HashMap::new)
-                    .insert(server_property, value.clone());
-            }
-            
-            // 이 라벨은 개별적으로 처리했으므로 일반 처리에서 제외
-            continue;
-        }
-        
+    // 서버 라벨 별도 처리
+    let (server_labels, regular_labels): (HashMap<String, String>, HashMap<String, String>) = 
+        filtered_labels.into_iter()
+            .partition(|(key, _)| key.contains(".loadbalancer.server."));
+    
+    // 일반 라벨 처리
+    let mut root = process_regular_labels(&regular_labels, &normalized_prefix);
+    
+    // 서버 라벨 처리
+    if !server_labels.is_empty() {
+        process_server_labels(&mut root, &server_labels, &normalized_prefix);
+    }
+    
+    Value::Object(root)
+}
+
+/// 접두사 표준화 (끝에 점이 있는지 확인)
+fn normalize_prefix(prefix: &str) -> String {
+    if prefix.ends_with('.') {
+        prefix.to_string()
+    } else {
+        format!("{}.", prefix)
+    }
+}
+
+/// 접두사로 시작하는 라벨만 필터링
+fn filter_labels_by_prefix(
+    labels: &HashMap<String, String>, 
+    prefix: &str
+) -> HashMap<String, String> {
+    labels.iter()
+        .filter(|(key, _)| key.starts_with(prefix))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
+/// 일반 라벨 처리
+fn process_regular_labels(
+    labels: &HashMap<String, String>,
+    prefix: &str
+) -> Map<String, Value> {
+    labels.iter().fold(Map::new(), |mut root, (key, value)| {
         debug!("처리 중인 라벨: {}={}", key, value);
         
         // 라벨 키를 JSON 경로로 변환
         let (root_key, path) = label_key_to_json_path(key);
         if root_key.is_empty() {
             debug!("유효하지 않은 라벨 패턴 무시: {}", key);
-            continue;
+            return root;
         }
         
         debug!("변환된 JSON 경로: 루트={}, 경로={:?}", root_key, path);
@@ -223,272 +243,307 @@ pub fn labels_to_json(labels: &HashMap<String, String>, prefix: &str) -> Value {
                 current = current.get_mut(segment).unwrap().as_object_mut().unwrap();
             }
         }
-    }
+        
+        root
+    })
+}
+
+/// 서버 라벨 처리
+fn process_server_labels(
+    root: &mut Map<String, Value>,
+    server_labels: &HashMap<String, String>,
+    prefix: &str
+) {
+    // 서비스별로 서버 속성 그룹화
+    let mut grouped_servers: HashMap<String, HashMap<String, String>> = HashMap::new();
     
-    // 수집된 server 라벨을 servers 배열로 변환
-    if !server_labels.is_empty() {
-        // services 객체가 없으면 생성
-        if !root.contains_key("services") {
-            root.insert("services".to_string(), Value::Object(Map::new()));
-        }
-        
-        let services = root.get_mut("services").unwrap().as_object_mut().unwrap();
-        
-        for (service_name, server_props) in server_labels {
-            // 해당 서비스가 없으면 생성
-            if !services.contains_key(&service_name) {
-                services.insert(service_name.clone(), Value::Object(Map::new()));
-            }
+    for (key, value) in server_labels {
+        // 서비스 이름과 서버 속성 추출
+        let parts: Vec<&str> = key.split('.').collect();
+        if parts.len() >= 7 {
+            let service_name = parts[3].to_string();
+            let server_property = parts[6].to_string();
             
-            let service = services.get_mut(&service_name).unwrap().as_object_mut().unwrap();
-            
-            // loadbalancer가 없으면 생성
-            if !service.contains_key("loadbalancer") {
-                service.insert("loadbalancer".to_string(), Value::Object(Map::new()));
-            }
-            
-            let loadbalancer = service.get_mut("loadbalancer").unwrap().as_object_mut().unwrap();
-            
-            // servers 배열 생성 (단일 서버를 포함하는 배열)
-            let mut server_obj = Map::new();
-            
-            // URL 생성: port를 url로 변환
-            if let Some(port) = server_props.get("port") {
-                let url = format!("http://localhost:{}", port);
-                server_obj.insert("url".to_string(), Value::String(url));
-            }
-            
-            // weight 추가
-            if let Some(weight) = server_props.get("weight") {
-                if let Ok(w) = weight.parse::<u64>() {
-                    server_obj.insert("weight".to_string(), Value::Number(w.into()));
-                }
-            }
-            
-            // 기본 weight 추가 (없는 경우)
-            if !server_obj.contains_key("weight") {
-                server_obj.insert("weight".to_string(), Value::Number(1.into()));
-            }
-            
-            // servers 배열에 추가
-            let servers = vec![Value::Object(server_obj)];
-            loadbalancer.insert("servers".to_string(), Value::Array(servers));
+            grouped_servers
+                .entry(service_name)
+                .or_insert_with(HashMap::new)
+                .insert(server_property, value.clone());
         }
     }
     
-    let result = Value::Object(root);
-    debug!("최종 JSON 결과: {}", result);
+    // services 객체가 없으면 생성
+    if !root.contains_key("services") {
+        root.insert("services".to_string(), Value::Object(Map::new()));
+    }
+    
+    let services = root.get_mut("services").unwrap().as_object_mut().unwrap();
+    
+    // 각 서비스별로 서버 객체 생성
+    for (service_name, server_props) in grouped_servers {
+        // 해당 서비스가 없으면 생성
+        if !services.contains_key(&service_name) {
+            services.insert(service_name.clone(), Value::Object(Map::new()));
+        }
+        
+        let service = services.get_mut(&service_name).unwrap().as_object_mut().unwrap();
+        
+        // loadbalancer가 없으면 생성
+        if !service.contains_key("loadbalancer") {
+            service.insert("loadbalancer".to_string(), Value::Object(Map::new()));
+        }
+        
+        let loadbalancer = service.get_mut("loadbalancer").unwrap().as_object_mut().unwrap();
+        
+        // 서버 객체 생성
+        let mut server_obj = Map::new();
+        
+        // URL 생성: port를 url로 변환
+        if let Some(port) = server_props.get("port") {
+            let url = format!("http://localhost:{}", port);
+            server_obj.insert("url".to_string(), Value::String(url));
+        }
+        
+        // weight 추가
+        if let Some(weight) = server_props.get("weight") {
+            if let Ok(w) = weight.parse::<u64>() {
+                server_obj.insert("weight".to_string(), Value::Number(w.into()));
+            }
+        }
+        
+        // 기본 weight 추가 (없는 경우)
+        if !server_obj.contains_key("weight") {
+            server_obj.insert("weight".to_string(), Value::Number(1.into()));
+        }
+        
+        // servers 배열에 추가
+        let servers = vec![Value::Object(server_obj)];
+        loadbalancer.insert("servers".to_string(), Value::Array(servers));
+    }
+}
+
+/// JSON 객체를 도커 라벨 맵으로 변환 - 함수형 패러다임 적용 버전
+pub fn json_to_labels(json: &Value, prefix: &str) -> HashMap<String, String> {
+    // 접두사에 점이 있는지 확인하고 표준화
+    let normalized_prefix = normalize_prefix(prefix);
+    
+    // 최종 결과를 저장할 해시맵
+    let mut result = HashMap::new();
+    
+    if let Value::Object(root) = json {
+        // 루트 객체의 각 항목 처리
+        for (root_key, root_value) in root {
+            if let Value::Object(items) = root_value {
+                // 각 리소스 항목 처리
+                process_resource_items(&mut result, &normalized_prefix, root_key, items);
+            }
+        }
+    }
+    
     result
 }
 
-/// JSON 객체를 도커 라벨 맵으로 변환
-pub fn json_to_labels(json: &Value, prefix: &str) -> HashMap<String, String> {
-    let mut labels = HashMap::new();
-    
-    // 접두사가 점(.)으로 끝나는지 확인하고, 그렇지 않으면 점을 추가
-    let prefix = if prefix.ends_with('.') {
-        prefix.to_string()
-    } else {
-        format!("{}.", prefix)
-    };
-    
-    if let Value::Object(root) = json {
-        for (root_key, root_value) in root {
-            if let Value::Object(items) = root_value {
-                for (item_key, item_value) in items {
-                    let mut path = Vec::new();
-                    path.push(root_key.as_str());
-                    path.push(item_key.as_str());
-                    
-                    // 미들웨어 타입 처리
-                    if root_key == "middlewares" && item_value.is_object() {
-                        let obj = item_value.as_object().unwrap();
-                        
-                        // middleware_type 필드 처리
-                        if let Some(typ) = obj.get("middleware_type") {
-                            if let Some(typ_str) = typ.as_str() {
-                                let type_key = format!("{}{}.{}.type", prefix, root_key, item_key);
-                                labels.insert(type_key, typ_str.to_string());
-                                
-                                // settings 필드 처리
-                                if let Some(settings) = obj.get("settings") {
-                                    if let Some(settings_obj) = settings.as_object() {
-                                        // 미들웨어 타입에 따른 설정 키 결정
-                                        let middleware_type = match typ_str {
-                                            "basic-auth" => "basicAuth",
-                                            "cors" => "cors",
-                                            "rate-limit" => "rateLimit",
-                                            "header" => "headers",
-                                            "strip-prefix" => "stripPrefix",
-                                            "add-prefix" => "addPrefix",
-                                            _ => "unknown"
-                                        };
-                                        
-                                        // 설정 추가
-                                        for (setting_key, setting_val) in settings_obj {
-                                            let field_key = if setting_key.contains('_') {
-                                                to_camel_case(setting_key)
-                                            } else {
-                                                setting_key.clone()
-                                            };
-                                            
-                                            let setting_path = format!("{}{}.{}.{}.{}", 
-                                                prefix, root_key, item_key, middleware_type, field_key);
-                                            
-                                            // 값 변환
-                                            let value_str = match setting_val {
-                                                Value::String(s) => s.clone(),
-                                                Value::Bool(b) => b.to_string(),
-                                                Value::Number(n) => n.to_string(),
-                                                Value::Array(arr) => {
-                                                    arr.iter()
-                                                       .map(|v| match v {
-                                                           Value::String(s) => s.clone(),
-                                                           _ => v.to_string(),
-                                                       })
-                                                       .collect::<Vec<String>>()
-                                                       .join(",")
-                                                },
-                                                Value::Null => "".to_string(),
-                                                Value::Object(_) => continue,
-                                            };
-                                            
-                                            labels.insert(setting_path, value_str);
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        
-                        // 미들웨어 외 다른 필드 처리
-                        for (field_key, field_val) in obj {
-                            if field_key != "middleware_type" && field_key != "settings" {
-                                let key_str = if field_key.contains('_') {
-                                    to_camel_case(field_key)
-                                } else {
-                                    field_key.clone()
-                                };
-                                
-                                let field_path = format!("{}{}.{}.{}", 
-                                    prefix, root_key, item_key, key_str);
-                                
-                                // 값 변환 (배열 등)
-                                match field_val {
-                                    Value::String(s) => {
-                                        labels.insert(field_path, s.clone());
-                                    },
-                                    Value::Bool(b) => {
-                                        labels.insert(field_path, b.to_string());
-                                    },
-                                    Value::Number(n) => {
-                                        labels.insert(field_path, n.to_string());
-                                    },
-                                    Value::Array(arr) => {
-                                        // 배열을 쉼표로 구분된 문자열로 변환
-                                        let values: Vec<String> = arr.iter()
-                                            .map(|v| match v {
-                                                Value::String(s) => s.clone(),
-                                                _ => v.to_string(),
-                                            })
-                                            .collect();
-                                        labels.insert(field_path, values.join(","));
-                                    },
-                                    Value::Null | Value::Object(_) => {},
-                                }
-                            }
-                        }
-                    }
-                    // 서비스 처리
-                    else if root_key == "services" {
-                        process_service_object(&mut labels, &prefix, root_key, item_key, item_value);
-                    }
-                    // 그 외 필드 처리
-                    else {
-                        process_other_fields(&mut labels, &prefix, &path, item_value);
-                    }
-                }
+/// 리소스 항목 처리 (middlewares, routers, services 등)
+fn process_resource_items(
+    result: &mut HashMap<String, String>,
+    prefix: &str,
+    resource_type: &str,
+    items: &Map<String, Value>
+) {
+    for (item_key, item_value) in items {
+        // 아이템이 객체인 경우에만 처리
+        if let Some(obj) = item_value.as_object() {
+            match resource_type {
+                "middlewares" => process_middleware_item(result, prefix, item_key, obj),
+                "services" => process_service_item(result, prefix, item_key, obj),
+                _ => process_generic_item(result, prefix, resource_type, item_key, obj)
             }
         }
     }
-    
-    labels
 }
 
-fn process_service_object(labels: &mut HashMap<String, String>, prefix: &str, root_key: &str, item_key: &str, value: &Value) {
-    if let Some(obj) = value.as_object() {
-        for (field_key, field_val) in obj {
-            // loadbalancer 필드 처리
-            if field_key == "loadbalancer" && field_val.is_object() {
-                if let Some(lb_obj) = field_val.as_object() {
-                    for (lb_key, lb_val) in lb_obj {
-                        // servers 배열 처리 
-                        if lb_key == "servers" && lb_val.is_array() {
-                            if let Some(servers) = lb_val.as_array() {
-                                // 모든 서버 처리
-                                for (idx, server_val) in servers.iter().enumerate() {
-                                    if let Some(server) = server_val.as_object() {
-                                        // url 처리
-                                        if let Some(url) = server.get("url").and_then(|u| u.as_str()) {
-                                            let url_path = format!("{}{}.{}.loadbalancer.servers.{}.url", 
-                                                prefix, root_key, item_key, idx);
-                                            labels.insert(url_path, url.to_string());
-                                        }
-                                        
-                                        // weight 처리
-                                        if let Some(weight) = server.get("weight").and_then(|w| w.as_u64()) {
-                                            let weight_path = format!("{}{}.{}.loadbalancer.servers.{}.weight", 
-                                                prefix, root_key, item_key, idx);
-                                            labels.insert(weight_path, weight.to_string());
-                                        }
-                                    }
-                                }
-                            }
-                        } else {
-                            // 기타 loadbalancer 필드 처리
-                            let lb_path = format!("{}{}.{}.loadbalancer.{}", 
-                                prefix, root_key, item_key, lb_key);
-                            
-                            match lb_val {
-                                Value::String(s) => {
-                                    labels.insert(lb_path, s.clone());
-                                },
-                                Value::Bool(b) => {
-                                    labels.insert(lb_path, b.to_string());
-                                },
-                                Value::Number(n) => {
-                                    labels.insert(lb_path, n.to_string());
-                                },
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            } else {
-                // 기타 서비스 필드 처리
-                let field_path = format!("{}{}.{}.{}", 
-                    prefix, root_key, item_key, field_key);
+/// 미들웨어 항목 처리
+fn process_middleware_item(
+    result: &mut HashMap<String, String>,
+    prefix: &str,
+    middleware_name: &str,
+    obj: &Map<String, Value>
+) {
+    // middleware_type 필드 처리
+    if let Some(Value::String(typ)) = obj.get("middleware_type") {
+        // 미들웨어 타입 라벨 추가
+        let type_key = format!("{}middlewares.{}.type", prefix, middleware_name);
+        result.insert(type_key, typ.clone());
+        
+        // 미들웨어 타입에 따른 설정 키 결정
+        let middleware_type = get_middleware_type_key(typ);
+        
+        // settings 필드 처리
+        if let Some(Value::Object(settings)) = obj.get("settings") {
+            for (setting_key, setting_val) in settings {
+                let field_key = convert_key_to_camel_case(setting_key);
+                let setting_path = format!(
+                    "{}middlewares.{}.{}.{}", 
+                    prefix, middleware_name, middleware_type, field_key
+                );
                 
-                match field_val {
-                    Value::String(s) => {
-                        labels.insert(field_path, s.clone());
-                    },
-                    Value::Bool(b) => {
-                        labels.insert(field_path, b.to_string());
-                    },
-                    Value::Number(n) => {
-                        labels.insert(field_path, n.to_string());
-                    },
-                    Value::Object(_) => {
-                        // 중첩된 객체는 재귀적으로 처리할 수 있지만 여기서는 생략
-                    },
-                    _ => {}
-                }
+                // 값을 라벨에 적합한 형식으로 변환하여 추가
+                add_value_to_result(result, &setting_path, setting_val);
             }
+        }
+    }
+    
+    // 미들웨어 외 다른 필드 처리
+    for (field_key, field_val) in obj {
+        if field_key != "middleware_type" && field_key != "settings" {
+            let key_str = convert_key_to_camel_case(field_key);
+            let field_path = format!("{}middlewares.{}.{}", prefix, middleware_name, key_str);
+            
+            // 값을 라벨에 적합한 형식으로 변환하여 추가
+            add_value_to_result(result, &field_path, field_val);
         }
     }
 }
 
-// URL에서 포트를 추출하는 헬퍼 함수
+/// 서비스 항목 처리
+fn process_service_item(
+    result: &mut HashMap<String, String>,
+    prefix: &str,
+    service_name: &str,
+    obj: &Map<String, Value>
+) {
+    for (field_key, field_val) in obj {
+        // loadbalancer 필드 처리
+        if field_key == "loadbalancer" && field_val.is_object() {
+            if let Some(lb_obj) = field_val.as_object() {
+                process_loadbalancer_field(result, prefix, service_name, lb_obj);
+            }
+        } else {
+            // 기타 서비스 필드 처리
+            let field_path = format!("{}services.{}.{}", prefix, service_name, field_key);
+            add_value_to_result(result, &field_path, field_val);
+        }
+    }
+}
+
+/// 로드밸런서 필드 처리
+fn process_loadbalancer_field(
+    result: &mut HashMap<String, String>,
+    prefix: &str,
+    service_name: &str,
+    lb_obj: &Map<String, Value>
+) {
+    for (lb_key, lb_val) in lb_obj {
+        // servers 배열 처리
+        if lb_key == "servers" && lb_val.is_array() {
+            if let Some(servers) = lb_val.as_array() {
+                servers.iter().enumerate().for_each(|(idx, server_val)| {
+                    if let Some(server) = server_val.as_object() {
+                        // url 처리
+                        if let Some(Value::String(url)) = server.get("url") {
+                            let url_path = format!(
+                                "{}services.{}.loadbalancer.servers.{}.url", 
+                                prefix, service_name, idx
+                            );
+                            result.insert(url_path, url.clone());
+                        }
+                        
+                        // weight 처리
+                        if let Some(weight) = server.get("weight") {
+                            if let Some(w) = weight.as_u64() {
+                                let weight_path = format!(
+                                    "{}services.{}.loadbalancer.servers.{}.weight", 
+                                    prefix, service_name, idx
+                                );
+                                result.insert(weight_path, w.to_string());
+                            }
+                        }
+                    }
+                });
+            }
+        } else {
+            // 기타 loadbalancer 필드 처리
+            let lb_path = format!(
+                "{}services.{}.loadbalancer.{}", 
+                prefix, service_name, lb_key
+            );
+            add_value_to_result(result, &lb_path, lb_val);
+        }
+    }
+}
+
+/// 일반 항목 처리 (미들웨어나 서비스가 아닌 경우)
+fn process_generic_item(
+    result: &mut HashMap<String, String>,
+    prefix: &str,
+    resource_type: &str,
+    item_name: &str,
+    obj: &Map<String, Value>
+) {
+    // 객체의 각 필드를 라벨로 변환
+    for (field_key, field_val) in obj {
+        let label_key = format!("{}{}.{}.{}", prefix, resource_type, item_name, field_key);
+        add_value_to_result(result, &label_key, field_val);
+    }
+}
+
+/// 미들웨어 타입에 따른 설정 키 결정
+fn get_middleware_type_key(middleware_type: &str) -> String {
+    match middleware_type {
+        "basic-auth" => "basicAuth".to_string(),
+        "cors" => "cors".to_string(),
+        "rate-limit" => "rateLimit".to_string(),
+        "header" => "headers".to_string(),
+        "strip-prefix" => "stripPrefix".to_string(),
+        "add-prefix" => "addPrefix".to_string(),
+        _ => "unknown".to_string()
+    }
+}
+
+/// 키를 캐멀케이스로 변환 (필요한 경우)
+fn convert_key_to_camel_case(key: &str) -> String {
+    if key.contains('_') {
+        to_camel_case(key)
+    } else {
+        key.to_string()
+    }
+}
+
+/// JSON 값을 라벨 값으로 변환하여 결과에 추가
+fn add_value_to_result(result: &mut HashMap<String, String>, key: &str, value: &Value) {
+    match value {
+        Value::String(s) => {
+            result.insert(key.to_string(), s.clone());
+        },
+        Value::Bool(b) => {
+            result.insert(key.to_string(), b.to_string());
+        },
+        Value::Number(n) => {
+            result.insert(key.to_string(), n.to_string());
+        },
+        Value::Array(arr) => {
+            // 배열을 쉼표로 구분된 문자열로 변환
+            let values: Vec<String> = arr.iter()
+                .filter_map(|v| match v {
+                    Value::String(s) => Some(s.clone()),
+                    _ => Some(v.to_string()),
+                })
+                .collect();
+            result.insert(key.to_string(), values.join(","));
+        },
+        Value::Object(obj) => {
+            // 중첩 객체 처리
+            for (sub_key, sub_val) in obj {
+                let nested_key = format!("{}.{}", key, sub_key);
+                add_value_to_result(result, &nested_key, sub_val);
+            }
+        },
+        Value::Null => {
+            result.insert(key.to_string(), "".to_string());
+        },
+    }
+}
+
+/// URL에서 포트를 추출하는 헬퍼 함수
 fn extract_port_from_url(url: &str) -> Option<u16> {
     // URL 구문 분석: http://example.com:8080 형식 지원
     let url_parts: Vec<&str> = url.split("://").collect();
@@ -509,56 +564,6 @@ fn extract_port_from_url(url: &str) -> Option<u16> {
     // 포트 파싱 (path가 있는 경우 처리: 8080/path)
     let port_str = host_port[1].split('/').next().unwrap_or(host_port[1]);
     port_str.parse().ok()
-}
-
-fn process_other_fields(labels: &mut HashMap<String, String>, prefix: &str, path: &[&str], value: &Value) {
-    match value {
-        Value::Object(obj) => {
-            for (key, val) in obj {
-                let key_str = if key.contains('_') {
-                    to_camel_case(key)
-                } else {
-                    key.clone()
-                };
-                
-                // 새 경로 구성
-                let mut new_path = Vec::new();
-                for p in path.iter() {
-                    new_path.push(*p);
-                }
-                new_path.push(&key_str);
-                
-                process_other_fields(labels, prefix, &new_path, val);
-            }
-        },
-        Value::String(s) => {
-            let key = format!("{}{}", prefix, path.join("."));
-            labels.insert(key, s.clone());
-        },
-        Value::Bool(b) => {
-            let key = format!("{}{}", prefix, path.join("."));
-            labels.insert(key, b.to_string());
-        },
-        Value::Number(n) => {
-            let key = format!("{}{}", prefix, path.join("."));
-            labels.insert(key, n.to_string());
-        },
-        Value::Array(arr) => {
-            let key = format!("{}{}", prefix, path.join("."));
-            let value = arr.iter()
-                           .map(|v| match v {
-                               Value::String(s) => s.clone(),
-                               _ => v.to_string(),
-                           })
-                           .collect::<Vec<String>>()
-                           .join(",");
-            labels.insert(key, value);
-        },
-        Value::Null => {
-            let key = format!("{}{}", prefix, path.join("."));
-            labels.insert(key, "".to_string());
-        },
-    }
 }
 
 #[cfg(test)]
