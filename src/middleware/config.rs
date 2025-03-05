@@ -7,9 +7,11 @@ use tracing::debug;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum MiddlewareType {
+    #[serde(rename = "basic-auth")]
     BasicAuth,
     Headers,
     Cors,
+    #[serde(rename = "ratelimit")]
     RateLimit,
     // 추후 추가될 미들웨어 타입들...
 }
@@ -18,11 +20,11 @@ impl FromStr for MiddlewareType {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
+        match s.to_lowercase().as_str() {
             "headers" => Ok(MiddlewareType::Headers),
-            "basic-auth" => Ok(MiddlewareType::BasicAuth),
+            "basic-auth" | "basicauth" => Ok(MiddlewareType::BasicAuth),
             "cors" => Ok(MiddlewareType::Cors),
-            "ratelimit" => Ok(MiddlewareType::RateLimit),
+            "ratelimit" | "rate-limit" => Ok(MiddlewareType::RateLimit),
             unknown => Err(format!("Unknown middleware type: {}", unknown)),
         }
     }
@@ -31,6 +33,7 @@ impl FromStr for MiddlewareType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MiddlewareConfig {
     /// 미들웨어 타입
+    #[serde(rename = "type")]
     pub middleware_type: MiddlewareType,
     
     /// 미들웨어 활성화 여부
