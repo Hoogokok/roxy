@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use serde_json::{Value, Map};
+use tracing::debug;
 
 /// 언더스코어(snake_case) → 캐멀케이스(camelCase) 변환
 pub fn to_camel_case(s: &str) -> String {
@@ -49,6 +50,24 @@ pub fn standardize_key(key: &str) -> String {
     }
 }
 
+/// JSON 키를 표준화된 형식으로 변환 (camelCase -> snake_case)
+pub fn standardize_json_key(key: &str) -> String {
+    if key.contains('.') || key.chars().any(|c| c.is_ascii_uppercase()) {
+        to_snake_case(key)
+    } else {
+        key.to_string()
+    }
+}
+
+/// 라벨 키를 표준화된 형식으로 변환 (snake_case -> camelCase)
+pub fn standardize_label_key(key: &str) -> String {
+    if key.contains('_') {
+        to_camel_case(key)
+    } else {
+        key.to_string()
+    }
+}
+
 /// 도커 라벨 키를 JSON 경로로 변환
 pub fn label_key_to_json_path(label_key: &str) -> (String, Vec<String>) {
     // 접두사(rproxy.http) 제거
@@ -64,13 +83,13 @@ pub fn label_key_to_json_path(label_key: &str) -> (String, Vec<String>) {
     let resource_name = parts[3].to_string();
     
     // 경로 컴포넌트 구성
-    let mut path_components = vec![resource_type, resource_name];
+    let mut path_components = vec![resource_type.clone(), resource_name];
     
     // 속성 경로 추가
     if parts.len() > 4 {
-        // type → middleware_type 으로 변환 (JSON에서는 snake_case 사용)
+        // type 필드는 그대로 유지 (serde 속성을 통해 변환됨)
         if parts[4] == "type" {
-            path_components.push("middleware_type".to_string());
+            path_components.push("type".to_string());
         } 
         // 미들웨어 타입별 설정은 settings 아래로 이동
         else if parts.len() > 5 && is_middleware_type(parts[4]) {
@@ -79,32 +98,21 @@ pub fn label_key_to_json_path(label_key: &str) -> (String, Vec<String>) {
             // 나머지 경로 추가
             for i in 5..parts.len() {
                 let key = parts[i].to_string();
-                // 카멜케이스를 스네이크케이스로 변환 (JSON에서는 snake_case 사용)
-                if key.chars().any(|c| c.is_ascii_uppercase()) {
-                    path_components.push(to_snake_case(&key));
-                } else {
-                    path_components.push(key);
-                }
+                // 표준화된 JSON 키 형식으로 변환
+                path_components.push(standardize_json_key(&key));
             }
         }
         // 기타 속성
         else {
             for i in 4..parts.len() {
                 let key = parts[i].to_string();
-                // 카멜케이스를 스네이크케이스로 변환 (JSON에서는 snake_case 사용)
-                if key.chars().any(|c| c.is_ascii_uppercase()) {
-                    path_components.push(to_snake_case(&key));
-                } else {
-                    path_components.push(key);
-                }
+                // 표준화된 JSON 키 형식으로 변환
+                path_components.push(standardize_json_key(&key));
             }
         }
     }
     
-    // 첫 번째 컴포넌트는 상위 객체 키, 나머지는 경로
-    let root = path_components[0].clone();
-    let path = path_components[1..].to_vec();
-    (root, path)
+    (resource_type, path_components.into_iter().skip(1).collect())
 }
 
 /// 주어진 문자열이 미들웨어 타입인지 확인
@@ -157,18 +165,25 @@ pub fn labels_to_json(labels: &HashMap<String, String>, prefix: &str) -> Value {
             continue;
         }
         
+        debug!("처리 중인 라벨: {}={}", key, value);
+        
         // 라벨 키를 JSON 경로로 변환
         let (root_key, path) = label_key_to_json_path(key);
         if root_key.is_empty() {
+            debug!("유효하지 않은 라벨 패턴 무시: {}", key);
             continue;
         }
         
+        debug!("변환된 JSON 경로: 루트={}, 경로={:?}", root_key, path);
+        
         // 값 변환 - 키도 함께 전달
         let converted_value = convert_value(value, key);
+        debug!("변환된 값: {:?}", converted_value);
         
         // 루트 객체에 해당 타입 맵이 없으면 생성
         if !root.contains_key(&root_key) {
             root.insert(root_key.clone(), Value::Object(Map::new()));
+            debug!("루트 객체 생성: {}", root_key);
         }
         
         // 경로를 따라 객체 트리 생성 및 값 설정
@@ -177,10 +192,12 @@ pub fn labels_to_json(labels: &HashMap<String, String>, prefix: &str) -> Value {
         for (i, segment) in path.iter().enumerate() {
             if i == path.len() - 1 {
                 // 마지막 세그먼트는 값을 설정
+                debug!("필드 설정: {} = {:?}", segment, converted_value);
                 current.insert(segment.clone(), converted_value.clone());
             } else {
                 // 중간 세그먼트는 객체 생성
                 if !current.contains_key(segment) {
+                    debug!("중간 객체 생성: {}", segment);
                     current.insert(segment.clone(), Value::Object(Map::new()));
                 }
                 current = current.get_mut(segment).unwrap().as_object_mut().unwrap();
@@ -188,7 +205,9 @@ pub fn labels_to_json(labels: &HashMap<String, String>, prefix: &str) -> Value {
         }
     }
     
-    Value::Object(root)
+    let result = Value::Object(root);
+    debug!("최종 JSON 결과: {}", result);
+    result
 }
 
 /// JSON 객체를 도커 라벨 맵으로 변환
@@ -534,10 +553,10 @@ mod tests {
         assert_eq!(root, "middlewares");
         assert_eq!(path, vec!["cors", "enabled"]);
         
-        // type → middleware_type 변환 테스트
+        // type 필드는 그대로 유지 (serde 속성을 통해 변환됨)
         let (root, path) = label_key_to_json_path("rproxy.http.middlewares.auth.type");
         assert_eq!(root, "middlewares");
-        assert_eq!(path, vec!["auth", "middleware_type"]);
+        assert_eq!(path, vec!["auth", "type"]);
         
         // 미들웨어 설정 테스트 (settings 필드로 이동)
         let (root, path) = label_key_to_json_path("rproxy.http.middlewares.auth.basicAuth.users");
@@ -599,7 +618,7 @@ mod tests {
         
         // 미들웨어 타입 검증
         let cors = middlewares.get("cors").unwrap().as_object().unwrap();
-        assert_eq!(cors.get("middleware_type").unwrap(), "cors");
+        assert_eq!(cors.get("type").unwrap(), "cors");
         
         // 미들웨어 설정 검증
         assert!(cors.contains_key("settings"));
@@ -684,5 +703,68 @@ mod tests {
         // 서비스 검증
         assert!(labels.contains_key("rproxy.http.routers.api.service"));
         assert_eq!(labels.get("rproxy.http.routers.api.service").unwrap(), "api_service");
+    }
+    
+    #[test]
+    fn test_real_world_labels_to_json() {
+        let mut labels = HashMap::new();
+        
+        // 실제 도커 컴포즈에서 사용된 라벨 예시
+        labels.insert("rproxy.http.middlewares.api-cors.type".to_string(), "cors".to_string());
+        labels.insert("rproxy.http.middlewares.api-cors.cors.allowOrigins".to_string(), 
+                    "http://localhost:3000,https://example.com".to_string());
+        labels.insert("rproxy.http.middlewares.api-cors.cors.allowMethods".to_string(), 
+                    "GET,POST,PUT,DELETE,OPTIONS".to_string());
+        labels.insert("rproxy.http.middlewares.api-cors.enabled".to_string(), "true".to_string());
+        labels.insert("rproxy.http.routers.api.rule".to_string(), 
+                    "Host(`test.localhost`) && PathPrefix(`/api`)".to_string());
+        labels.insert("rproxy.http.routers.api.middlewares".to_string(), "api-cors".to_string());
+        
+        // JSON으로 변환
+        let json = labels_to_json(&labels, "rproxy.http.");
+        
+        // JSON 결과 출력 (디버깅 용도)
+        let json_str = serde_json::to_string_pretty(&json).unwrap();
+        println!("변환된 JSON: {}", json_str);
+        
+        // 기본 구조 검증
+        assert!(json.is_object());
+        let json_obj = json.as_object().unwrap();
+        
+        // middlewares 검증
+        assert!(json_obj.contains_key("middlewares"));
+        let middlewares = json_obj.get("middlewares").unwrap().as_object().unwrap();
+        assert!(middlewares.contains_key("api-cors"));
+        
+        // 미들웨어 타입 필드 이름 검증 - type 필드 이름 사용
+        let cors = middlewares.get("api-cors").unwrap().as_object().unwrap();
+        assert!(cors.contains_key("type"));
+        assert_eq!(cors.get("type").unwrap().as_str().unwrap(), "cors");
+        
+        // enabled 필드 검증
+        assert!(cors.contains_key("enabled"));
+        assert_eq!(cors.get("enabled").unwrap().as_bool().unwrap(), true);
+        
+        // 미들웨어 설정 검증
+        assert!(cors.contains_key("settings"));
+        let settings = cors.get("settings").unwrap().as_object().unwrap();
+        assert!(settings.contains_key("allow_origins"));
+        assert_eq!(settings.get("allow_origins").unwrap().as_str().unwrap(), 
+                 "http://localhost:3000,https://example.com");
+        
+        // 라우터 검증
+        assert!(json_obj.contains_key("routers"));
+        let routers = json_obj.get("routers").unwrap().as_object().unwrap();
+        assert!(routers.contains_key("api"));
+        
+        // 라우터 속성 검증
+        let api_router = routers.get("api").unwrap().as_object().unwrap();
+        assert!(api_router.contains_key("rule"));
+        assert!(api_router.contains_key("middlewares"));
+        
+        // 미들웨어 목록 검증
+        let middlewares_list = api_router.get("middlewares").unwrap().as_array().unwrap();
+        assert_eq!(middlewares_list.len(), 1);
+        assert_eq!(middlewares_list[0].as_str().unwrap(), "api-cors");
     }
 } 
