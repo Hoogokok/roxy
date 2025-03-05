@@ -2,11 +2,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
+use tracing::debug;
 
 use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
 use super::error::SettingsError;
 use super::Result;
 use super::converter::{labels_to_json, json_to_labels};
+use super::validator::JsonConfigValidator;
 
 /// JSON 설정 파일을 위한 구조체
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,21 +157,24 @@ impl Default for JsonConfig {
 }
 
 impl JsonConfig {
-    /// JSON 파일에서 설정 로드
-    pub async fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = tokio::fs::read_to_string(&path).await.map_err(|e| SettingsError::FileError {
-            path: path.as_ref().to_string_lossy().to_string(),
-            error: e,
-        })?;
-
-        let mut config: Self = serde_json::from_str(&content)
-            .map_err(|e| SettingsError::JsonParseError { 
-                source: e 
+    /// 파일에서 설정 로드
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let file_path = path.as_ref();
+        let file = std::fs::File::open(file_path)
+            .map_err(|e| SettingsError::FileError { 
+                path: file_path.to_string_lossy().to_string(),
+                error: e 
             })?;
         
-        // 로드 후 키 정규화 수행
-        config.normalize_keys();
-            
+        let mut config: Self = serde_json::from_reader(file)
+            .map_err(|e| SettingsError::JsonParseError { source: e })?;
+        
+        // 파일 경로 저장
+        config.source_path = Some(file_path.to_path_buf());
+        
+        // 유효성 검증 수행
+        config.validate()?;
+        
         Ok(config)
     }
     
@@ -386,37 +391,52 @@ impl JsonConfig {
     }
     
     /// 설정 유효성 검증
-    pub fn validate(&self) -> Result<()> {
-        // 1. 버전 검증
-        if !["1.0"].contains(&self.version.as_str()) {
-            return Err(SettingsError::InvalidConfig(
-                format!("지원하지 않는 버전: {}", self.version)
-            ));
-        }
+    pub fn validate(&mut self) -> Result<()> {
+        // 스키마 검증기 초기화
+        let validator = JsonConfigValidator::new()?;
         
-        // 2. 라우터-서비스 참조 검증
-        for (router_name, router) in &self.routers {
-            if !self.services.contains_key(&router.service) {
-                return Err(SettingsError::InvalidConfig(
-                    format!("라우터 '{}'가 존재하지 않는 서비스 '{}'를 참조합니다", 
-                            router_name, router.service)
-                ));
+        // 설정을 JSON으로 직렬화
+        let json_str = match serde_json::to_string(self) {
+            Ok(s) => s,
+            Err(e) => return Err(SettingsError::JsonParseError { source: e }),
+        };
+        
+        // 스키마 검증 수행
+        let _value = match validator.validate(&json_str) {
+            Ok(v) => v,
+            Err(errors) => {
+                let file_name = self.source_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                
+                return Err(SettingsError::from(errors).into_with_file(file_name));
             }
-            
-            // 3. 라우터-미들웨어 참조 검증
-            if let Some(middlewares) = &router.middlewares {
-                for middleware in middlewares {
-                    if !self.middlewares.contains_key(middleware) {
-                        return Err(SettingsError::InvalidConfig(
-                            format!("라우터 '{}'가 존재하지 않는 미들웨어 '{}'를 참조합니다", 
-                                    router_name, middleware)
-                        ));
-                    }
-                }
-            }
-        }
+        };
+        
+        // 참조 유효성 검사는 validator 내부에서 수행됨
+        
+        // 검증 성공 시 타임스탬프 업데이트
+        self.last_validated = Some(SystemTime::now());
+        debug!("설정 검증 성공");
         
         Ok(())
+    }
+}
+
+// Extension trait for SettingsError to set file name
+trait SettingsErrorExt {
+    fn into_with_file(self, file: String) -> SettingsError;
+}
+
+impl SettingsErrorExt for SettingsError {
+    fn into_with_file(self, file: String) -> SettingsError {
+        match self {
+            SettingsError::ValidationErrors { errors, .. } => {
+                SettingsError::ValidationErrors { errors, file }
+            }
+            other => other,
+        }
     }
 }
 

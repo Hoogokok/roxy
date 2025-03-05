@@ -206,7 +206,7 @@ impl ServerManager {
     #[instrument(level = "debug", err)]
     async fn load_and_validate_json_config(path: &Path) -> Result<JsonConfig> {
         // Load JsonConfig
-        let json_config = JsonConfig::from_file(path).await
+        let mut json_config = JsonConfig::from_file(path)
             .map_err(|e| Error::ConfigError(format!("Failed to load config file: {}: {}", path.display(), e)))?;
         
         info!("JSON config loaded: {}", path.display());
