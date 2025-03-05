@@ -92,15 +92,19 @@ impl MiddlewareConfig {
 
                 debug!("설정 추가: name={}, parts={:?}", name, parts);
                 
-                match parts[1] {
-                    "type" => config.middleware_type = value.parse()?,
-                    "enabled" => config.enabled = value.parse().unwrap_or(false),
-                    _ => {
-                        config.settings.insert(
-                            parts[1..].join("."), 
-                            value.clone()
-                        );
+                if parts[1] == "type" {
+                    config.middleware_type = value.parse()?;
+                } else if parts[1] == "enabled" {
+                    match value.to_lowercase().as_str() {
+                        "true" | "yes" | "1" | "on" => config.enabled = true,
+                        "false" | "no" | "0" | "off" => config.enabled = false,
+                        _ => config.enabled = default_enabled(),
                     }
+                } else {
+                    config.settings.insert(
+                        parts[1..].join("."), 
+                        value.clone()
+                    );
                 }
             }
         }
@@ -135,6 +139,10 @@ mod tests {
         labels.insert(
             "rproxy.http.middlewares.my-headers.headers.customResponseHeaders.X-Custom-Header".to_string(),
             "value".to_string(),
+        );
+        labels.insert(
+            "rproxy.http.middlewares.my-headers.enabled".to_string(),
+            "true".to_string(),
         );
 
         let configs = MiddlewareConfig::from_labels(&labels).unwrap();
