@@ -159,9 +159,29 @@ pub fn convert_value(value: &str, key: &str) -> Value {
 pub fn labels_to_json(labels: &HashMap<String, String>, prefix: &str) -> Value {
     let mut root = Map::new();
     
+    // 먼저 loadbalancer.server 라벨을 처리하기 위해 분리
+    let mut server_labels: HashMap<String, HashMap<String, String>> = HashMap::new();
+    
     for (key, value) in labels {
         // 접두사로 시작하는 키만 처리
         if !key.starts_with(prefix) {
+            continue;
+        }
+        
+        // loadbalancer.server 라벨 처리 위해 별도 수집
+        if key.contains(".loadbalancer.server.") {
+            let parts: Vec<&str> = key.split('.').collect();
+            if parts.len() >= 7 {
+                let service_name = parts[3].to_string();
+                let server_property = parts[6].to_string();
+                
+                server_labels
+                    .entry(service_name)
+                    .or_insert_with(HashMap::new)
+                    .insert(server_property, value.clone());
+            }
+            
+            // 이 라벨은 개별적으로 처리했으므로 일반 처리에서 제외
             continue;
         }
         
@@ -205,6 +225,57 @@ pub fn labels_to_json(labels: &HashMap<String, String>, prefix: &str) -> Value {
         }
     }
     
+    // 수집된 server 라벨을 servers 배열로 변환
+    if !server_labels.is_empty() {
+        // services 객체가 없으면 생성
+        if !root.contains_key("services") {
+            root.insert("services".to_string(), Value::Object(Map::new()));
+        }
+        
+        let services = root.get_mut("services").unwrap().as_object_mut().unwrap();
+        
+        for (service_name, server_props) in server_labels {
+            // 해당 서비스가 없으면 생성
+            if !services.contains_key(&service_name) {
+                services.insert(service_name.clone(), Value::Object(Map::new()));
+            }
+            
+            let service = services.get_mut(&service_name).unwrap().as_object_mut().unwrap();
+            
+            // loadbalancer가 없으면 생성
+            if !service.contains_key("loadbalancer") {
+                service.insert("loadbalancer".to_string(), Value::Object(Map::new()));
+            }
+            
+            let loadbalancer = service.get_mut("loadbalancer").unwrap().as_object_mut().unwrap();
+            
+            // servers 배열 생성 (단일 서버를 포함하는 배열)
+            let mut server_obj = Map::new();
+            
+            // URL 생성: port를 url로 변환
+            if let Some(port) = server_props.get("port") {
+                let url = format!("http://localhost:{}", port);
+                server_obj.insert("url".to_string(), Value::String(url));
+            }
+            
+            // weight 추가
+            if let Some(weight) = server_props.get("weight") {
+                if let Ok(w) = weight.parse::<u64>() {
+                    server_obj.insert("weight".to_string(), Value::Number(w.into()));
+                }
+            }
+            
+            // 기본 weight 추가 (없는 경우)
+            if !server_obj.contains_key("weight") {
+                server_obj.insert("weight".to_string(), Value::Number(1.into()));
+            }
+            
+            // servers 배열에 추가
+            let servers = vec![Value::Object(server_obj)];
+            loadbalancer.insert("servers".to_string(), Value::Array(servers));
+        }
+    }
+    
     let result = Value::Object(root);
     debug!("최종 JSON 결과: {}", result);
     result
@@ -213,6 +284,13 @@ pub fn labels_to_json(labels: &HashMap<String, String>, prefix: &str) -> Value {
 /// JSON 객체를 도커 라벨 맵으로 변환
 pub fn json_to_labels(json: &Value, prefix: &str) -> HashMap<String, String> {
     let mut labels = HashMap::new();
+    
+    // 접두사가 점(.)으로 끝나는지 확인하고, 그렇지 않으면 점을 추가
+    let prefix = if prefix.ends_with('.') {
+        prefix.to_string()
+    } else {
+        format!("{}.", prefix)
+    };
     
     if let Value::Object(root) = json {
         for (root_key, root_value) in root {
@@ -306,71 +384,27 @@ pub fn json_to_labels(json: &Value, prefix: &str) -> HashMap<String, String> {
                                         labels.insert(field_path, n.to_string());
                                     },
                                     Value::Array(arr) => {
-                                        let value = arr.iter()
-                                                      .map(|v| match v {
-                                                          Value::String(s) => s.clone(),
-                                                          _ => v.to_string(),
-                                                      })
-                                                      .collect::<Vec<String>>()
-                                                      .join(",");
-                                        labels.insert(field_path, value);
+                                        // 배열을 쉼표로 구분된 문자열로 변환
+                                        let values: Vec<String> = arr.iter()
+                                            .map(|v| match v {
+                                                Value::String(s) => s.clone(),
+                                                _ => v.to_string(),
+                                            })
+                                            .collect();
+                                        labels.insert(field_path, values.join(","));
                                     },
-                                    Value::Null => {
-                                        labels.insert(field_path, "".to_string());
-                                    },
-                                    Value::Object(_) => {},
+                                    Value::Null | Value::Object(_) => {},
                                 }
-                            }
-                        }
-                    } 
-                    // 라우터 처리
-                    else if root_key == "routers" && item_value.is_object() {
-                        let obj = item_value.as_object().unwrap();
-                        
-                        for (field_key, field_val) in obj {
-                            let key_str = if field_key.contains('_') {
-                                to_camel_case(field_key)
-                            } else {
-                                field_key.clone()
-                            };
-                            
-                            let field_path = format!("{}{}.{}.{}", prefix, root_key, item_key, key_str);
-                            
-                            // 값 변환 (배열 등)
-                            match field_val {
-                                Value::String(s) => {
-                                    labels.insert(field_path, s.clone());
-                                },
-                                Value::Bool(b) => {
-                                    labels.insert(field_path, b.to_string());
-                                },
-                                Value::Number(n) => {
-                                    labels.insert(field_path, n.to_string());
-                                },
-                                Value::Array(arr) => {
-                                    let value = arr.iter()
-                                                  .map(|v| match v {
-                                                      Value::String(s) => s.clone(),
-                                                      _ => v.to_string(),
-                                                  })
-                                                  .collect::<Vec<String>>()
-                                                  .join(",");
-                                    labels.insert(field_path, value);
-                                },
-                                Value::Null => {
-                                    labels.insert(field_path, "".to_string());
-                                },
-                                Value::Object(_) => {},
                             }
                         }
                     }
                     // 서비스 처리
-                    else if root_key == "services" && item_value.is_object() {
-                        process_service_object(&mut labels, prefix, root_key, item_key, item_value);
+                    else if root_key == "services" {
+                        process_service_object(&mut labels, &prefix, root_key, item_key, item_value);
                     }
-                    // 기타 일반 필드 처리
+                    // 그 외 필드 처리
                     else {
-                        process_simple_object(&mut labels, prefix, path, item_value);
+                        process_other_fields(&mut labels, &prefix, &path, item_value);
                     }
                 }
             }
@@ -387,71 +421,53 @@ fn process_service_object(labels: &mut HashMap<String, String>, prefix: &str, ro
             if field_key == "loadbalancer" && field_val.is_object() {
                 if let Some(lb_obj) = field_val.as_object() {
                     for (lb_key, lb_val) in lb_obj {
-                        // server 필드 처리
-                        if lb_key == "server" && lb_val.is_object() {
-                            if let Some(server_obj) = lb_val.as_object() {
-                                for (server_key, server_val) in server_obj {
-                                    let key_str = if server_key.contains('_') {
-                                        to_camel_case(server_key)
-                                    } else {
-                                        server_key.clone()
-                                    };
-                                    
-                                    let field_path = format!("{}{}.{}.{}.{}.{}", 
-                                        prefix, root_key, item_key, field_key, lb_key, key_str);
-                                    
-                                    // 값 변환
-                                    match server_val {
-                                        Value::String(s) => {
-                                            labels.insert(field_path, s.clone());
-                                        },
-                                        Value::Bool(b) => {
-                                            labels.insert(field_path, b.to_string());
-                                        },
-                                        Value::Number(n) => {
-                                            labels.insert(field_path, n.to_string());
-                                        },
-                                        Value::Array(_) | Value::Null | Value::Object(_) => {},
+                        // servers 배열 처리 
+                        if lb_key == "servers" && lb_val.is_array() {
+                            if let Some(servers) = lb_val.as_array() {
+                                // 모든 서버 처리
+                                for (idx, server_val) in servers.iter().enumerate() {
+                                    if let Some(server) = server_val.as_object() {
+                                        // url 처리
+                                        if let Some(url) = server.get("url").and_then(|u| u.as_str()) {
+                                            let url_path = format!("{}{}.{}.loadbalancer.servers.{}.url", 
+                                                prefix, root_key, item_key, idx);
+                                            labels.insert(url_path, url.to_string());
+                                        }
+                                        
+                                        // weight 처리
+                                        if let Some(weight) = server.get("weight").and_then(|w| w.as_u64()) {
+                                            let weight_path = format!("{}{}.{}.loadbalancer.servers.{}.weight", 
+                                                prefix, root_key, item_key, idx);
+                                            labels.insert(weight_path, weight.to_string());
+                                        }
                                     }
                                 }
                             }
                         } else {
-                            let key_str = if lb_key.contains('_') {
-                                to_camel_case(lb_key)
-                            } else {
-                                lb_key.clone()
-                            };
+                            // 기타 loadbalancer 필드 처리
+                            let lb_path = format!("{}{}.{}.loadbalancer.{}", 
+                                prefix, root_key, item_key, lb_key);
                             
-                            let field_path = format!("{}{}.{}.{}.{}", 
-                                prefix, root_key, item_key, field_key, key_str);
-                            
-                            // 값 변환
                             match lb_val {
                                 Value::String(s) => {
-                                    labels.insert(field_path, s.clone());
+                                    labels.insert(lb_path, s.clone());
                                 },
                                 Value::Bool(b) => {
-                                    labels.insert(field_path, b.to_string());
+                                    labels.insert(lb_path, b.to_string());
                                 },
                                 Value::Number(n) => {
-                                    labels.insert(field_path, n.to_string());
+                                    labels.insert(lb_path, n.to_string());
                                 },
-                                Value::Array(_) | Value::Null | Value::Object(_) => {},
+                                _ => {}
                             }
                         }
                     }
                 }
             } else {
-                let key_str = if field_key.contains('_') {
-                    to_camel_case(field_key)
-                } else {
-                    field_key.clone()
-                };
-                
+                // 기타 서비스 필드 처리
                 let field_path = format!("{}{}.{}.{}", 
-                    prefix, root_key, item_key, key_str);
+                    prefix, root_key, item_key, field_key);
                 
-                // 값 변환
                 match field_val {
                     Value::String(s) => {
                         labels.insert(field_path, s.clone());
@@ -462,27 +478,57 @@ fn process_service_object(labels: &mut HashMap<String, String>, prefix: &str, ro
                     Value::Number(n) => {
                         labels.insert(field_path, n.to_string());
                     },
-                    Value::Array(_) | Value::Null | Value::Object(_) => {},
+                    Value::Object(_) => {
+                        // 중첩된 객체는 재귀적으로 처리할 수 있지만 여기서는 생략
+                    },
+                    _ => {}
                 }
             }
         }
     }
 }
 
-fn process_simple_object(labels: &mut HashMap<String, String>, prefix: &str, path: Vec<&str>, value: &Value) {
+// URL에서 포트를 추출하는 헬퍼 함수
+fn extract_port_from_url(url: &str) -> Option<u16> {
+    // URL 구문 분석: http://example.com:8080 형식 지원
+    let url_parts: Vec<&str> = url.split("://").collect();
+    if url_parts.len() < 2 {
+        return None;
+    }
+    
+    let host_port: Vec<&str> = url_parts[1].split(':').collect();
+    if host_port.len() < 2 {
+        // 포트가 지정되지 않은 경우, 기본 포트 추론
+        return match url_parts[0] {
+            "http" => Some(80),
+            "https" => Some(443),
+            _ => Some(80), // 기본값
+        };
+    }
+    
+    // 포트 파싱 (path가 있는 경우 처리: 8080/path)
+    let port_str = host_port[1].split('/').next().unwrap_or(host_port[1]);
+    port_str.parse().ok()
+}
+
+fn process_other_fields(labels: &mut HashMap<String, String>, prefix: &str, path: &[&str], value: &Value) {
     match value {
         Value::Object(obj) => {
             for (key, val) in obj {
-                let mut new_path = path.clone();
-                
                 let key_str = if key.contains('_') {
                     to_camel_case(key)
                 } else {
                     key.clone()
                 };
                 
+                // 새 경로 구성
+                let mut new_path = Vec::new();
+                for p in path.iter() {
+                    new_path.push(*p);
+                }
                 new_path.push(&key_str);
-                process_simple_object(labels, prefix, new_path, val);
+                
+                process_other_fields(labels, prefix, &new_path, val);
             }
         },
         Value::String(s) => {
@@ -766,5 +812,105 @@ mod tests {
         let middlewares_list = api_router.get("middlewares").unwrap().as_array().unwrap();
         assert_eq!(middlewares_list.len(), 1);
         assert_eq!(middlewares_list[0].as_str().unwrap(), "api-cors");
+    }
+    
+    #[test]
+    fn test_loadbalancer_labels_to_json() {
+        let mut labels = HashMap::new();
+        
+        // 로드밸런서 서버 설정 라벨 추가
+        labels.insert("rproxy.http.services.web.loadbalancer.server.port".to_string(), "8080".to_string());
+        labels.insert("rproxy.http.services.web.loadbalancer.server.weight".to_string(), "2".to_string());
+        
+        // JSON으로 변환
+        let json = labels_to_json(&labels, "rproxy.");
+        
+        // 결과 검증
+        assert!(json.is_object());
+        let json_obj = json.as_object().unwrap();
+        
+        // 서비스 검증
+        assert!(json_obj.contains_key("services"));
+        let services = json_obj.get("services").unwrap().as_object().unwrap();
+        assert!(services.contains_key("web"));
+        
+        // 로드밸런서 설정 검증
+        let web = services.get("web").unwrap().as_object().unwrap();
+        assert!(web.contains_key("loadbalancer"));
+        
+        let loadbalancer = web.get("loadbalancer").unwrap().as_object().unwrap();
+        assert!(loadbalancer.contains_key("servers"));
+        
+        // servers 배열 검증
+        let servers = loadbalancer.get("servers").unwrap().as_array().unwrap();
+        assert_eq!(servers.len(), 1);
+        
+        // 첫 번째 서버 검증
+        let server = servers[0].as_object().unwrap();
+        assert!(server.contains_key("url"));
+        assert!(server.contains_key("weight"));
+        
+        // URL 형식 검증
+        assert_eq!(server.get("url").unwrap(), "http://localhost:8080");
+        assert_eq!(server.get("weight").unwrap().as_u64().unwrap(), 2);
+    }
+    
+    #[test]
+    fn test_loadbalancer_json_to_labels() {
+        // 테스트용 JSON 객체 생성
+        let mut map = Map::new();
+        let mut services = Map::new();
+        let mut web_service = Map::new();
+        let mut loadbalancer = Map::new();
+        let mut servers = Vec::new();
+        
+        let mut server = Map::new();
+        server.insert("url".to_string(), Value::String("http://localhost:8080".to_string()));
+        server.insert("weight".to_string(), Value::Number(2.into()));
+        servers.push(Value::Object(server));
+        
+        loadbalancer.insert("servers".to_string(), Value::Array(servers));
+        web_service.insert("loadbalancer".to_string(), Value::Object(loadbalancer));
+        services.insert("web".to_string(), Value::Object(web_service));
+        map.insert("services".to_string(), Value::Object(services));
+        
+        let json = Value::Object(map);
+        
+        println!("JSON: {}", json);
+        
+        // JSON을 레이블로 변환
+        let labels = json_to_labels(&json, "rproxy");
+        
+        println!("Labels: {:?}", labels);
+        
+        // 레이블에 필요한 키가 있는지 확인
+        assert!(labels.contains_key("rproxy.services.web.loadbalancer.servers.0.url"));
+        assert!(labels.contains_key("rproxy.services.web.loadbalancer.servers.0.weight"));
+        
+        // 값이 올바른지 확인
+        assert_eq!(labels.get("rproxy.services.web.loadbalancer.servers.0.url").unwrap(), "http://localhost:8080");
+        assert_eq!(labels.get("rproxy.services.web.loadbalancer.servers.0.weight").unwrap(), "2");
+    }
+    
+    #[test]
+    fn test_extract_port_from_url() {
+        // 기본 HTTP URL
+        assert_eq!(extract_port_from_url("http://example.com:8080"), Some(8080));
+        
+        // HTTPS URL
+        assert_eq!(extract_port_from_url("https://secure.example.com:8443"), Some(8443));
+        
+        // 경로가 있는 URL
+        assert_eq!(extract_port_from_url("http://example.com:8080/path"), Some(8080));
+        
+        // 포트가 없는 URL - 기본 포트 추론
+        assert_eq!(extract_port_from_url("http://example.com"), Some(80));
+        assert_eq!(extract_port_from_url("https://example.com"), Some(443));
+        
+        // 잘못된 형식의 URL
+        assert_eq!(extract_port_from_url("invalid-url"), None);
+        
+        // 잘못된 포트 번호
+        assert_eq!(extract_port_from_url("http://example.com:invalid"), None);
     }
 } 
