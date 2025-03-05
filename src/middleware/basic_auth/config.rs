@@ -83,30 +83,54 @@ impl BasicAuthConfig {
     /// Docker 라벨에서 설정을 파싱
     pub fn from_labels(labels: &HashMap<String, String>) -> Result<Self, MiddlewareError> {
         let mut config = Self::default();
+        let mut htpasswd_path = String::new();
         
         for (key, value) in labels {
-            match key.as_str() {
-                "basicAuth.users" => {
-                    for user_entry in value.split(',') {
-                        if let Some((username, password)) = user_entry.split_once(':') {
-                            config.users.insert(username.trim().to_string(), password.trim().to_string());
+            let middleware_part = if let Some(stripped_key) = key.strip_prefix("rproxy.http.middlewares.") {
+                // 라벨이 전체 경로를 포함하는 경우
+                if let Some(pos) = stripped_key.find(".basicAuth.") {
+                    &stripped_key[pos + 11..]  // ".basicAuth." 이후의 부분
+                } else {
+                    continue;  // basicAuth 관련 필드가 아닌 경우 건너뜀
+                }
+            } else if let Some(stripped) = key.strip_prefix("basicAuth.") {
+                // 짧은 키 형식 사용
+                stripped
+            } else {
+                continue;  // 관련 없는 키 건너뜀
+            };
+            
+            match middleware_part {
+                "users" => {
+                    // 사용자:비밀번호 형식 파싱
+                    for user_str in value.split(',') {
+                        let parts: Vec<&str> = user_str.trim().split(':').collect();
+                        if parts.len() == 2 {
+                            config.users.insert(parts[0].to_string(), parts[1].to_string());
                         } else {
-                            return Err(MiddlewareError::InvalidLabel {
-                                key: key.clone(),
-                                value: value.clone(),
-                                reason: "Invalid user:password format".to_string(),
+                            return Err(MiddlewareError::Config {
+                                message: format!("Invalid user format: {}", user_str)
                             });
                         }
                     }
                 }
-                "basicAuth.realm" => config.realm = value.clone(),
-                "basicAuth.source" => {
-                    config.source = match value.to_lowercase().as_str() {
-                        "htpasswd" => AuthSource::HtpasswdFile(String::new()),
+                "realm" => {
+                    config.realm = value.clone();
+                }
+                "source" => {
+                    config.source = match value.as_str() {
+                        "htpasswd" => AuthSource::HtpasswdFile(htpasswd_path.clone()),
                         "env" => AuthSource::EnvVar(String::new()),
                         "secret" => AuthSource::DockerSecret(String::new()),
                         _ => AuthSource::Labels,
                     };
+                }
+                "htpasswd.path" => {
+                    htpasswd_path = value.clone();
+                    // 이미 소스가 HtpasswdFile로 설정되어 있으면 경로도 업데이트
+                    if let AuthSource::HtpasswdFile(_) = config.source {
+                        config.source = AuthSource::HtpasswdFile(value.clone());
+                    }
                 }
                 _ => {}  // 다른 설정들은 무시
             }
