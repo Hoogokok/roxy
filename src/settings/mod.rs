@@ -12,6 +12,7 @@ pub mod json;
 pub mod watcher;
 pub mod converter;
 mod validator;
+pub mod schema;
 
 pub use server::ServerSettings;
 pub use logging::LogSettings;
