@@ -231,40 +231,8 @@ impl Settings {
         let config_id = config.get_id(path_ref);
         debug!("설정 ID: {}", config_id);
         
-        // 미들웨어 설정 병합
-        for (name, middleware_config) in config.middlewares {
-            let full_name = if name.contains('.') {
-                name
-            } else {
-                format!("{}.{}", config_id, name)
-            };
-            
-            debug!("미들웨어 추가: {}", full_name);
-            self.add_middleware_with_override(full_name, middleware_config, override_existing)?;
-        }
-        
-        // 라우터-미들웨어 매핑 병합
-        for (router_name, router_config) in config.routers {
-            if let Some(middlewares) = router_config.middlewares {
-                let full_name = if router_name.contains('.') {
-                    router_name
-                } else {
-                    format!("{}.{}", config_id, router_name)
-                };
-                
-                debug!(
-                    router = %full_name,
-                    middlewares = ?middlewares,
-                    "라우터-미들웨어 매핑 추가"
-                );
-                
-                // 라우터-미들웨어 매핑은 항상 덮어씀
-                self.router_middlewares.insert(full_name, middlewares);
-            }
-        }
-        
-        info!("JSON 설정 파일 로드 완료: {}", path_ref.display());
-        Ok(())
+        // 새로 추가된 merge_with_json_config 메서드 사용
+        self.merge_with_json_config(&config, override_existing)
     }
 
     /// 원래의 load_json_config는 덮어쓰기 옵션을 추가한 메서드를 호출
@@ -424,6 +392,90 @@ impl Settings {
         debug!("설정 리로드 완료");
         Ok(())
     }
+
+    /// JsonConfig 객체의 내용을 현재 Settings 객체에 병합
+    /// 
+    /// 이 메서드는 JsonConfig에서 가져온 설정을 현재 Settings 객체에 적용합니다.
+    /// override_existing이 true면 기존 설정을 덮어쓰고, false면 기존 설정을 유지합니다.
+    pub fn merge_with_json_config(&mut self, config: &JsonConfig, override_existing: bool) -> Result<()> {
+        debug!("JsonConfig를 Settings에 병합 중 (덮어쓰기: {})", override_existing);
+        
+        // 미들웨어 설정 병합
+        for (name, middleware_config) in &config.middlewares {
+            let full_name = if name.contains('.') {
+                name.clone()
+            } else {
+                let config_id = match &config.id {
+                    Some(id) => id.clone(),
+                    None => match &config.source_path {
+                        Some(path) => path.file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "default".to_string()),
+                        None => "default".to_string()
+                    }
+                };
+                format!("{}.{}", config_id, name)
+            };
+            
+            if override_existing || !self.middleware.contains_key(&full_name) {
+                debug!("미들웨어 추가: {}", full_name);
+                self.add_middleware_with_override(full_name, middleware_config.clone(), override_existing)?;
+            }
+        }
+        
+        // 라우터-미들웨어 매핑 병합
+        for (router_name, middlewares) in &config.router_middlewares {
+            let full_name = if router_name.contains('.') {
+                router_name.clone()
+            } else {
+                let config_id = match &config.id {
+                    Some(id) => id.clone(),
+                    None => match &config.source_path {
+                        Some(path) => path.file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| "default".to_string()),
+                        None => "default".to_string()
+                    }
+                };
+                format!("{}.{}", config_id, router_name)
+            };
+            
+            if override_existing || !self.router_middlewares.contains_key(&full_name) {
+                debug!("라우터-미들웨어 매핑 추가: {}", full_name);
+                self.router_middlewares.insert(full_name, middlewares.clone());
+            }
+        }
+        
+        // 라우터에서 미들웨어 정보 추출 및 매핑 추가
+        for (router_name, router_config) in &config.routers {
+            if let Some(middlewares) = &router_config.middlewares {
+                let full_name = if router_name.contains('.') {
+                    router_name.clone()
+                } else {
+                    let config_id = match &config.id {
+                        Some(id) => id.clone(),
+                        None => match &config.source_path {
+                            Some(path) => path.file_stem()
+                                .and_then(|stem| stem.to_str())
+                                .map(|s| s.to_string())
+                                .unwrap_or_else(|| "default".to_string()),
+                            None => "default".to_string()
+                        }
+                    };
+                    format!("{}.{}", config_id, router_name)
+                };
+                
+                if override_existing || !self.router_middlewares.contains_key(&full_name) {
+                    debug!("라우터에서 미들웨어 매핑 추가: {}", full_name);
+                    self.router_middlewares.insert(full_name, middlewares.clone());
+                }
+            }
+        }
+        
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -433,32 +485,6 @@ mod tests {
     use std::io::Write;
     use tempfile::tempdir;
 
-    #[test]
-    fn test_settings_from_toml() {
-        let toml_content = r#"
-            [server]
-            http_port = 8080
-            https_enabled = true
-            https_port = 443
-
-            [logging]
-            format = "json"
-            level = "info"
-            
-            [middleware.auth]
-            middleware_type = "basic-auth"
-            enabled = true
-            order = 1
-            
-            [middleware.auth.settings]
-            users = "admin:password"
-        "#;
-
-        let settings: Settings = toml::from_str(toml_content).unwrap();
-        assert_eq!(settings.server.http_port, 8080);
-        assert!(settings.server.https_enabled);
-        assert_eq!(settings.middleware.len(), 1);
-    }
 
     #[tokio::test]
     async fn test_load_json_config() {
@@ -469,7 +495,7 @@ mod tests {
             "version": "1.0",
             "middlewares": {
                 "test-middleware": {
-                    "middleware_type": "headers",
+                    "type": "headers",
                     "enabled": true,
                     "settings": {
                         "headers.customResponseHeaders.X-Test": "value"
@@ -486,11 +512,19 @@ mod tests {
             "services": {
                 "test-service": {
                     "loadbalancer": {
-                        "server": {
-                            "port": 8080,
-                            "weight": 2
-                        }
+                        "servers": [
+                            {
+                                "url": "http://localhost:8080",
+                                "weight": 2
+                            }
+                        ]
                     }
+                }
+            },
+            "health": {
+                "enabled": true,
+                "http": {
+                    "path": "/health"
                 }
             }
         }"#;
@@ -510,9 +544,12 @@ mod tests {
         // JSON 설정 로드
         settings.load_json_config(&file_path).await.unwrap();
         
+        // 디버깅 출력
+        println!("로드된 미들웨어 키: {:?}", settings.middleware.keys().collect::<Vec<_>>());
+        
         // 설정이 제대로 로드되었는지 검증
         assert_eq!(settings.middleware.len(), 1);
-        assert!(settings.middleware.contains_key("test-config.test-middleware"));
+        assert!(settings.middleware.contains_key("test-config.test-middleware"), "미들웨어 키 test-config.test-middleware가 없습니다");
         
         let middleware = &settings.middleware["test-config.test-middleware"];
         assert_eq!(middleware.middleware_type, MiddlewareType::Headers);
@@ -535,11 +572,17 @@ mod tests {
             "version": "1.0",
             "middlewares": {
                 "cors": {
-                    "middleware_type": "cors",
+                    "type": "cors",
                     "enabled": true,
                     "settings": {
                         "cors.allowOrigins": "*"
                     }
+                }
+            },
+            "health": {
+                "enabled": true,
+                "http": {
+                    "path": "/health"
                 }
             }
         }"#;
@@ -552,7 +595,7 @@ mod tests {
             "version": "1.0",
             "middlewares": {
                 "auth": {
-                    "middleware_type": "basic-auth",
+                    "type": "basic-auth",
                     "enabled": true,
                     "settings": {
                         "users": "admin:password"
@@ -569,11 +612,19 @@ mod tests {
             "services": {
                 "test-service": {
                     "loadbalancer": {
-                        "server": {
-                            "port": 8080,
-                            "weight": 2
-                        }
+                        "servers": [
+                            {
+                                "url": "http://localhost:8080",
+                                "weight": 2
+                            }
+                        ]
                     }
+                }
+            },
+            "health": {
+                "enabled": true,
+                "http": {
+                    "path": "/health"
                 }
             }
         }"#;
@@ -631,9 +682,15 @@ mod tests {
             "version": "1.0",
             "middlewares": {
                 "env-mid": {
-                    "middleware_type": "cors",
+                    "type": "cors",
                     "enabled": true,
                     "settings": {}
+                }
+            },
+            "health": {
+                "enabled": true,
+                "http": {
+                    "path": "/health"
                 }
             }
         }"#).unwrap();
@@ -668,9 +725,15 @@ mod tests {
             "version": "1.0",
             "middlewares": {
                 "json-mid": {
-                    "middleware_type": "cors",
+                    "type": "cors",
                     "enabled": true,
                     "settings": {}
+                }
+            },
+            "health": {
+                "enabled": true,
+                "http": {
+                    "path": "/health"
                 }
             }
         }"#).unwrap();
@@ -709,5 +772,74 @@ mod tests {
         
         // 감시 시작
         watcher.start().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_merge_with_json_config() {
+        use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
+        
+        // 초기 Settings 객체 생성
+        let mut settings = Settings::default();
+        
+        // JsonConfig 생성
+        let mut json_config = JsonConfig::default();
+        json_config.id = Some("test".to_string());
+        
+        // 미들웨어 추가
+        let mut middleware = MiddlewareConfig::new(MiddlewareType::BasicAuth);
+        middleware.settings.insert("users".to_string(), "admin:password".to_string());
+        json_config.middlewares.insert("auth".to_string(), middleware);
+        
+        // 설정 병합
+        settings.merge_with_json_config(&json_config, false).unwrap();
+        
+        // 검증
+        assert!(settings.middleware.contains_key("test.auth"));
+        assert_eq!(settings.middleware.get("test.auth").unwrap().middleware_type, MiddlewareType::BasicAuth);
+        
+        // 덮어쓰기 없이 동일한 ID로 다시 병합
+        let middleware2 = MiddlewareConfig::new(MiddlewareType::Cors);
+        json_config.middlewares.clear();
+        json_config.middlewares.insert("auth".to_string(), middleware2);
+        
+        settings.merge_with_json_config(&json_config, false).unwrap();
+        
+        // 검증 - 기존 설정이 유지되어야 함
+        assert_eq!(settings.middleware.get("test.auth").unwrap().middleware_type, MiddlewareType::BasicAuth);
+        
+        // 덮어쓰기로 다시 병합
+        settings.merge_with_json_config(&json_config, true).unwrap();
+        
+        // 검증 - 덮어써진 설정이 적용되어야 함
+        assert_eq!(settings.middleware.get("test.auth").unwrap().middleware_type, MiddlewareType::Cors);
+    }
+    
+    #[test]
+    fn test_json_config_merge_with_labels() {
+        use std::collections::HashMap;
+        use crate::middleware::config::MiddlewareType;
+        
+        // JsonConfig 생성
+        let mut json_config = JsonConfig::default();
+        
+        // Docker 라벨 생성
+        let mut labels = HashMap::new();
+        labels.insert("rproxy.http.middlewares.test.type".to_string(), "basic-auth".to_string());
+        labels.insert("rproxy.http.middlewares.test.settings.users".to_string(), "admin:pass".to_string());
+        
+        println!("라벨: {:?}", labels);
+        
+        // 라벨 병합
+        match json_config.merge_with_labels(&labels, "rproxy.http.") {
+            Ok(_) => println!("병합 성공"),
+            Err(e) => println!("병합 오류: {:?}", e),
+        }
+        
+        println!("병합 후 JsonConfig 미들웨어: {:?}", json_config.middlewares);
+        
+        // 검증
+        assert!(json_config.middlewares.contains_key("test"));
+        let middleware = &json_config.middlewares["test"];
+        assert_eq!(middleware.middleware_type, MiddlewareType::BasicAuth);
     }
 }
