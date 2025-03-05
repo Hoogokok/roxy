@@ -7,9 +7,11 @@ use tracing::debug;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "kebab-case")]
 pub enum MiddlewareType {
+    #[serde(rename = "basic-auth")]
     BasicAuth,
     Headers,
     Cors,
+    #[serde(rename = "ratelimit")]
     RateLimit,
     // 추후 추가될 미들웨어 타입들...
 }
@@ -18,11 +20,11 @@ impl FromStr for MiddlewareType {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
+        match s.to_lowercase().as_str() {
             "headers" => Ok(MiddlewareType::Headers),
-            "basic-auth" => Ok(MiddlewareType::BasicAuth),
+            "basic-auth" | "basicauth" => Ok(MiddlewareType::BasicAuth),
             "cors" => Ok(MiddlewareType::Cors),
-            "ratelimit" => Ok(MiddlewareType::RateLimit),
+            "ratelimit" | "rate-limit" => Ok(MiddlewareType::RateLimit),
             unknown => Err(format!("Unknown middleware type: {}", unknown)),
         }
     }
@@ -31,6 +33,7 @@ impl FromStr for MiddlewareType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MiddlewareConfig {
     /// 미들웨어 타입
+    #[serde(rename = "type")]
     pub middleware_type: MiddlewareType,
     
     /// 미들웨어 활성화 여부
@@ -89,15 +92,19 @@ impl MiddlewareConfig {
 
                 debug!("설정 추가: name={}, parts={:?}", name, parts);
                 
-                match parts[1] {
-                    "type" => config.middleware_type = value.parse()?,
-                    "enabled" => config.enabled = value.parse().unwrap_or(false),
-                    _ => {
-                        config.settings.insert(
-                            parts[1..].join("."), 
-                            value.clone()
-                        );
+                if parts[1] == "type" {
+                    config.middleware_type = value.parse()?;
+                } else if parts[1] == "enabled" {
+                    match value.to_lowercase().as_str() {
+                        "true" | "yes" | "1" | "on" => config.enabled = true,
+                        "false" | "no" | "0" | "off" => config.enabled = false,
+                        _ => config.enabled = default_enabled(),
                     }
+                } else {
+                    config.settings.insert(
+                        parts[1..].join("."), 
+                        value.clone()
+                    );
                 }
             }
         }
@@ -132,6 +139,10 @@ mod tests {
         labels.insert(
             "rproxy.http.middlewares.my-headers.headers.customResponseHeaders.X-Custom-Header".to_string(),
             "value".to_string(),
+        );
+        labels.insert(
+            "rproxy.http.middlewares.my-headers.enabled".to_string(),
+            "true".to_string(),
         );
 
         let configs = MiddlewareConfig::from_labels(&labels).unwrap();

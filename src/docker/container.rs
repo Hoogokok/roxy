@@ -153,6 +153,14 @@ impl  DefaultExtractor {
             .unwrap_or(80)
     }
 
+    fn extract_url(&self, labels: &Option<std::collections::HashMap<String, String>>) -> Option<String> {
+        labels
+            .as_ref()
+            .and_then(|l| l.iter()
+                .find(|(k, _)| k.contains(".loadbalancer.server.url"))
+                .map(|(_, v)| v.clone()))
+    }
+
     fn parse_socket_addr(&self, ip: &str, port: u16) -> Result<SocketAddr, DockerError> {
         format!("{}:{}", ip, port)
             .parse()
