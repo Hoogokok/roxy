@@ -116,7 +116,7 @@ mod tests {
         );
 
         // 기본값이 제대로 설정되었는지 확인
-        assert_eq!(server.config.server.http_port, 9090);
+        assert_eq!(server.config.server.http_port(), 9090);
     }
 
     fn teardown() {
@@ -146,8 +146,8 @@ mod tests {
         );
 
         // 기본 설정 검증
-        assert_eq!(server.config.server.http_port, 9090, "HTTP 포트가 기본값과 일치해야 함");
-        assert!(!server.config.server.https_enabled, "HTTPS는 기본적으로 비활성화되어 있어야 함");
+        assert_eq!(server.config.server.http_port(), 9090, "HTTP 포트가 기본값과 일치해야 함");
+        assert!(!server.config.server.https_enabled(), "HTTPS는 기본적으로 비활성화되어 있어야 함");
         assert!(server.routing_table.read().await.routes.is_empty(), "라우팅 테이블이 비어있어야 함");
         
         teardown();
@@ -264,10 +264,10 @@ mod tests {
         );
 
         // HTTPS 설정 검증
-        assert!(server.config.server.https_enabled);
-        assert_eq!(server.config.server.https_port, 8443);
-        assert_eq!(server.config.server.tls_cert_path.unwrap(), "/path/to/cert.pem");
-        assert_eq!(server.config.server.tls_key_path.unwrap(), "/path/to/key.pem");
+        assert!(server.config.server.https_enabled());
+        assert_eq!(server.config.server.http_port(), 8443);
+        assert_eq!(server.config.server.tls_cert_path().unwrap(), "/path/to/cert.pem");
+        assert_eq!(server.config.server.tls_key_path().unwrap(), "/path/to/key.pem");
         
         teardown();
     }
