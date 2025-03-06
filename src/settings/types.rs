@@ -5,6 +5,7 @@
 
 use std::fmt;
 use url::Url;
+use serde;
 
 /// A validated service identifier.
 /// 
@@ -329,6 +330,43 @@ impl fmt::Display for Version {
 /// 유효한 URL을 나타내는 타입
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ValidUrl(String);
+
+// serde를 위한 Serialize, Deserialize 구현
+impl serde::Serialize for ValidUrl {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+// String에서 ValidUrl로 변환하는 방문자 구현
+struct ValidUrlVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ValidUrlVisitor {
+    type Value = ValidUrl;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a valid URL string")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        ValidUrl::new(value).ok_or_else(|| E::custom(format!("invalid URL: {}", value)))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ValidUrl {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_str(ValidUrlVisitor)
+    }
+}
 
 impl ValidUrl {
     /// URL 문자열에서 `ValidUrl` 인스턴스 생성 시도
