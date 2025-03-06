@@ -15,7 +15,7 @@ use super::validator::JsonConfigValidator;
 pub struct JsonConfig {
     /// 설정 파일 버전
     #[serde(default = "default_version")]
-    pub version: String,
+    pub version: crate::settings::types::Version,
     
     /// 설정 고유 ID (선택적)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,14 +54,14 @@ pub struct JsonConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouterConfig {
     /// 라우팅 규칙
-    pub rule: String,
+    pub rule: crate::settings::types::ValidRule,
     
     /// 연결된 미들웨어 목록
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub middlewares: Option<Vec<String>>,
+    pub middlewares: Option<Vec<crate::settings::types::ValidMiddlewareId>>,
     
     /// 서비스 이름
-    pub service: String,
+    pub service: crate::settings::types::ValidServiceId,
 }
 
 /// 서비스 설정
@@ -111,8 +111,8 @@ pub struct HttpHealthConfig {
 }
 
 /// 기본 설정값을 위한 함수들
-fn default_version() -> String {
-    "1.0".to_string()
+fn default_version() -> crate::settings::types::Version {
+    crate::settings::types::Version::new("1.0").unwrap()
 }
 
 fn default_weight() -> u32 {
@@ -338,12 +338,12 @@ impl JsonConfig {
                             // 라우터 생성 또는 업데이트
                             if !config.routers.contains_key(router_name) {
                                 config.routers.insert(router_name.to_string(), RouterConfig {
-                                    rule: value.clone(),
+                                    rule: crate::settings::types::ValidRule::new(value.clone()).unwrap(),
                                     middlewares: None,
-                                    service: "default".to_string(),
+                                    service: crate::settings::types::ValidServiceId::new("default").unwrap(),
                                 });
                             } else if let Some(router) = config.routers.get_mut(router_name) {
-                                router.rule = value.clone();
+                                router.rule = crate::settings::types::ValidRule::new(value.clone()).unwrap();
                             }
                         }
                     }
@@ -371,7 +371,7 @@ impl JsonConfig {
                             
                             if let Some(router) = config.routers.get_mut(router_name) {
                                 router.middlewares = Some(value.split(',')
-                                    .map(|s| s.trim().to_string())
+                                    .map(|s| crate::settings::types::ValidMiddlewareId::new(s.trim()).unwrap())
                                     .collect());
                             }
                         }
@@ -384,7 +384,7 @@ impl JsonConfig {
                             let router_name = parts[3];
                             
                             if let Some(router) = config.routers.get_mut(router_name) {
-                                router.service = value.clone();
+                                router.service = crate::settings::types::ValidServiceId::new(value.clone()).unwrap();
                             }
                         }
                     }
@@ -533,12 +533,13 @@ impl JsonConfig {
         for (id, router) in validated.routers {
             let router_id = id.into_inner();
             
+            // middlewares를 미리 클론하여 소유권 문제 해결
+            let middlewares_clone = router.middlewares.clone();
+            
             let router_config = RouterConfig {
-                rule: router.rule.into_inner(),
-                service: router.service.into_inner(),
-                middlewares: router.middlewares.as_ref().map(|mids| {
-                    mids.iter().map(|mid| mid.clone().into_inner()).collect()
-                }),
+                rule: router.rule,
+                service: router.service,
+                middlewares: middlewares_clone,
             };
             
             routers.insert(router_id.clone(), router_config);
@@ -555,7 +556,7 @@ impl JsonConfig {
         }
         
         JsonConfig {
-            version: validated.version.into_inner(),
+            version: validated.version,
             id: None,
             middlewares,
             routers,
@@ -594,7 +595,7 @@ mod tests {
     #[test]
     fn test_json_config_default() {
         let config = JsonConfig::default();
-        assert_eq!(config.version, "1.0");
+        assert_eq!(config.version.as_str(), "1.0");
         assert!(config.id.is_none());
         assert!(config.middlewares.is_empty());
         assert!(config.routers.is_empty());
@@ -620,7 +621,7 @@ mod tests {
     #[test]
     fn test_validate_version() {
         let mut config = JsonConfig::default();
-        config.version = "2.0".to_string(); // 지원되지 않는 버전
+        config.version = crate::settings::types::Version::new("2.0").unwrap(); // 지원되지 않는 버전
         
         // 유효한 서비스 추가 (스키마 검증이 가능하도록)
         config.services.insert("test-service".to_string(), ServiceConfig {
@@ -667,9 +668,9 @@ mod tests {
         
         // 서비스가 없는 라우터 추가
         config.routers.insert("test-router".to_string(), RouterConfig {
-            rule: "Host(`example.com`)".to_string(),
+            rule: crate::settings::types::ValidRule::new("Host(`example.com`)").unwrap(),
             middlewares: None,
-            service: "non-existent-service".to_string(),
+            service: crate::settings::types::ValidServiceId::new("non-existent-service").unwrap(),
         });
         
         // 유효한 서비스 추가 (스키마 검증이 가능하도록)
@@ -727,9 +728,9 @@ mod tests {
         
         // 존재하지 않는 미들웨어를 참조하는 라우터 추가
         config.routers.insert("test-router".to_string(), RouterConfig {
-            rule: "Host(`example.com`)".to_string(),
-            middlewares: Some(vec!["non-existent-middleware".to_string()]),
-            service: "test-service".to_string(),
+            rule: crate::settings::types::ValidRule::new("Host(`example.com`)").unwrap(),
+            middlewares: Some(vec![crate::settings::types::ValidMiddlewareId::new("non-existent-middleware").unwrap()]),
+            service: crate::settings::types::ValidServiceId::new("test-service").unwrap(),
         });
         
         // health 설정 추가 (스키마 검증이 가능하도록)
@@ -788,9 +789,9 @@ mod tests {
         
         // 라우터 추가
         config.routers.insert("test-router".to_string(), RouterConfig {
-            rule: "Host(`example.com`)".to_string(),
-            middlewares: Some(vec!["test-middleware".to_string()]),
-            service: "test-service".to_string(),
+            rule: crate::settings::types::ValidRule::new("Host(`example.com`)").unwrap(),
+            middlewares: Some(vec![crate::settings::types::ValidMiddlewareId::new("test-middleware").unwrap()]),
+            service: crate::settings::types::ValidServiceId::new("test-service").unwrap(),
         });
         
         // health 설정 추가
@@ -868,9 +869,9 @@ mod tests {
         
         // 라우터 설정 추가
         config.routers.insert("api".to_string(), RouterConfig {
-            rule: "Host(`api.example.com`)".to_string(),
-            middlewares: Some(vec!["cors".to_string()]),
-            service: "api-service".to_string(),
+            rule: crate::settings::types::ValidRule::new("Host(`api.example.com`)").unwrap(),
+            middlewares: Some(vec![crate::settings::types::ValidMiddlewareId::new("cors").unwrap()]),
+            service: crate::settings::types::ValidServiceId::new("api-service").unwrap(),
         });
         
         // Docker 라벨로 변환
@@ -927,9 +928,10 @@ mod tests {
         
         assert!(config.routers.contains_key("api"));
         if let Some(router) = config.routers.get("api") {
-            assert_eq!(router.rule, "Host(`api.example.com`)");
-            assert_eq!(router.middlewares, Some(vec!["cors".to_string()]));
-            assert_eq!(router.service, "api-service");
+            assert_eq!(router.rule.as_str(), "Host(`api.example.com`)");
+            assert!(router.middlewares.as_ref().map_or(false, |mids| 
+                mids.len() == 1 && mids[0].as_str() == "cors"));
+            assert_eq!(router.service.as_str(), "api-service");
         } else {
             panic!("api router not found");
         }
