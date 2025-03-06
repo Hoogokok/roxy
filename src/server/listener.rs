@@ -16,7 +16,7 @@ pub struct ServerListener {
 impl ServerListener {
     pub async fn new(settings: &Settings) -> Result<Self> {
         // HTTP 리스너 초기화
-        let http_addr = format!("0.0.0.0:{}", settings.server.http_port);
+        let http_addr = format!("0.0.0.0:{}", settings.server.http_port());
         debug!("HTTP 리스너 바인딩 시작: {}", http_addr);
         let http_listener = TcpListener::bind(&http_addr)
             .await
@@ -27,12 +27,15 @@ impl ServerListener {
         info!(addr = %http_addr, "HTTP 리스너 시작");
 
         // HTTPS 설정 초기화
-        let https_config = if settings.server.https_enabled {
+        let https_config = if settings.server.https_enabled() {
             debug!("HTTPS 설정 초기화 시작");
-            let cert_path = settings.server.tls_cert_path.as_ref()
-                .ok_or_else(|| Error::ConfigError("TLS 인증서 경로가 설정되지 않음".into()))?;
-            let key_path = settings.server.tls_key_path.as_ref()
-                .ok_or_else(|| Error::ConfigError("TLS 키 경로가 설정되지 않음".into()))?;
+            let cert_path_opt = settings.server.tls_cert_path();
+            let cert_path = cert_path_opt.as_deref()
+                .expect("HTTPS 활성화되었지만 인증서 경로가 없음");
+            
+            let key_path_opt = settings.server.tls_key_path();
+            let key_path = key_path_opt.as_deref()
+                .expect("HTTPS 활성화되었지만 키 경로가 없음");
             
             debug!(
                 cert_path = %cert_path,
@@ -40,14 +43,13 @@ impl ServerListener {
                 "TLS 인증서 로드 시작"
             );
 
-            let config = TlsConfig::new(cert_path, key_path, settings.server.https_port)
+            let config = TlsConfig::new(cert_path, key_path, settings.server.https_port())
                 .await
                 .map_err(|e| {
                     error!(error = %e, "TLS 설정 초기화 실패");
                     Error::Other(e)
                 })?;
             
-            info!(port = settings.server.https_port, "HTTPS 리스너 설정 완료");
             Some(config)
         } else {
             None
