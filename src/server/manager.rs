@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, warn, info, debug, instrument};
 use crate::{
-    docker::DockerManager, middleware::MiddlewareManager, routing_v2::RoutingTable, settings::{watcher::{ConfigEvent, ConfigWatcher}, JsonConfig, Settings}
+    docker::DockerManager, middleware::MiddlewareManager, routing_v2::RoutingTable, settings::{types::ValidMiddlewareId, watcher::{ConfigEvent, ConfigWatcher}, JsonConfig, Settings}
 };
 use super::{
     handler::RequestHandler,
@@ -267,7 +267,7 @@ impl ServerManager {
                 };
                 
                 // Vec<String>을 Vec<ValidMiddlewareId>로 변환
-                let valid_middlewares: Vec<crate::settings::types::ValidMiddlewareId> = middlewares.iter()
+                let valid_middlewares: Vec<ValidMiddlewareId> = middlewares.iter()
                     .map(|m| m.clone())
                     .collect();
                 config_lock.router_middlewares.insert(full_name, valid_middlewares);
