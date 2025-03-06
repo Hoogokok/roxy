@@ -79,7 +79,7 @@ pub struct LoadBalancerConfig {
 /// 서버 설정
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
-    pub url: String,
+    pub url: crate::settings::types::ValidUrl,
     
     #[serde(default = "default_weight")]
     pub weight: u32,
@@ -505,9 +505,18 @@ impl JsonConfig {
         // 서비스 변환
         let mut services = HashMap::new();
         for (id, service) in validated.services {
+            // 서버 구성 변환
+            let servers = service.loadbalancer.servers.into_iter()
+                .map(|s| ServerConfig {
+                    url: s.url,
+                    weight: s.weight,
+                })
+                .collect();
+            
             let loadbalancer = LoadBalancerConfig {
-                servers: service.loadbalancer.servers,
+                servers,
             };
+            
             services.insert(id.into_inner(), ServiceConfig { loadbalancer });
         }
         
@@ -617,7 +626,7 @@ mod tests {
         config.services.insert("test-service".to_string(), ServiceConfig {
             loadbalancer: LoadBalancerConfig {
                 servers: vec![ServerConfig {
-                    url: "http://localhost:80".to_string(),
+                    url: crate::settings::types::ValidUrl::new("http://localhost:80").unwrap(),
                     weight: 1,
                 }],
             }
@@ -667,7 +676,7 @@ mod tests {
         config.services.insert("test-service".to_string(), ServiceConfig {
             loadbalancer: LoadBalancerConfig {
                 servers: vec![ServerConfig {
-                    url: "http://localhost:80".to_string(),
+                    url: crate::settings::types::ValidUrl::new("http://localhost:80").unwrap(),
                     weight: 1,
                 }],
             }
@@ -710,7 +719,7 @@ mod tests {
         config.services.insert("test-service".to_string(), ServiceConfig {
             loadbalancer: LoadBalancerConfig {
                 servers: vec![ServerConfig {
-                    url: "http://localhost:80".to_string(),
+                    url: crate::settings::types::ValidUrl::new("http://localhost:80").unwrap(),
                     weight: 1,
                 }],
             }
@@ -771,7 +780,7 @@ mod tests {
         config.services.insert("test-service".to_string(), ServiceConfig {
             loadbalancer: LoadBalancerConfig {
                 servers: vec![ServerConfig {
-                    url: "http://localhost:80".to_string(),
+                    url: crate::settings::types::ValidUrl::new("http://localhost:80").unwrap(),
                     weight: 1,
                 }],
             }
@@ -850,7 +859,7 @@ mod tests {
             loadbalancer: LoadBalancerConfig {
                 servers: vec![
                     ServerConfig {
-                        url: "http://localhost:8080".to_string(),
+                        url: crate::settings::types::ValidUrl::new("http://localhost:8080").unwrap(),
                         weight: 1,
                     }
                 ]
