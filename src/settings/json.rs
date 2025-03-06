@@ -6,7 +6,8 @@ use tracing::debug;
 
 use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
 use super::error::SettingsError;
-use super::Result;
+use super::types::{ValidMiddlewareId, ValidRule, ValidServiceId, Version};
+use super::{Result, ValidatedConfig};
 use super::converter::{labels_to_json, json_to_labels};
 use super::validator::JsonConfigValidator;
 
@@ -15,7 +16,7 @@ use super::validator::JsonConfigValidator;
 pub struct JsonConfig {
     /// 설정 파일 버전
     #[serde(default = "default_version")]
-    pub version: crate::settings::types::Version,
+    pub version: Version,
     
     /// 설정 고유 ID (선택적)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -54,14 +55,14 @@ pub struct JsonConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouterConfig {
     /// 라우팅 규칙
-    pub rule: crate::settings::types::ValidRule,
+    pub rule: ValidRule,
     
     /// 연결된 미들웨어 목록
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub middlewares: Option<Vec<crate::settings::types::ValidMiddlewareId>>,
+    pub middlewares: Option<Vec<ValidMiddlewareId>>,
     
     /// 서비스 이름
-    pub service: crate::settings::types::ValidServiceId,
+    pub service: ValidServiceId,
 }
 
 /// 서비스 설정
@@ -111,8 +112,8 @@ pub struct HttpHealthConfig {
 }
 
 /// 기본 설정값을 위한 함수들
-fn default_version() -> crate::settings::types::Version {
-    crate::settings::types::Version::new("1.0").unwrap()
+fn default_version() -> Version {
+    Version::new("1.0").unwrap()
 }
 
 fn default_weight() -> u32 {
@@ -501,7 +502,7 @@ impl JsonConfig {
     }
 
     /// ValidatedConfig에서 JsonConfig 인스턴스 생성
-    pub fn from_validated_config(validated: crate::settings::parser::ValidatedConfig) -> Self {
+    pub fn from_validated_config(validated: ValidatedConfig) -> Self {
         // 서비스 변환
         let mut services = HashMap::new();
         for (id, service) in validated.services {
