@@ -12,7 +12,7 @@ pub mod json;
 pub mod watcher;
 pub mod converter;
 mod validator;
-mod types;
+pub mod types;
 pub mod schema;
 pub mod parser;
 
@@ -50,7 +50,7 @@ pub struct Settings {
     
     /// 라우터-미들웨어 매핑
     #[serde(default)]
-    pub router_middlewares: HashMap<String, Vec<String>>,
+    pub router_middlewares: HashMap<String, Vec<crate::settings::types::ValidMiddlewareId>>,
 }
 
 impl Default for Settings {
@@ -197,17 +197,11 @@ impl Settings {
         Ok(())
     }
 
-    fn parse_router_middlewares(labels: &HashMap<String, String>) -> HashMap<String, Vec<String>> {
+    fn parse_router_middlewares(labels: &HashMap<String, String>) -> HashMap<String, Vec<crate::settings::types::ValidMiddlewareId>> {
         let mut router_middlewares = HashMap::new();
 
         for (key, value) in labels {
             if let Some((router_name, middlewares)) = Self::extract_router_middleware(key, value) {
-                debug!(
-                    router = %router_name,
-                    middlewares = ?middlewares,
-                    "라우터 미들웨어 매핑 파싱"
-                );
-
                 router_middlewares.insert(router_name, middlewares);
             }
         }
@@ -215,7 +209,7 @@ impl Settings {
         router_middlewares
     }
 
-    fn extract_router_middleware(key: &String, value: &String) -> Option<(String, Vec<String>)> {
+    fn extract_router_middleware(key: &String, value: &String) -> Option<(String, Vec<crate::settings::types::ValidMiddlewareId>)> {
         // rproxy.http.routers.{router}.middlewares=middleware1,middleware2
         let router_config = key.strip_prefix("rproxy.http.routers.")?;
         if !router_config.ends_with(".middlewares") {
@@ -223,10 +217,15 @@ impl Settings {
         }
 
         let router_name = router_config.trim_end_matches(".middlewares").to_string();
-        let middlewares: Vec<String> = value.split(',')
-            .map(|s| s.trim().to_string())
+        let middlewares: Vec<crate::settings::types::ValidMiddlewareId> = value.split(',')
+            .map(|s| s.trim())
+            .filter_map(|s| crate::settings::types::ValidMiddlewareId::new(s))
             .collect();
-
+        
+        if middlewares.is_empty() {
+            return None;
+        }
+        
         Some((router_name, middlewares))
     }
 
@@ -381,7 +380,7 @@ impl Settings {
                         } else {
                             format!("{}.{}", config_id, router_name)
                         };
-                        settings.router_middlewares.insert(full_name, middlewares);
+                        settings.router_middlewares.insert(full_name, middlewares.clone());
                     }
                 }
                 
@@ -456,8 +455,12 @@ impl Settings {
             };
             
             if override_existing || !self.router_middlewares.contains_key(&full_name) {
-                debug!("라우터-미들웨어 매핑 추가: {}", full_name);
-                self.router_middlewares.insert(full_name, middlewares.clone());
+                debug!("라우터에서 미들웨어 매핑 추가: {}", full_name);
+                // String에서 ValidMiddlewareId로 변환
+                let valid_middlewares: Vec<crate::settings::types::ValidMiddlewareId> = middlewares.iter()
+                    .filter_map(|m| crate::settings::types::ValidMiddlewareId::new(m))
+                    .collect();
+                self.router_middlewares.insert(full_name, valid_middlewares);
             }
         }
         
@@ -572,7 +575,8 @@ mod tests {
         // 라우터-미들웨어 매핑 검증
         assert_eq!(settings.router_middlewares.len(), 1);
         assert!(settings.router_middlewares.contains_key("test-config.test-router"));
-        assert_eq!(settings.router_middlewares["test-config.test-router"], vec!["test-middleware"]);
+        let expected = vec![crate::settings::types::ValidMiddlewareId::new("test-middleware").unwrap()];
+        assert_eq!(settings.router_middlewares["test-config.test-router"], expected);
     }
     
     #[tokio::test]
@@ -680,7 +684,8 @@ mod tests {
         // 라우터-미들웨어 매핑 검증
         assert_eq!(settings.router_middlewares.len(), 1);
         assert!(settings.router_middlewares.contains_key("config2.api"));
-        assert_eq!(settings.router_middlewares["config2.api"], vec!["auth"]);
+        let expected = vec![crate::settings::types::ValidMiddlewareId::new("auth").unwrap()];
+        assert_eq!(settings.router_middlewares["config2.api"], expected);
     }
 
     #[tokio::test]
