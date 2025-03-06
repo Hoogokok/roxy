@@ -4,6 +4,7 @@
 //! according to the "Parse, don't validate" principle.
 
 use std::fmt;
+use url::Url;
 
 /// A validated service identifier.
 /// 
@@ -325,6 +326,79 @@ impl fmt::Display for Version {
     }
 }
 
+/// 유효한 URL을 나타내는 타입
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ValidUrl(String);
+
+impl ValidUrl {
+    /// URL 문자열에서 `ValidUrl` 인스턴스 생성 시도
+    ///
+    /// 유효하지 않은 URL인 경우 `None` 반환
+    pub fn new(url_str: impl Into<String>) -> Option<Self> {
+        let url_str = url_str.into();
+        
+        // 빈 URL은 유효하지 않음
+        if url_str.is_empty() {
+            return None;
+        }
+        
+        // URL 파싱 시도
+        match Url::parse(&url_str) {
+            Ok(url) => {
+                // 스키마 검증 (http 또는 https만 허용)
+                if url.scheme() != "http" && url.scheme() != "https" {
+                    return None;
+                }
+                
+                // 호스트 검증 (호스트가 반드시 존재해야 함)
+                if url.host().is_none() {
+                    return None;
+                }
+                
+                Some(ValidUrl(url_str))
+            },
+            Err(_) => None
+        }
+    }
+    
+    /// 내부 문자열 참조 반환
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    
+    /// 내부 문자열 소유권 반환
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+    
+    /// URL 객체로 파싱
+    pub fn parse(&self) -> Url {
+        // 이미 유효성 검증을 했으므로 unwrap 사용 가능
+        Url::parse(&self.0).unwrap()
+    }
+    
+    /// 호스트 이름 반환
+    pub fn host(&self) -> String {
+        self.parse().host_str().unwrap_or("").to_string()
+    }
+    
+    /// 포트 번호 반환
+    pub fn port(&self) -> Option<u16> {
+        self.parse().port()
+    }
+    
+    /// 경로 반환
+    pub fn path(&self) -> String {
+        self.parse().path().to_string()
+    }
+}
+
+impl fmt::Display for ValidUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,5 +673,68 @@ mod tests {
         // Test equality
         let v1a = Version::new("1.0.0").unwrap();
         assert_eq!(v1, v1a);
+    }
+
+    #[test]
+    fn test_valid_urls() {
+        // 유효한 URL 목록
+        let valid_urls = vec![
+            "http://example.com",
+            "https://example.com",
+            "http://localhost:8080",
+            "https://example.com/path",
+            "http://192.168.1.1:8080/api",
+            "http://user:pass@example.com",
+            "https://example.com/path?query=value",
+            "http://example.com/path#fragment",
+        ];
+
+        for url in valid_urls {
+            let valid_url = ValidUrl::new(url);
+            assert!(valid_url.is_some(), "URL '{}' should be valid", url);
+            
+            if let Some(valid_url) = valid_url {
+                assert_eq!(valid_url.as_str(), url);
+                assert_eq!(valid_url.to_string(), url);
+            }
+        }
+    }
+
+    #[test]
+    fn test_invalid_urls() {
+        // 유효하지 않은 URL 목록
+        let invalid_urls = vec![
+            "",
+            "not a url",
+            "ftp://example.com",      // 지원하지 않는 스키마
+            "file:///path/to/file",   // 지원하지 않는 스키마
+            "http://",                // 호스트 없음
+            "http",                   // 스키마만 있음
+            "example.com",            // 스키마 없음
+            "://example.com",         // 잘못된 스키마
+        ];
+
+        for url in invalid_urls {
+            let valid_url = ValidUrl::new(url);
+            assert!(valid_url.is_none(), "URL '{}' should be invalid", url);
+        }
+    }
+
+    #[test]
+    fn test_url_components() {
+        let url = ValidUrl::new("http://example.com:8080/path?query=value#fragment").unwrap();
+        
+        assert_eq!(url.host(), "example.com");
+        assert_eq!(url.port(), Some(8080));
+        assert_eq!(url.path(), "/path");
+        
+        // parse() 메서드가 완전한 Url 객체를 반환하는지 확인
+        let parsed = url.parse();
+        assert_eq!(parsed.scheme(), "http");
+        assert_eq!(parsed.host_str(), Some("example.com"));
+        assert_eq!(parsed.port(), Some(8080));
+        assert_eq!(parsed.path(), "/path");
+        assert_eq!(parsed.query(), Some("query=value"));
+        assert_eq!(parsed.fragment(), Some("fragment"));
     }
 } 
