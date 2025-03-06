@@ -3,33 +3,56 @@ use super::types::{ValidServiceId, ValidMiddlewareId, ValidRouterId, ValidRule, 
 use super::error::SettingsError;
 use super::json::{JsonConfig, RouterConfig, ServiceConfig};
 use std::collections::HashMap;
+use std::convert::TryFrom;
 
 /// Raw JSON에서 검증된 도메인 모델로의 변환을 처리하는 파서
 pub struct ConfigParser;
 
+/// Raw JSON configuration before validation
+#[derive(Debug)]
+pub struct RawJsonConfig(Value);
+
+impl TryFrom<&str> for RawJsonConfig {
+    type Error = SettingsError;
+
+    fn try_from(json_str: &str) -> Result<Self, Self::Error> {
+        let raw_json: Value = serde_json::from_str(json_str)
+            .map_err(|e| SettingsError::JsonParseError { source: e })?;
+        Ok(RawJsonConfig(raw_json))
+    }
+}
+
+/// JSON configuration with basic validation
+#[derive(Debug, serde::Deserialize)]
+pub struct ValidJsonConfig {
+    pub version: Version,
+    pub services: HashMap<String, ServiceConfig>,
+    pub middlewares: HashMap<String, crate::middleware::config::MiddlewareConfig>,
+    pub routers: HashMap<String, RouterConfig>,
+    pub health: Option<crate::settings::json::HealthConfig>,
+}
+
+impl TryFrom<RawJsonConfig> for ValidJsonConfig {
+    type Error = SettingsError;
+
+    fn try_from(raw: RawJsonConfig) -> Result<Self, Self::Error> {
+        serde_json::from_value(raw.0)
+            .map_err(|e| SettingsError::JsonParseError { source: e })
+    }
+}
+
 impl ConfigParser {
     /// Raw JSON 문자열을 파싱하여 검증된 설정으로 변환
     pub fn parse(json_str: &str) -> Result<ValidatedConfig, SettingsError> {
-        // 1단계: JSON 파싱
-        let raw_json: Value = serde_json::from_str(json_str)
-            .map_err(|e| SettingsError::JsonParseError { source: e })?;
-        
-        // 2단계: JsonConfig로 변환
-        let config: JsonConfig = serde_json::from_value(raw_json)
-            .map_err(|e| SettingsError::JsonParseError { source: e })?;
-        
-        // 3단계: 검증된 도메인 모델로 변환
-        Self::validate_config(config)
+        let raw_config = RawJsonConfig::try_from(json_str)?;
+        let valid_config = ValidJsonConfig::try_from(raw_config)?;
+        ValidatedConfig::try_from(valid_config)
     }
     
     /// JsonConfig를 검증된 도메인 모델로 변환
     fn validate_config(config: JsonConfig) -> Result<ValidatedConfig, SettingsError> {
-        // 버전 검증
-        let version = Version::new(&config.version)
-            .ok_or_else(|| SettingsError::ValidationError {
-                field: "version".to_string(),
-                message: "Invalid version format".to_string(),
-            })?;
+        // 버전은 이미 Version 타입이므로 추가 검증 불필요
+        let version = config.version;
         
         // 서비스 ID 검증
         let mut services = HashMap::new();
@@ -78,40 +101,11 @@ impl ConfigParser {
     
     /// 라우터 설정 검증
     fn validate_router(config: RouterConfig) -> Result<ValidatedRouter, SettingsError> {
-        // 라우팅 규칙 검증
-        let rule = ValidRule::new(&config.rule)
-            .ok_or_else(|| SettingsError::ValidationError {
-                field: "router.rule".to_string(),
-                message: "Invalid routing rule format".to_string(),
-            })?;
-        
-        // 서비스 ID 검증
-        let service = ValidServiceId::new(&config.service)
-            .ok_or_else(|| SettingsError::ValidationError {
-                field: "router.service".to_string(),
-                message: "Invalid service ID format".to_string(),
-            })?;
-        
-        // 미들웨어 ID 검증
-        let middlewares = if let Some(middleware_ids) = config.middlewares {
-            let mut validated_ids = Vec::new();
-            for id in middleware_ids {
-                let valid_id = ValidMiddlewareId::new(&id)
-                    .ok_or_else(|| SettingsError::ValidationError {
-                        field: "router.middlewares".to_string(),
-                        message: format!("Invalid middleware ID format: {}", id),
-                    })?;
-                validated_ids.push(valid_id);
-            }
-            Some(validated_ids)
-        } else {
-            None
-        };
-        
+        // 이미 각 필드가 강한 타입이므로 추가 검증 불필요
         Ok(ValidatedRouter {
-            rule,
-            service,
-            middlewares,
+            rule: config.rule,
+            service: config.service,
+            middlewares: config.middlewares,
         })
     }
     
@@ -172,10 +166,61 @@ pub struct ValidatedService {
     pub loadbalancer: ValidatedLoadBalancer,
 }
 
+impl TryFrom<ValidJsonConfig> for ValidatedConfig {
+    type Error = SettingsError;
+
+    fn try_from(config: ValidJsonConfig) -> Result<Self, Self::Error> {
+        // 서비스 ID 검증
+        let mut services = HashMap::new();
+        for (id, service_config) in config.services {
+            let valid_id = ValidServiceId::new(&id)
+                .ok_or_else(|| SettingsError::ValidationError {
+                    field: format!("services.{}.id", id),
+                    message: "Invalid service ID format".to_string(),
+                })?;
+            
+            services.insert(valid_id, ConfigParser::validate_service(service_config)?);
+        }
+        
+        // 미들웨어 ID 검증
+        let mut middlewares = HashMap::new();
+        for (id, middleware_config) in config.middlewares {
+            let valid_id = ValidMiddlewareId::new(&id)
+                .ok_or_else(|| SettingsError::ValidationError {
+                    field: format!("middlewares.{}.id", id),
+                    message: "Invalid middleware ID format".to_string(),
+                })?;
+            
+            middlewares.insert(valid_id, middleware_config);
+        }
+        
+        // 라우터 검증
+        let mut routers = HashMap::new();
+        for (id, router_config) in config.routers {
+            let valid_id = ValidRouterId::new(&id)
+                .ok_or_else(|| SettingsError::ValidationError {
+                    field: format!("routers.{}.id", id),
+                    message: "Invalid router ID format".to_string(),
+                })?;
+            
+            routers.insert(valid_id, ConfigParser::validate_router(router_config)?);
+        }
+        
+        Ok(ValidatedConfig {
+            version: config.version,
+            services,
+            middlewares,
+            routers,
+            health: config.health,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::middleware::config::MiddlewareType;
+    use serde_json::json;
 
     #[test]
     fn test_parse_valid_config() {
@@ -259,123 +304,167 @@ mod tests {
 
     #[test]
     fn test_parse_invalid_version() {
-        let json_str = r#"{
+        let json_str = r#"
+        {
             "version": "invalid",
-            "middlewares": {}
-        }"#;
+            "services": {
+                "api": {
+                    "loadbalancer": {
+                        "servers": [
+                            { "url": "http://api.example.com" }
+                        ]
+                    }
+                }
+            },
+            "routers": {
+                "api-router": {
+                    "rule": "Host(`example.com`)",
+                    "service": "api"
+                }
+            }
+        }
+        "#;
 
         let result = ConfigParser::parse(json_str);
-        assert!(result.is_err());
-        
-        match result.unwrap_err() {
-            SettingsError::ValidationError { field, .. } => {
-                assert_eq!(field, "version");
-            }
-            err => panic!("예상치 못한 에러: {:?}", err),
+        match result {
+            Err(SettingsError::JsonParseError { source }) => {
+                assert!(source.to_string().contains("invalid version"));
+            },
+            Ok(_) => panic!("유효하지 않은 버전이 허용됨"),
+            Err(e) => panic!("예상치 못한 에러: {:?}", e),
         }
     }
 
     #[test]
     fn test_parse_invalid_service_id() {
-        let json_str = r#"{
-            "version": "1.0",
+        let json_str = r#"
+        {
+            "version": "1.0.0",
             "services": {
                 "invalid service": {
                     "loadbalancer": {
-                        "servers": []
+                        "servers": [
+                            { "url": "http://api.example.com" }
+                        ]
                     }
                 }
+            },
+            "routers": {
+                "api-router": {
+                    "rule": "Host(`example.com`)",
+                    "service": "invalid service"
+                }
             }
-        }"#;
+        }
+        "#;
 
         let result = ConfigParser::parse(json_str);
-        assert!(result.is_err());
-        
-        match result.unwrap_err() {
-            SettingsError::ValidationError { field, .. } => {
-                assert_eq!(field, "services.invalid service.id");
-            }
-            err => panic!("예상치 못한 에러: {:?}", err),
+        match result {
+            Err(SettingsError::JsonParseError { source }) => {
+                assert!(source.to_string().contains("invalid service"));
+            },
+            Ok(_) => panic!("유효하지 않은 서비스 ID가 허용됨"),
+            Err(e) => panic!("예상치 못한 에러: {:?}", e),
         }
     }
 
     #[test]
     fn test_parse_invalid_router_rule() {
-        let json_str = r#"{
-            "version": "1.0",
+        let json_str = r#"
+        {
+            "version": "1.0.0",
+            "services": {
+                "api": {
+                    "loadbalancer": {
+                        "servers": [
+                            { "url": "http://api.example.com" }
+                        ]
+                    }
+                }
+            },
             "routers": {
-                "test-router": {
+                "api-router": {
                     "rule": "Host(example.com)",
-                    "service": "test-service"
+                    "service": "api"
                 }
             }
-        }"#;
+        }
+        "#;
 
         let result = ConfigParser::parse(json_str);
-        assert!(result.is_err());
-        
-        match result.unwrap_err() {
-            SettingsError::ValidationError { field, .. } => {
-                assert_eq!(field, "router.rule");
-            }
-            err => panic!("예상치 못한 에러: {:?}", err),
+        match result {
+            Err(SettingsError::JsonParseError { source }) => {
+                assert!(source.to_string().contains("invalid rule"));
+            },
+            Ok(_) => panic!("유효하지 않은 라우터 규칙이 허용됨"),
+            Err(e) => panic!("예상치 못한 에러: {:?}", e),
         }
     }
 
     #[test]
     fn test_parse_invalid_middleware_id() {
-        let json_str = r#"{
-            "version": "1.0",
+        let json_str = r#"
+        {
+            "version": "1.0.0",
+            "services": {
+                "api": {
+                    "loadbalancer": {
+                        "servers": [
+                            { "url": "http://api.example.com" }
+                        ]
+                    }
+                }
+            },
             "routers": {
-                "test-router": {
+                "api-router": {
                     "rule": "Host(`example.com`)",
-                    "middlewares": ["invalid middleware"],
-                    "service": "test-service"
+                    "service": "api",
+                    "middlewares": ["invalid middleware"]
                 }
             }
-        }"#;
+        }
+        "#;
 
         let result = ConfigParser::parse(json_str);
-        assert!(result.is_err());
-        
-        match result.unwrap_err() {
-            SettingsError::ValidationError { field, .. } => {
-                assert_eq!(field, "router.middlewares");
-            }
-            err => panic!("예상치 못한 에러: {:?}", err),
+        match result {
+            Err(SettingsError::JsonParseError { source }) => {
+                assert!(source.to_string().contains("invalid middleware"));
+            },
+            Ok(_) => panic!("유효하지 않은 미들웨어 ID가 허용됨"),
+            Err(e) => panic!("예상치 못한 에러: {:?}", e),
         }
     }
 
     #[test]
     fn test_parse_invalid_url() {
-        let json_str = r#"{
-            "version": "1.0",
+        let json_str = r#"
+        {
+            "version": "1.0.0",
             "services": {
-                "test-service": {
+                "api": {
                     "loadbalancer": {
                         "servers": [
-                            {
-                                "url": "invalid-url",
-                                "weight": 1
-                            }
+                            { "url": "invalid-url" }
                         ]
                     }
                 }
+            },
+            "routers": {
+                "api-router": {
+                    "rule": "Host(`example.com`)",
+                    "service": "api"
+                }
             }
-        }"#;
+        }
+        "#;
 
         let result = ConfigParser::parse(json_str);
-        assert!(result.is_err(), "잘못된 URL이 있는 설정이 파싱되지 않아야 합니다.");
-        
-        if let Err(err) = result {
-            match err {
-                SettingsError::ValidationError { field, message } => {
-                    assert_eq!(field, "service.loadbalancer.server.url");
-                    assert!(message.contains("Invalid URL format"), 
-                           "에러 메시지가 URL 형식 오류를 명시해야 합니다.");
-                }
-                _ => panic!("예상치 못한 에러 타입: {:?}", err),
-            }
+        match result {
+            Err(SettingsError::JsonParseError { source }) => {
+                assert!(source.to_string().contains("invalid URL"), "에러 메시지가 'invalid URL'을 포함하지 않음: {}", source);
+            },
+            Ok(_) => panic!("유효하지 않은 URL이 허용됨"),
+            Err(e) => panic!("예상치 못한 에러 타입: {:?}", e),
         }
     }
 }
