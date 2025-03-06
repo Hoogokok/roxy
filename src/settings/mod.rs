@@ -16,7 +16,7 @@ pub mod types;
 pub mod schema;
 pub mod parser;
 
-pub use server::ServerSettings;
+pub use server::{ServerSettings, Validated, parse_env_var};
 pub use logging::LogSettings;
 pub use tls::TlsSettings;
 pub use docker::DockerSettings;
@@ -25,13 +25,12 @@ pub use json::JsonConfig;
 pub use parser::{ConfigParser, ValidatedConfig};
 
 pub type Result<T> = std::result::Result<T, SettingsError>;
-pub use server::parse_env_var;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Settings {
     // 서버 설정
     #[serde(default)]
-    pub server: ServerSettings,
+    pub server: ServerSettings<Validated>,
     
     // 로깅 설정
     #[serde(default)]
@@ -67,13 +66,21 @@ impl Default for Settings {
 }
 
 impl Settings {
+    /// 환경변수 및 설정 파일에서 설정을 로드합니다.
     pub async fn load() -> Result<Self> {
-        // 기본 설정만 로드 (Docker 라벨은 ServerManager에서 처리)
-        if let Ok(config_path) = env::var("PROXY_CONFIG_FILE") {
-            Self::from_toml_file(&config_path).await
-        } else {
-            Self::from_env().await
-        }
+        let settings = Self {
+            server: ServerSettings::from_env()?,
+            logging: LogSettings::from_env()?,
+            tls: TlsSettings::from_env()?,
+            docker: DockerSettings::from_env()?,
+            middleware: HashMap::new(),
+            router_middlewares: HashMap::new(),
+        };
+
+        // 설정 생성 시점에 바로 검증
+        // settings.server.validate()?;
+        settings.validate().await?;
+        Ok(settings)
     }
 
     pub async fn from_toml_file<P: AsRef<Path>>(path: P) -> Result<Self> {
@@ -105,7 +112,7 @@ impl Settings {
 
     /// 설정 유효성 검증
     pub async fn validate(&self) -> Result<()> {
-        self.server.validate()?;
+        // self.server.validated()?;
         self.tls.validate().await?;
         self.docker.validate()?;
 
