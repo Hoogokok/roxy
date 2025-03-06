@@ -266,7 +266,11 @@ impl ServerManager {
                     format!("{}.{}", config_id, router_name)
                 };
                 
-                config_lock.router_middlewares.insert(full_name, middlewares.clone());
+                // Vec<String>을 Vec<ValidMiddlewareId>로 변환
+                let valid_middlewares: Vec<crate::settings::types::ValidMiddlewareId> = middlewares.iter()
+                    .map(|m| m.clone())
+                    .collect();
+                config_lock.router_middlewares.insert(full_name, valid_middlewares);
                 updated = true;
             }
         }
