@@ -235,8 +235,11 @@ impl Settings {
         let path_ref = path.as_ref();
         debug!("JSON 설정 파일 로드: {}", path_ref.display());
         
-        let mut config = JsonConfig::from_file(&path)?;
-        config.validate()?;
+        // 강력한 타입 검증을 사용하여 설정 로드 (기존 방식 보존을 위한 주석)
+        // let mut config = JsonConfig::from_file(&path)?;
+        
+        // 새로운 방식: 강력한 타입 검증 사용
+        let mut config = JsonConfig::from_file_strongly_typed(&path)?;
         
         let config_id = config.get_id(path_ref);
         debug!("설정 ID: {}", config_id);

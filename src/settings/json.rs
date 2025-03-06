@@ -155,13 +155,14 @@ impl JsonConfig {
     /// 파일에서 설정 로드
     pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let file_path = path.as_ref();
-        let file = std::fs::File::open(file_path)
+        let file_content = std::fs::read_to_string(file_path)
             .map_err(|e| SettingsError::FileError { 
                 path: file_path.to_string_lossy().to_string(),
                 error: e 
             })?;
         
-        let mut config: Self = serde_json::from_reader(file)
+        // 방법 1: 기존 파싱 방식 (유효성 검사 후처리)
+        let mut config: Self = serde_json::from_str(&file_content)
             .map_err(|e| SettingsError::JsonParseError { source: e })?;
         
         // 파일 경로 저장
@@ -169,6 +170,29 @@ impl JsonConfig {
         
         // 유효성 검증 수행
         config.validate()?;
+        
+        Ok(config)
+    }
+    
+    /// 파일에서 설정 로드 (강력한 타입 검증 사용)
+    pub fn from_file_strongly_typed<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let file_path = path.as_ref();
+        let file_content = std::fs::read_to_string(file_path)
+            .map_err(|e| SettingsError::FileError { 
+                path: file_path.to_string_lossy().to_string(),
+                error: e 
+            })?;
+        
+        // 방법 2: 새로운 파싱 방식 (타입 시스템을 활용한 유효성 검사)
+        // ConfigParser를 사용하여 강력한 타입 검증을 수행
+        let validated_config = crate::settings::parser::ConfigParser::parse(&file_content)?;
+        
+        // 검증된 설정에서 JsonConfig 생성
+        let mut config = Self::from_validated_config(validated_config);
+        
+        // 파일 경로 저장
+        config.source_path = Some(file_path.to_path_buf());
+        config.last_validated = Some(std::time::SystemTime::now());
         
         Ok(config)
     }
@@ -474,6 +498,64 @@ impl JsonConfig {
         }
         
         Ok(())
+    }
+
+    /// ValidatedConfig에서 JsonConfig 인스턴스 생성
+    pub fn from_validated_config(validated: crate::settings::parser::ValidatedConfig) -> Self {
+        // 서비스 변환
+        let mut services = HashMap::new();
+        for (id, service) in validated.services {
+            let loadbalancer = LoadBalancerConfig {
+                servers: service.loadbalancer.servers,
+            };
+            services.insert(id.into_inner(), ServiceConfig { loadbalancer });
+        }
+        
+        // 미들웨어 변환
+        let mut middlewares = HashMap::new();
+        for (id, middleware_config) in validated.middlewares {
+            middlewares.insert(id.into_inner(), middleware_config);
+        }
+        
+        // 라우터 변환
+        let mut routers = HashMap::new();
+        let mut router_middlewares = HashMap::new();
+        
+        for (id, router) in validated.routers {
+            let router_id = id.into_inner();
+            
+            let router_config = RouterConfig {
+                rule: router.rule.into_inner(),
+                service: router.service.into_inner(),
+                middlewares: router.middlewares.as_ref().map(|mids| {
+                    mids.iter().map(|mid| mid.clone().into_inner()).collect()
+                }),
+            };
+            
+            routers.insert(router_id.clone(), router_config);
+            
+            // 미들웨어가 있는 경우 라우터-미들웨어 매핑에 추가
+            if let Some(mids) = &router.middlewares {
+                if !mids.is_empty() {
+                    let middleware_ids: Vec<String> = mids.iter()
+                        .map(|m| m.clone().into_inner())
+                        .collect();
+                    router_middlewares.insert(router_id, middleware_ids);
+                }
+            }
+        }
+        
+        JsonConfig {
+            version: validated.version.into_inner(),
+            id: None,
+            middlewares,
+            routers,
+            services,
+            router_middlewares,
+            health: validated.health,
+            last_validated: Some(std::time::SystemTime::now()),
+            source_path: None,
+        }
     }
 }
 
