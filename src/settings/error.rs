@@ -30,6 +30,10 @@ pub enum SettingsError {
         errors: Vec<String>,
         file: String,
     },
+    ValidationError {
+        field: String,
+        message: String,
+    },
     ReferenceError {
         entity: String,
         reference: String,
@@ -62,6 +66,8 @@ impl fmt::Display for SettingsError {
                 }
                 Ok(())
             },
+            Self::ValidationError { field, message } =>
+                write!(f, "필드 '{}' 검증 오류: {}", field, message),
             Self::ReferenceError { entity, reference, message } => 
                 write!(f, "참조 오류 - 엔티티: {}, 참조: {}, 이유: {}", entity, reference, message),
         }
