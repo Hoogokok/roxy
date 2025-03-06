@@ -220,7 +220,6 @@ impl TryFrom<ValidJsonConfig> for ValidatedConfig {
 mod tests {
     use super::*;
     use crate::middleware::config::MiddlewareType;
-    use serde_json::json;
 
     #[test]
     fn test_parse_valid_config() {
