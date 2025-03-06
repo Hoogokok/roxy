@@ -14,6 +14,7 @@ pub mod converter;
 mod validator;
 mod types;
 pub mod schema;
+pub mod parser;
 
 pub use server::ServerSettings;
 pub use logging::LogSettings;
@@ -21,6 +22,7 @@ pub use tls::TlsSettings;
 pub use docker::DockerSettings;
 pub use error::SettingsError;
 pub use json::JsonConfig;
+pub use parser::{ConfigParser, ValidatedConfig};
 
 pub type Result<T> = std::result::Result<T, SettingsError>;
 pub use server::parse_env_var;
