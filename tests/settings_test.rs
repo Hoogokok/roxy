@@ -75,8 +75,8 @@ mod tests {
         
         let settings = Settings::from_env().await.unwrap();
         
-        assert_eq!(settings.server.http_port, 80);
-        assert!(!settings.server.https_enabled);
+        assert_eq!(settings.server.http_port(), 80);
+        assert!(!settings.server.https_enabled());
         assert_eq!(settings.logging.level, tracing::Level::INFO);
         assert_eq!(settings.docker.network, "reverse-proxy-network");
         assert_eq!(settings.docker.label_prefix, "rproxy.");
@@ -107,9 +107,9 @@ mod tests {
         let (file_path, _temp_dir) = create_test_toml(toml_content);
         let settings = Settings::from_toml_file(&file_path).await.unwrap();
         
-        assert_eq!(settings.server.http_port, 9090);
-        assert!(settings.server.https_enabled);
-        assert_eq!(settings.server.https_port, 443);
+        assert_eq!(settings.server.http_port(), 9090);
+        assert!(settings.server.https_enabled());
+        assert_eq!(settings.server.http_port(), 443);
         assert_eq!(settings.docker.network, "test-network");
         teardown();
     }
@@ -132,8 +132,8 @@ mod tests {
         let settings = Settings::from_env().await.unwrap();
         
         // 설정값 검증
-        assert_eq!(settings.server.http_port, 9090);
-        assert!(settings.server.https_enabled);
+        assert_eq!(settings.server.http_port(), 9090);
+        assert!(settings.server.https_enabled());
         assert_eq!(settings.logging.level, tracing::Level::DEBUG);
         assert_eq!(settings.docker.network, "custom-network");
         assert_eq!(settings.docker.label_prefix, "custom.");
