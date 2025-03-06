@@ -51,59 +51,10 @@ impl ConfigParser {
         ValidatedConfig::try_from(valid_config)
     }
     
-    /// JsonConfig를 검증된 도메인 모델로 변환
-    fn validate_config(config: JsonConfig) -> Result<ValidatedConfig, SettingsError> {
-        // 버전은 이미 Version 타입이므로 추가 검증 불필요
-        let version = config.version;
-        
-        // 서비스 ID 검증
-        let mut services = HashMap::new();
-        for (id, service_config) in config.services {
-            let valid_id = ValidServiceId::new(&id)
-                .ok_or_else(|| SettingsError::ValidationError {
-                    field: format!("services.{}.id", id),
-                    message: "Invalid service ID format".to_string(),
-                })?;
-            
-            services.insert(valid_id, Self::validate_service(service_config)?);
-        }
-        
-        // 미들웨어 ID 검증
-        let mut middlewares = HashMap::new();
-        for (id, middleware_config) in config.middlewares {
-            let valid_id = ValidMiddlewareId::new(&id)
-                .ok_or_else(|| SettingsError::ValidationError {
-                    field: format!("middlewares.{}.id", id),
-                    message: "Invalid middleware ID format".to_string(),
-                })?;
-            
-            middlewares.insert(valid_id, middleware_config);
-        }
-        
-        // 라우터 검증
-        let mut routers = HashMap::new();
-        for (id, router_config) in config.routers {
-            let valid_id = ValidRouterId::new(&id)
-                .ok_or_else(|| SettingsError::ValidationError {
-                    field: format!("routers.{}.id", id),
-                    message: "Invalid router ID format".to_string(),
-                })?;
-            
-            routers.insert(valid_id, Self::validate_router(router_config)?);
-        }
-        
-        Ok(ValidatedConfig {
-            version,
-            services,
-            middlewares,
-            routers,
-            health: config.health,
-        })
-    }
-    
-    /// 라우터 설정 검증
+    /// 라우터 설정을 검증하고 변환하는 함수
     fn validate_router(config: RouterConfig) -> Result<ValidatedRouter, SettingsError> {
-        // 이미 각 필드가 강한 타입이므로 추가 검증 불필요
+        // 이미 타입 시스템을 통해 검증되었으므로 추가 검증 불필요
+        
         Ok(ValidatedRouter {
             rule: config.rule,
             service: config.service,
@@ -111,22 +62,17 @@ impl ConfigParser {
         })
     }
     
-    /// 서비스 설정 검증
+    /// 서비스 설정을 검증하고 변환하는 함수
     fn validate_service(config: ServiceConfig) -> Result<ValidatedService, SettingsError> {
-        let mut validated_servers = Vec::new();
-        
-        for server in &config.loadbalancer.servers {
-            // 서버 구성 추가
-            validated_servers.push(ValidatedServer {
-                url: server.url.clone(),
+        let servers = config.loadbalancer.servers.into_iter()
+            .map(|server| ValidatedServer {
+                url: server.url,
                 weight: server.weight,
-            });
-        }
+            })
+            .collect();
         
         Ok(ValidatedService {
-            loadbalancer: ValidatedLoadBalancer {
-                servers: validated_servers,
-            },
+            loadbalancer: ValidatedLoadBalancer { servers },
         })
     }
 }
