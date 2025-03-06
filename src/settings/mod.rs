@@ -12,6 +12,7 @@ pub mod json;
 pub mod watcher;
 pub mod converter;
 mod validator;
+mod types;
 pub mod schema;
 
 pub use server::ServerSettings;
@@ -196,28 +197,35 @@ impl Settings {
 
     fn parse_router_middlewares(labels: &HashMap<String, String>) -> HashMap<String, Vec<String>> {
         let mut router_middlewares = HashMap::new();
-        
+
         for (key, value) in labels {
-            // rproxy.http.routers.{router}.middlewares=middleware1,middleware2
-            if let Some(router_config) = key.strip_prefix("rproxy.http.routers.") {
-                if router_config.ends_with(".middlewares") {
-                    let router_name = router_config.trim_end_matches(".middlewares");
-                    let middlewares: Vec<String> = value.split(',')
-                        .map(|s| s.trim().to_string())
-                        .collect();
-                    
-                    debug!(
-                        router = %router_name,
-                        middlewares = ?middlewares,
-                        "라우터 미들웨어 매핑 파싱"
-                    );
-                    
-                    router_middlewares.insert(router_name.to_string(), middlewares);
-                }
+            if let Some((router_name, middlewares)) = Self::extract_router_middleware(key, value) {
+                debug!(
+                    router = %router_name,
+                    middlewares = ?middlewares,
+                    "라우터 미들웨어 매핑 파싱"
+                );
+
+                router_middlewares.insert(router_name, middlewares);
             }
         }
-        
+
         router_middlewares
+    }
+
+    fn extract_router_middleware(key: &String, value: &String) -> Option<(String, Vec<String>)> {
+        // rproxy.http.routers.{router}.middlewares=middleware1,middleware2
+        let router_config = key.strip_prefix("rproxy.http.routers.")?;
+        if !router_config.ends_with(".middlewares") {
+            return None;
+        }
+
+        let router_name = router_config.trim_end_matches(".middlewares").to_string();
+        let middlewares: Vec<String> = value.split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
+
+        Some((router_name, middlewares))
     }
 
     /// JSON 설정 파일 로드 (덮어쓰기 옵션 추가)
