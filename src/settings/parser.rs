@@ -117,9 +117,19 @@ impl ConfigParser {
     
     /// 서비스 설정 검증
     fn validate_service(config: ServiceConfig) -> Result<ValidatedService, SettingsError> {
+        let mut validated_servers = Vec::new();
+        
+        for server in &config.loadbalancer.servers {
+            // 서버 구성 추가
+            validated_servers.push(ValidatedServer {
+                url: server.url.clone(),
+                weight: server.weight,
+            });
+        }
+        
         Ok(ValidatedService {
             loadbalancer: ValidatedLoadBalancer {
-                servers: config.loadbalancer.servers,
+                servers: validated_servers,
             },
         })
     }
@@ -143,17 +153,24 @@ pub struct ValidatedRouter {
     pub middlewares: Option<Vec<ValidMiddlewareId>>,
 }
 
-/// 검증된 서비스 설정
+/// 검증된 서버 설정
 #[derive(Debug)]
-pub struct ValidatedService {
-    pub loadbalancer: ValidatedLoadBalancer,
+pub struct ValidatedServer {
+    pub url: super::types::ValidUrl,
+    pub weight: u32,
 }
 
 /// 검증된 로드밸런서 설정
 #[derive(Debug)]
 pub struct ValidatedLoadBalancer {
-    pub servers: Vec<crate::settings::json::ServerConfig>,
-} 
+    pub servers: Vec<ValidatedServer>,
+}
+
+/// 검증된 서비스 설정
+#[derive(Debug)]
+pub struct ValidatedService {
+    pub loadbalancer: ValidatedLoadBalancer,
+}
 
 #[cfg(test)]
 mod tests {
@@ -235,7 +252,7 @@ mod tests {
         let service = &config.services[&service_id];
         assert_eq!(service.loadbalancer.servers.len(), 1);
         assert_eq!(
-            service.loadbalancer.servers[0].url,
+            service.loadbalancer.servers[0].url.as_str(),
             "http://localhost:8080"
         );
     }
@@ -326,6 +343,39 @@ mod tests {
                 assert_eq!(field, "router.middlewares");
             }
             err => panic!("예상치 못한 에러: {:?}", err),
+        }
+    }
+
+    #[test]
+    fn test_parse_invalid_url() {
+        let json_str = r#"{
+            "version": "1.0",
+            "services": {
+                "test-service": {
+                    "loadbalancer": {
+                        "servers": [
+                            {
+                                "url": "invalid-url",
+                                "weight": 1
+                            }
+                        ]
+                    }
+                }
+            }
+        }"#;
+
+        let result = ConfigParser::parse(json_str);
+        assert!(result.is_err(), "잘못된 URL이 있는 설정이 파싱되지 않아야 합니다.");
+        
+        if let Err(err) = result {
+            match err {
+                SettingsError::ValidationError { field, message } => {
+                    assert_eq!(field, "service.loadbalancer.server.url");
+                    assert!(message.contains("Invalid URL format"), 
+                           "에러 메시지가 URL 형식 오류를 명시해야 합니다.");
+                }
+                _ => panic!("예상치 못한 에러 타입: {:?}", err),
+            }
         }
     }
 }
