@@ -1,7 +1,9 @@
 use serde_json::Value;
+use crate::middleware::MiddlewareConfig;
+
 use super::types::{ValidServiceId, ValidMiddlewareId, ValidRouterId, ValidRule, Version};
 use super::error::SettingsError;
-use super::json::{JsonConfig, RouterConfig, ServiceConfig};
+use super::json::{HealthConfig, JsonConfig, RouterConfig, ServiceConfig};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 
@@ -134,9 +136,9 @@ impl ConfigParser {
 pub struct ValidatedConfig {
     pub version: Version,
     pub services: HashMap<ValidServiceId, ValidatedService>,
-    pub middlewares: HashMap<ValidMiddlewareId, crate::middleware::config::MiddlewareConfig>,
+    pub middlewares: HashMap<ValidMiddlewareId, MiddlewareConfig>,
     pub routers: HashMap<ValidRouterId, ValidatedRouter>,
-    pub health: Option<crate::settings::json::HealthConfig>,
+    pub health: Option<HealthConfig>,
 }
 
 /// 검증된 라우터 설정
