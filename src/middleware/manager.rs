@@ -44,7 +44,7 @@ pub struct MiddlewareManager {
 impl MiddlewareManager {
     pub fn new(
         middleware_configs: &HashMap<String, MiddlewareConfig>,
-        router_middlewares: &HashMap<String, Vec<String>>
+        router_middlewares: &HashMap<String, Vec<crate::settings::types::ValidMiddlewareId>>
     ) -> Self {
         let mut router_chains = HashMap::new();
         
@@ -59,12 +59,13 @@ impl MiddlewareManager {
     }
 
     fn create_middleware_chain(
-        middleware_names: &[String],
+        middleware_names: &[crate::settings::types::ValidMiddlewareId],
         configs: &HashMap<String, MiddlewareConfig>
     ) -> MiddlewareChain {
         let mut chain = MiddlewareChain::new();
         
         let middlewares = middleware_names.iter()
+            .map(|name| name.as_str())
             .filter_map(|name| configs.get(name))
             .filter(|config| config.enabled)
             .filter_map(|config| create_middleware(config).ok());
