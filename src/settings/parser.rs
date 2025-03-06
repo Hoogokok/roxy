@@ -3,7 +3,7 @@ use crate::middleware::MiddlewareConfig;
 
 use super::types::{ValidServiceId, ValidMiddlewareId, ValidRouterId, ValidRule, Version};
 use super::error::SettingsError;
-use super::json::{HealthConfig, JsonConfig, RouterConfig, ServiceConfig};
+use super::json::{HealthConfig, RouterConfig, ServiceConfig};
 use std::collections::HashMap;
 use std::convert::TryFrom;
 
@@ -49,31 +49,6 @@ impl ConfigParser {
         let raw_config = RawJsonConfig::try_from(json_str)?;
         let valid_config = ValidJsonConfig::try_from(raw_config)?;
         ValidatedConfig::try_from(valid_config)
-    }
-    
-    /// 라우터 설정을 검증하고 변환하는 함수
-    fn validate_router(config: RouterConfig) -> Result<ValidatedRouter, SettingsError> {
-        // 이미 타입 시스템을 통해 검증되었으므로 추가 검증 불필요
-        
-        Ok(ValidatedRouter {
-            rule: config.rule,
-            service: config.service,
-            middlewares: config.middlewares,
-        })
-    }
-    
-    /// 서비스 설정을 검증하고 변환하는 함수
-    fn validate_service(config: ServiceConfig) -> Result<ValidatedService, SettingsError> {
-        let servers = config.loadbalancer.servers.into_iter()
-            .map(|server| ValidatedServer {
-                url: server.url,
-                weight: server.weight,
-            })
-            .collect();
-        
-        Ok(ValidatedService {
-            loadbalancer: ValidatedLoadBalancer { servers },
-        })
     }
 }
 
@@ -127,7 +102,7 @@ impl TryFrom<ValidJsonConfig> for ValidatedConfig {
                     message: "Invalid service ID format".to_string(),
                 })?;
             
-            services.insert(valid_id, ConfigParser::validate_service(service_config)?);
+            services.insert(valid_id, ValidatedService::try_from(service_config)?);
         }
         
         // 미들웨어 ID 검증
@@ -151,7 +126,7 @@ impl TryFrom<ValidJsonConfig> for ValidatedConfig {
                     message: "Invalid router ID format".to_string(),
                 })?;
             
-            routers.insert(valid_id, ConfigParser::validate_router(router_config)?);
+            routers.insert(valid_id, ValidatedRouter::try_from(router_config)?);
         }
         
         Ok(ValidatedConfig {
@@ -160,6 +135,36 @@ impl TryFrom<ValidJsonConfig> for ValidatedConfig {
             middlewares,
             routers,
             health: config.health,
+        })
+    }
+}
+
+impl TryFrom<RouterConfig> for ValidatedRouter {
+    type Error = SettingsError;
+
+    fn try_from(config: RouterConfig) -> Result<Self, Self::Error> {
+        // 이미 타입 시스템을 통해 검증되었으므로 추가 검증 불필요
+        Ok(ValidatedRouter {
+            rule: config.rule,
+            service: config.service,
+            middlewares: config.middlewares,
+        })
+    }
+}
+
+impl TryFrom<ServiceConfig> for ValidatedService {
+    type Error = SettingsError;
+
+    fn try_from(config: ServiceConfig) -> Result<Self, Self::Error> {
+        let servers = config.loadbalancer.servers.into_iter()
+            .map(|server| ValidatedServer {
+                url: server.url,
+                weight: server.weight,
+            })
+            .collect();
+        
+        Ok(ValidatedService {
+            loadbalancer: ValidatedLoadBalancer { servers },
         })
     }
 }
