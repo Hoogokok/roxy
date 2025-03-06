@@ -49,6 +49,35 @@ impl fmt::Display for ValidServiceId {
     }
 }
 
+impl serde::Serialize for ValidServiceId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where S: serde::Serializer {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+struct ValidServiceIdVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ValidServiceIdVisitor {
+    type Value = ValidServiceId;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a valid service ID")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where E: serde::de::Error {
+        ValidServiceId::new(value).ok_or_else(|| E::custom(format!("invalid service ID: {}", value)))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ValidServiceId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: serde::Deserializer<'de> {
+        deserializer.deserialize_str(ValidServiceIdVisitor)
+    }
+}
+
 /// A validated middleware identifier.
 /// 
 /// This type guarantees that the contained ID is valid according to our middleware
@@ -91,6 +120,35 @@ impl fmt::Display for ValidMiddlewareId {
     }
 }
 
+impl serde::Serialize for ValidMiddlewareId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where S: serde::Serializer {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+struct ValidMiddlewareIdVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ValidMiddlewareIdVisitor {
+    type Value = ValidMiddlewareId;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a valid middleware ID")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where E: serde::de::Error {
+        ValidMiddlewareId::new(value).ok_or_else(|| E::custom(format!("invalid middleware ID: {}", value)))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ValidMiddlewareId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: serde::Deserializer<'de> {
+        deserializer.deserialize_str(ValidMiddlewareIdVisitor)
+    }
+}
+
 /// A validated router identifier.
 /// 
 /// This type guarantees that the contained ID is valid according to our router
@@ -130,6 +188,35 @@ impl ValidRouterId {
 impl fmt::Display for ValidRouterId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+impl serde::Serialize for ValidRouterId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where S: serde::Serializer {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+struct ValidRouterIdVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ValidRouterIdVisitor {
+    type Value = ValidRouterId;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a valid router ID")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where E: serde::de::Error {
+        ValidRouterId::new(value).ok_or_else(|| E::custom(format!("invalid router ID: {}", value)))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ValidRouterId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: serde::Deserializer<'de> {
+        deserializer.deserialize_str(ValidRouterIdVisitor)
     }
 }
 
@@ -243,12 +330,78 @@ impl fmt::Display for ValidRule {
     }
 }
 
+impl serde::Serialize for ValidRule {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where S: serde::Serializer {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+struct ValidRuleVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ValidRuleVisitor {
+    type Value = ValidRule;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a valid routing rule")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where E: serde::de::Error {
+        ValidRule::new(value).ok_or_else(|| E::custom(format!("invalid rule: {}", value)))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ValidRule {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: serde::Deserializer<'de> {
+        deserializer.deserialize_str(ValidRuleVisitor)
+    }
+}
+
 /// A validated version string.
 /// 
 /// This type guarantees that the contained version follows a valid format.
 /// It supports semantic versioning like "1.0.0" or simpler formats like "1.0".
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Version(String);
+
+// serde를 위한 Serialize, Deserialize 구현
+impl serde::Serialize for Version {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+// String에서 Version으로 변환하는 방문자 구현
+struct VersionVisitor;
+
+impl<'de> serde::de::Visitor<'de> for VersionVisitor {
+    type Value = Version;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a valid version string")
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        Version::new(value).ok_or_else(|| E::custom(format!("invalid version: {}", value)))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Version {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_str(VersionVisitor)
+    }
+}
 
 impl Version {
     /// Attempts to create a new `Version` from a string.
