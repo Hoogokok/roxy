@@ -141,16 +141,16 @@ impl ServerSettings<Raw> {
     
     /// 환경 변수에서 서버 설정을 로드합니다.
     pub fn from_env() -> Result<ServerSettings<Validated>, SettingsError> {
-        let http_port = parse_env_var("SERVER_HTTP_PORT", default_http_port)?;
-        let https_enabled = parse_env_var("SERVER_HTTPS_ENABLED", || false)?;
-        let https_port = parse_env_var("SERVER_HTTPS_PORT", default_https_port)?;
+        let http_port = parse_env_var("PROXY_HTTP_PORT", default_http_port)?;
+        let https_enabled = parse_env_var("PROXY_HTTPS_ENABLED", || false)?;
+        let https_port = parse_env_var("PROXY_HTTPS_PORT", default_https_port)?;
         
-        let tls_cert_path = match env::var("SERVER_TLS_CERT_PATH") {
+        let tls_cert_path = match env::var("PROXY_TLS_CERT") {
             Ok(path) => Some(path),
             Err(_) => None
         };
         
-        let tls_key_path = match env::var("SERVER_TLS_KEY_PATH") {
+        let tls_key_path = match env::var("PROXY_TLS_KEY") {
             Ok(path) => Some(path),
             Err(_) => None
         };
@@ -169,8 +169,24 @@ impl ServerSettings<Raw> {
     
     /// 유효성 검사 실행 후 Validated 상태로 전환
     pub fn validated(self) -> Result<ServerSettings<Validated>, SettingsError> {
+        // 포트 0 검증 - HTTP 포트
+        if self.http_port == 0 {
+            return Err(SettingsError::ValidationError { 
+                field: "http_port".to_string(),
+                message: "HTTP 포트는 0이 될 수 없습니다".to_string()
+            });
+        }
+        
         // 유효성 검사 로직
         if self.https_enabled {
+            // HTTPS 포트 검증
+            if self.https_port == 0 {
+                return Err(SettingsError::ValidationError { 
+                    field: "https_port".to_string(),
+                    message: "HTTPS 포트는 0이 될 수 없습니다".to_string()
+                });
+            }
+            
             if self.tls_cert_path.is_none() {
                 return Err(SettingsError::ValidationError { 
                     field: "tls_cert_path".to_string(),
@@ -182,6 +198,14 @@ impl ServerSettings<Raw> {
                 return Err(SettingsError::ValidationError { 
                     field: "tls_key_path".to_string(),
                     message: "HTTPS가 활성화된 경우 TLS 키 경로가 필요합니다".to_string()
+                });
+            }
+            
+            // 포트 충돌 검사
+            if self.http_port == self.https_port {
+                return Err(SettingsError::ValidationError {
+                    field: "https_port".to_string(),
+                    message: "HTTP와 HTTPS 포트는 달라야 합니다".to_string()
                 });
             }
         }
