@@ -100,7 +100,11 @@ where
     async fn send_config_update_notification(tx: &mpsc::Sender<()>, updated: bool) -> Result<()> {
         if updated {
             tx.send(()).await.map_err(|e| {
-                Error::ConfigWatchError(format!("설정 업데이트 알림 전송 실패: {}", e))
+                Error::ConfigWatch {
+                    message: format!("설정 업데이트 알림 전송 실패: {}", e),
+                    file_path: None,
+                    source: None,
+                }
             })?;
         }
         Ok(())
@@ -187,7 +191,11 @@ impl ServerManager<HttpsDisabled> {
         let watcher_config = WatcherConfig::from_env();
         
         if !watcher_config.enabled {
-            return Err(Error::ConfigWatchError("설정 감시자가 비활성화되어 있습니다".into()));
+            return Err(Error::ConfigWatch { 
+                message: "설정 감시자가 비활성화되어 있습니다".into(),
+                file_path: None,
+                source: None,
+            });
         }
 
         // 설정 업데이트 알림을 위한 채널 생성
@@ -326,7 +334,11 @@ impl ServerManager<HttpsEnabled> {
         let watcher_config = WatcherConfig::from_env();
         
         if !watcher_config.enabled {
-            return Err(Error::ConfigWatchError("설정 감시자가 비활성화되어 있습니다".into()));
+            return Err(Error::ConfigWatch { 
+                message: "설정 감시자가 비활성화되어 있습니다".into(),
+                file_path: None,
+                source: None,
+            });
         }
 
         // 설정 업데이트 알림을 위한 채널 생성
@@ -575,11 +587,19 @@ async fn load_and_validate_json_config(path: &Path) -> Result<crate::settings::J
     
     // JSON 설정 파일 로드
     let mut json_config = JsonConfig::from_file(path)
-        .map_err(|e| Error::ConfigWatchError(format!("JSON 설정 파일 로드 실패: {}", e)))?;
+        .map_err(|e| Error::Config { 
+            message: format!("JSON 설정 파일 로드 실패: {}", e),
+            file_path: Some(path.to_path_buf()),
+            source: Some(Box::new(e)),
+        })?;
     
     // 설정 유효성 검증
     json_config.validate()
-        .map_err(|e| Error::ConfigWatchError(format!("JSON 설정 유효성 검증 실패: {}", e)))?;
+        .map_err(|e| Error::Config { 
+            message: format!("JSON 설정 유효성 검증 실패: {}", e),
+            file_path: Some(path.to_path_buf()),
+            source: Some(Box::new(e)),
+        })?;
     
     Ok(json_config)
 }
