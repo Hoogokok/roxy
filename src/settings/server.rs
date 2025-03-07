@@ -3,6 +3,7 @@ use std::env;
 use std::marker::PhantomData;
 use super::SettingsError;
 use super::types::ValidPort;
+use std::any::TypeId;
 
 // 기존 상태 타입
 #[derive(Debug, Clone, Copy)]
@@ -12,10 +13,11 @@ pub struct Raw;
 pub struct Validated;
 
 // HTTPS 활성화 상태를 표현하는 타입
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy)]
 pub struct HttpsEnabled;
 
-#[derive(Debug, Clone, Copy)]
+/// HTTPS 비활성화 상태를 나타내는 타입
+#[derive(Debug, Default, Clone, Copy)]
 pub struct HttpsDisabled;
 
 // HttpsState 타입 매개변수가 추가된 ServerSettings
@@ -109,17 +111,182 @@ impl<State> ServerSettings<State, HttpsEnabled> {
     }
 }
 
-// Raw + HttpsDisabled 상태에 특화된 메서드들
-impl ServerSettings<Raw, HttpsDisabled> {
-    /// 기본값으로 새 ServerSettings 생성
-    pub fn new() -> Self {
+// 새로 추가: ServerBuilder 패턴
+pub struct ServerBuilder {
+    http_port: ValidPort,
+    https_port: Option<ValidPort>,
+    tls_cert_path: Option<String>,
+    tls_key_path: Option<String>,
+}
+
+impl ServerBuilder {
+    /// 새 서버 빌더 생성
+    pub fn new(http_port: ValidPort) -> Self {
         Self {
-            http_port: default_http_port(),
-            https_port: default_https_port(), // 상태는 HttpsDisabled이지만 유효한 기본값 유지
+            http_port,
+            https_port: None,
+            tls_cert_path: None,
+            tls_key_path: None,
+        }
+    }
+    
+    /// 기본 HTTP 포트로 새 서버 빌더 생성
+    pub fn default() -> Self {
+        Self::new(default_http_port())
+    }
+    
+    /// HTTPS 포트 설정
+    pub fn with_https_port(mut self, https_port: ValidPort) -> Self {
+        self.https_port = Some(https_port);
+        self
+    }
+    
+    /// TLS 인증서 경로 설정
+    pub fn with_tls_cert_path(mut self, cert_path: String) -> Self {
+        self.tls_cert_path = Some(cert_path);
+        self
+    }
+    
+    /// TLS 키 경로 설정
+    pub fn with_tls_key_path(mut self, key_path: String) -> Self {
+        self.tls_key_path = Some(key_path);
+        self
+    }
+    
+    /// HTTP 서버 설정 빌드 (HTTPS 비활성화)
+    pub fn build_http(self) -> ServerSettings<Raw, HttpsDisabled> {
+        ServerSettings {
+            http_port: self.http_port,
+            https_port: default_https_port(), // 기본값 사용
             tls_cert_path: None,
             tls_key_path: None,
             _marker: PhantomData,
         }
+    }
+    
+    /// HTTPS 서버 설정 빌드 (HTTPS 활성화)
+    pub fn build_https(self) -> Result<ServerSettings<Raw, HttpsEnabled>, SettingsError> {
+        let https_port = self.https_port.ok_or_else(|| 
+            SettingsError::ValidationError {
+                field: "https_port".to_string(),
+                message: "HTTPS 포트가 지정되지 않았습니다".to_string()
+            }
+        )?;
+        
+        let tls_cert_path = self.tls_cert_path.ok_or_else(|| 
+            SettingsError::ValidationError {
+                field: "tls_cert_path".to_string(),
+                message: "HTTPS가 활성화된 경우 TLS 인증서 경로가 필요합니다".to_string()
+            }
+        )?;
+        
+        let tls_key_path = self.tls_key_path.ok_or_else(|| 
+            SettingsError::ValidationError {
+                field: "tls_key_path".to_string(),
+                message: "HTTPS가 활성화된 경우 TLS 키 경로가 필요합니다".to_string()
+            }
+        )?;
+        
+        // 포트 충돌 검사
+        if self.http_port.value() == https_port.value() {
+            return Err(SettingsError::ValidationError {
+                field: "https_port".to_string(),
+                message: "HTTP와 HTTPS 포트는 달라야 합니다".to_string()
+            });
+        }
+        
+        Ok(ServerSettings {
+            http_port: self.http_port,
+            https_port,
+            tls_cert_path: Some(tls_cert_path),
+            tls_key_path: Some(tls_key_path),
+            _marker: PhantomData,
+        })
+    }
+    
+    /// 환경 변수에서 서버 설정을 로드
+    pub fn from_env() -> Result<Self, SettingsError> {
+        // HTTP 포트
+        let http_port_raw = parse_env_var::<u16, _>("PROXY_HTTP_PORT", || 80)?;
+        let http_port = ValidPort::new(http_port_raw).ok_or_else(|| 
+            SettingsError::ValidationError {
+                field: "http_port".to_string(),
+                message: format!("HTTP 포트는 0이 될 수 없습니다: {}", http_port_raw)
+            }
+        )?;
+        
+        let mut builder = Self::new(http_port);
+        
+        // HTTPS 활성화 여부
+        let https_enabled = parse_env_var::<bool, _>("PROXY_HTTPS_ENABLED", || false)?;
+        
+        if https_enabled {
+            // HTTPS 포트
+            let https_port_raw = parse_env_var::<u16, _>("PROXY_HTTPS_PORT", || 443)?;
+            let https_port = ValidPort::new(https_port_raw).ok_or_else(|| 
+                SettingsError::ValidationError {
+                    field: "https_port".to_string(),
+                    message: format!("HTTPS 포트는 0이 될 수 없습니다: {}", https_port_raw)
+                }
+            )?;
+            
+            // TLS 인증서 및 키 경로
+            let tls_cert_path = env::var("PROXY_TLS_CERT").map_err(|_| 
+                SettingsError::ValidationError {
+                    field: "tls_cert_path".to_string(),
+                    message: "HTTPS가 활성화된 경우 TLS 인증서 경로가 필요합니다".to_string()
+                }
+            )?;
+            
+            let tls_key_path = env::var("PROXY_TLS_KEY").map_err(|_| 
+                SettingsError::ValidationError {
+                    field: "tls_key_path".to_string(),
+                    message: "HTTPS가 활성화된 경우 TLS 키 경로가 필요합니다".to_string()
+                }
+            )?;
+            
+            builder = builder
+                .with_https_port(https_port)
+                .with_tls_cert_path(tls_cert_path)
+                .with_tls_key_path(tls_key_path);
+        }
+        
+        Ok(builder)
+    }
+}
+
+/// 두 가지 타입 중 하나를 담을 수 있는 컨테이너
+pub enum Either<L, R> {
+    Left(L),
+    Right(R),
+}
+
+impl ServerSettings {
+    /// 환경 변수에서 서버 설정을 로드하고 HTTPS 활성화 여부에 따라 적절한 타입 반환
+    pub fn from_env_unified() -> Result<
+        Either<ServerSettings<Validated, HttpsDisabled>, ServerSettings<Validated, HttpsEnabled>>,
+        SettingsError
+    > {
+        let builder = ServerBuilder::from_env()?;
+        let https_enabled = parse_env_var::<bool, _>("PROXY_HTTPS_ENABLED", || false)?;
+        
+        if https_enabled {
+            // HTTPS 활성화
+            let raw = builder.build_https()?;
+            Ok(Either::Right(raw.validated()?))
+        } else {
+            // HTTPS 비활성화
+            let raw = builder.build_http();
+            Ok(Either::Left(raw.validated()?))
+        }
+    }
+}
+
+// Raw + HttpsDisabled 상태에 특화된 메서드들
+impl ServerSettings<Raw, HttpsDisabled> {
+    /// 기본값으로 새 ServerSettings 생성
+    pub fn new() -> Self {
+        ServerBuilder::default().build_http()
     }
     
     /// HTTP 포트 설정
@@ -130,15 +297,13 @@ impl ServerSettings<Raw, HttpsDisabled> {
     
     /// HTTPS 활성화 - 상태 전환
     pub fn enable_https(self, https_port: ValidPort, cert_path: String, key_path: String) 
-        -> ServerSettings<Raw, HttpsEnabled> 
+        -> Result<ServerSettings<Raw, HttpsEnabled>, SettingsError> 
     {
-        ServerSettings {
-            http_port: self.http_port,
-            https_port,
-            tls_cert_path: Some(cert_path),
-            tls_key_path: Some(key_path),
-            _marker: PhantomData,
-        }
+        ServerBuilder::new(self.http_port)
+            .with_https_port(https_port)
+            .with_tls_cert_path(cert_path)
+            .with_tls_key_path(key_path)
+            .build_https()
     }
     
     /// 유효성 검사 - HttpsDisabled 상태에서는 간단함
@@ -153,45 +318,19 @@ impl ServerSettings<Raw, HttpsDisabled> {
         })
     }
     
-    /// 환경 변수에서 서버 설정을 로드 (분리된 메서드)
+    /// 환경 변수에서 서버 설정을 로드
     pub fn from_env() -> Result<ServerSettings<Validated, HttpsDisabled>, SettingsError> {
-        Ok(Self::from_env_internal()?.0)
-    }
-    
-    /// 환경 변수에서 서버 설정을 로드 (내부 구현)
-    pub fn from_env_internal() -> Result<(ServerSettings<Validated, HttpsDisabled>, bool), SettingsError> {
-        // HTTP 포트
-        let http_port_raw = parse_env_var::<u16, _>("PROXY_HTTP_PORT", || 80)?;
-        let http_port = ValidPort::new(http_port_raw).ok_or_else(|| 
-            SettingsError::ValidationError {
-                field: "http_port".to_string(),
-                message: format!("HTTP 포트는 0이 될 수 없습니다: {}", http_port_raw)
-            }
-        )?;
-        
-        // HTTPS 활성화 여부
+        let builder = ServerBuilder::from_env()?;
         let https_enabled = parse_env_var::<bool, _>("PROXY_HTTPS_ENABLED", || false)?;
         
         if !https_enabled {
-            // HTTPS 비활성화 시 기본 설정으로 유효 상태 반환
-            Ok((ServerSettings {
-                http_port,
-                https_port: default_https_port(),
-                tls_cert_path: None,
-                tls_key_path: None,
-                _marker: PhantomData,
-            }, false))
+            let raw = builder.build_http();
+            raw.validated()
         } else {
-            // HTTPS 활성화 시 HttpsEnabled 메서드로 위임
-            let _result = ServerSettings::<Raw, HttpsEnabled>::from_env_with_http_port(http_port.clone())?;
-            // bool을 true로 반환하여 HttpsEnabled 상태임을 알림
-            Ok((ServerSettings {
-            http_port,
-                https_port: default_https_port(),
-                tls_cert_path: None,
-                tls_key_path: None,
-            _marker: PhantomData,
-            }, true))
+            Err(SettingsError::ValidationError {
+                field: "https_enabled".to_string(),
+                message: "HTTPS가 활성화되어 있어 HttpsDisabled 타입으로 로드할 수 없습니다".to_string()
+            })
         }
     }
 }
@@ -232,70 +371,20 @@ impl ServerSettings<Raw, HttpsEnabled> {
         })
     }
     
-    /// HTTP 포트와 함께 환경 변수에서 HTTPS 설정을 로드
-    pub fn from_env_with_http_port(http_port: ValidPort) -> Result<ServerSettings<Validated, HttpsEnabled>, SettingsError> {
-        // HTTPS 포트
-        let https_port_raw = parse_env_var::<u16, _>("PROXY_HTTPS_PORT", || 443)?;
-        let https_port = ValidPort::new(https_port_raw).ok_or_else(|| 
-            SettingsError::ValidationError {
-                field: "https_port".to_string(),
-                message: format!("HTTPS 포트는 0이 될 수 없습니다: {}", https_port_raw)
-            }
-        )?;
-        
-        // TLS 인증서 및 키 경로
-        let tls_cert_path = env::var("PROXY_TLS_CERT").map_err(|_| 
-            SettingsError::ValidationError {
-                field: "tls_cert_path".to_string(),
-                message: "HTTPS가 활성화된 경우 TLS 인증서 경로가 필요합니다".to_string()
-            }
-        )?;
-        
-        let tls_key_path = env::var("PROXY_TLS_KEY").map_err(|_| 
-            SettingsError::ValidationError {
-                field: "tls_key_path".to_string(),
-                message: "HTTPS가 활성화된 경우 TLS 키 경로가 필요합니다".to_string()
-            }
-        )?;
-        
-        // 포트 충돌 검사
-        if http_port.value() == https_port.value() {
-            return Err(SettingsError::ValidationError {
-                field: "https_port".to_string(),
-                message: "HTTP와 HTTPS 포트는 달라야 합니다".to_string()
-            });
-        }
-        
-        // HTTPS 활성화 상태로 반환
-        Ok(ServerSettings::<Validated, HttpsEnabled> {
-            http_port,
-            https_port,
-            tls_cert_path: Some(tls_cert_path),
-            tls_key_path: Some(tls_key_path),
-            _marker: PhantomData,
-        })
-    }
-    
     /// 환경 변수에서 서버 설정을 로드
     pub fn from_env() -> Result<ServerSettings<Validated, HttpsEnabled>, SettingsError> {
-        let (_, is_https_enabled) = ServerSettings::<Raw, HttpsDisabled>::from_env_internal()?;
+        let builder = ServerBuilder::from_env()?;
+        let https_enabled = parse_env_var::<bool, _>("PROXY_HTTPS_ENABLED", || false)?;
         
-        if !is_https_enabled {
-            return Err(SettingsError::ValidationError {
+        if https_enabled {
+            let raw = builder.build_https()?;
+            raw.validated()
+        } else {
+            Err(SettingsError::ValidationError {
                 field: "https_enabled".to_string(),
-                message: "HTTPS가 활성화되지 않았습니다".to_string()
-            });
+                message: "HTTPS가 비활성화되어 있어 HttpsEnabled 타입으로 로드할 수 없습니다".to_string()
+            })
         }
-        
-        let http_port_raw = parse_env_var::<u16, _>("PROXY_HTTP_PORT", || 80)?;
-        let http_port = ValidPort::new(http_port_raw).ok_or_else(|| 
-            SettingsError::ValidationError {
-                field: "http_port".to_string(),
-                message: format!("HTTP 포트는 0이 될 수 없습니다: {}", http_port_raw)
-            }
-        )?;
-        
-        Self::from_env_with_http_port(http_port)
     }
 }
 
@@ -435,17 +524,33 @@ where
     }
 }
 
-// 기본값 구현
+// 기본값 구현 (Raw, HttpsDisabled)
 impl Default for ServerSettings<Raw, HttpsDisabled> {
     fn default() -> Self {
         Self::new()
     }
 }
 
+// 특수화된 기본값 구현 (Validated, HttpsDisabled)
 impl Default for ServerSettings<Validated, HttpsDisabled> {
     fn default() -> Self {
         ServerSettings::<Raw, HttpsDisabled>::new()
             .validated()
             .unwrap_or_else(|_| panic!("기본 ServerSettings 검증 실패"))
+    }
+}
+
+// HTTPS 활성화 상태에 대한 기본값 구현
+impl Default for ServerSettings<Validated, HttpsEnabled> {
+    fn default() -> Self {
+        let raw = ServerBuilder::default()
+            .with_https_port(default_https_port())
+            .with_tls_cert_path("cert.pem".to_string())
+            .with_tls_key_path("key.pem".to_string())
+            .build_https()
+            .expect("기본 HTTPS ServerSettings 생성 실패");
+        
+        raw.validated()
+            .unwrap_or_else(|_| panic!("기본 HTTPS ServerSettings 검증 실패"))
     }
 } 
