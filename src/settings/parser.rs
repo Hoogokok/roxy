@@ -28,8 +28,11 @@ impl TryFrom<&str> for RawJsonConfig {
 #[derive(Debug, serde::Deserialize)]
 pub struct ValidJsonConfig {
     pub version: Version,
+    #[serde(default)]
     pub services: HashMap<String, ServiceConfig>,
+    #[serde(default)]
     pub middlewares: HashMap<String, crate::middleware::config::MiddlewareConfig>,
+    #[serde(default)]
     pub routers: HashMap<String, RouterConfig>,
     pub health: Option<crate::settings::json::HealthConfig>,
 }
