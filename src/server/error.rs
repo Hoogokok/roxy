@@ -9,6 +9,7 @@ pub enum Error {
     Other(Box<dyn std::error::Error>),
     Configuration(String),
     ConfigWatchError(String),
+    ConfigWatcher(String),
 }
 
 impl From<std::io::Error> for Error {
@@ -44,6 +45,7 @@ impl fmt::Display for Error {
             Error::Other(e) => write!(f, "Error: {}", e),
             Error::Configuration(msg) => write!(f, "Configuration Error: {}", msg),
             Error::ConfigWatchError(msg) => write!(f, "Config Watch Error: {}", msg),
+            Error::ConfigWatcher(msg) => write!(f, "Config Watcher Error: {}", msg),
         }
     }
 }
@@ -55,6 +57,7 @@ impl std::error::Error for Error {
             Error::DockerError(e) => Some(e),
             Error::Other(e) => Some(e.as_ref()),
             Error::ConfigError(_) | Error::Configuration(_) | Error::ConfigWatchError(_) => None,
+            Error::ConfigWatcher(_) => None,
         }
     }
 }
