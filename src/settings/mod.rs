@@ -108,44 +108,82 @@ impl<HttpsState> Settings<HttpsState> {
     }
 
     pub async fn from_toml_file<P: AsRef<Path>>(path: P) -> Result<Either<Settings<HttpsDisabled>, Settings<HttpsEnabled>>> {
+        use std::marker::PhantomData;
+        
         // 파일 내용 로드
         let content = fs::read_to_string(&path)?;
         
-        // 비어있는 설정 로드 (server 필드 제외)
-        let mut base_settings: Settings<HttpsDisabled> = toml::from_str(&content)?;
+        // ServerWrapper를 통해 server 섹션 파싱
+        let server_wrapper: server::ServerWrapper = toml::from_str(&content)?;
+        let temp_server = server_wrapper.server;
         
-        // HTTPS 상태 확인 후 적절한 타입 생성
-        let toml_value: toml::Value = toml::from_str(&content)?;
-        let https_enabled = toml_value
-            .get("server")
-            .and_then(|s| s.get("https_enabled"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+        // HTTPS 상태 확인
+        let https_enabled = temp_server.https_enabled;
+        
+        // 나머지 설정 필드 파싱
+        #[derive(Deserialize)]
+        struct SettingsHelper {
+            #[serde(default)]
+            logging: LogSettings,
+            #[serde(default)]
+            tls: TlsSettings,
+            #[serde(default)]
+            docker: DockerSettings,
+            #[serde(default)]
+            middleware: HashMap<String, MiddlewareConfig>,
+            #[serde(default)]
+            router_middlewares: HashMap<String, Vec<ValidMiddlewareId>>,
+        }
+        
+        // 서버 설정 외 다른 설정 로드
+        let helper: SettingsHelper = toml::from_str(&content)?;
         
         if https_enabled {
-            // HTTPS 활성화
-            let server: ServerSettings<Raw, HttpsEnabled> = toml::from_str(&content)?;
+            // HTTPS 활성화 - ServerBuilder 사용
+            let builder = server::ServerBuilder::new(temp_server.http_port)
+                .with_https_port(temp_server.https_port);
+                
+            // TLS 인증서와 키 설정
+            let builder = match (temp_server.tls_cert_path, temp_server.tls_key_path) {
+                (Some(cert), Some(key)) => builder.with_tls_cert_path(cert).with_tls_key_path(key),
+                _ => return Err(SettingsError::ValidationError { 
+                    field: "tls_paths".to_string(), 
+                    message: "HTTPS가 활성화된 경우 TLS 인증서와 키 경로가 필요합니다".to_string() 
+                }),
+            };
+            
+            // 서버 설정 생성 및 검증
+            let server = builder.build_https()?;
             let validated_server = server.validated()?;
             
             let https_settings = Settings::<HttpsEnabled> {
                 server: validated_server,
-                logging: base_settings.logging,
-                tls: base_settings.tls,
-                docker: base_settings.docker,
-                middleware: base_settings.middleware,
-                router_middlewares: base_settings.router_middlewares,
+                logging: helper.logging,
+                tls: helper.tls,
+                docker: helper.docker,
+                middleware: helper.middleware,
+                router_middlewares: helper.router_middlewares,
             };
             
             https_settings.validate().await?;
             Ok(Either::Right(https_settings))
         } else {
-            // HTTPS 비활성화
-            let server: ServerSettings<Raw, HttpsDisabled> = toml::from_str(&content)?;
+            // HTTPS 비활성화 - ServerBuilder 사용
+            let builder = server::ServerBuilder::new(temp_server.http_port);
+            let server = builder.build_http();
             let validated_server = server.validated()?;
             
-            base_settings.server = validated_server;
-            base_settings.validate().await?;
-            Ok(Either::Left(base_settings))
+            let http_settings = Settings::<HttpsDisabled> {
+                server: validated_server,
+                logging: helper.logging,
+                tls: helper.tls,
+                docker: helper.docker,
+                middleware: helper.middleware,
+                router_middlewares: helper.router_middlewares,
+            };
+            
+            http_settings.validate().await?;
+            Ok(Either::Left(http_settings))
         }
     }
    
