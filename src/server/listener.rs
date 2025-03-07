@@ -52,7 +52,10 @@ impl ServerListener {
                 .await
                 .map_err(|e| {
                     error!(error = %e, "TLS 설정 초기화 실패");
-                    Error::Other(e)
+                    Error::Server {
+                        message: format!("TLS 설정 초기화 실패: {}", e),
+                        source: None
+                    }
                 })?;
             
             Some(config)
