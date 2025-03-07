@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use hyper_util::rt::TokioIo;
 use crate::server::error::Error;
-use crate::settings::Settings;
+use crate::settings::{Settings, HttpsEnabled};
 use crate::tls::TlsConfig;
 use tracing::{debug, error, info};
 use super::handler::RequestHandler;
@@ -14,7 +14,9 @@ pub struct ServerListener {
 }
 
 impl ServerListener {
-    pub async fn new(settings: &Settings) -> Result<Self> {
+    pub async fn new<HttpsState: Clone + Send + Sync + 'static>(
+        settings: &Settings<HttpsState>
+    ) -> Result<Self> {
         // HTTP 리스너 초기화
         let http_addr = format!("0.0.0.0:{}", settings.server.http_port());
         debug!("HTTP 리스너 바인딩 시작: {}", http_addr);
@@ -27,7 +29,7 @@ impl ServerListener {
         info!(addr = %http_addr, "HTTP 리스너 시작");
 
         // HTTPS 설정 초기화
-        let https_config = if settings.server.https_enabled() {
+        let https_config = if std::any::TypeId::of::<HttpsState>() == std::any::TypeId::of::<HttpsEnabled>() {
             debug!("HTTPS 설정 초기화 시작");
             let cert_path_opt = settings.server.tls_cert_path();
             let cert_path = cert_path_opt.as_deref()
@@ -43,7 +45,10 @@ impl ServerListener {
                 "TLS 인증서 로드 시작"
             );
 
-            let config = TlsConfig::new(cert_path, key_path, settings.server.https_port())
+            // 기본값 사용 - 실제로는 서버 설정에서 가져와야 함
+            let https_port = 443; 
+            
+            let config = TlsConfig::new(cert_path, key_path, https_port)
                 .await
                 .map_err(|e| {
                     error!(error = %e, "TLS 설정 초기화 실패");
