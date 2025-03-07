@@ -83,4 +83,19 @@ impl std::error::Error for SettingsError {
             _ => None,
         }
     }
+}
+
+impl From<std::io::Error> for SettingsError {
+    fn from(err: std::io::Error) -> Self {
+        SettingsError::FileError {
+            path: String::new(),
+            error: err,
+        }
+    }
+}
+
+impl From<toml::de::Error> for SettingsError {
+    fn from(err: toml::de::Error) -> Self {
+        SettingsError::InvalidConfig(err.to_string())
+    }
 } 
