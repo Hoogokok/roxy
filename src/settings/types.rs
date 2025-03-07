@@ -590,6 +590,91 @@ impl fmt::Display for ValidUrl {
     }
 }
 
+/// 유효한 포트 번호를 나타내는 타입
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidPort(u16);
+
+impl ValidPort {
+    /// 유효한 포트인 경우에만 Some(ValidPort) 반환
+    /// 
+    /// 0은 운영체제가 임의로 포트를 할당하는 의미이므로 
+    /// 서버 포트 설정에는 유효하지 않습니다.
+    pub fn new(port: u16) -> Option<Self> {
+        if port > 0 {
+            Some(ValidPort(port))
+        } else {
+            None
+        }
+    }
+    
+    /// 내부 값 접근
+    pub fn value(&self) -> u16 {
+        self.0
+    }
+    
+    /// 내부 값을 소비하고 반환
+    pub fn into_inner(self) -> u16 {
+        self.0
+    }
+}
+
+impl fmt::Display for ValidPort {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl serde::Serialize for ValidPort {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where S: serde::Serializer {
+        serializer.serialize_u16(self.0)
+    }
+}
+
+struct ValidPortVisitor;
+
+impl<'de> serde::de::Visitor<'de> for ValidPortVisitor {
+    type Value = ValidPort;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("양수 포트 번호(1-65535)")
+    }
+
+    fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E>
+    where E: serde::de::Error {
+        if value > 0 && value <= u16::MAX as u64 {
+            Ok(ValidPort(value as u16))
+        } else {
+            Err(E::custom(format!("유효하지 않은 포트 번호: {}", value)))
+        }
+    }
+
+    fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E>
+    where E: serde::de::Error {
+        if value > 0 && value <= u16::MAX as i64 {
+            Ok(ValidPort(value as u16))
+        } else {
+            Err(E::custom(format!("유효하지 않은 포트 번호: {}", value)))
+        }
+    }
+
+    fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+    where E: serde::de::Error {
+        match value.parse::<u16>() {
+            Ok(port) if port > 0 => Ok(ValidPort(port)),
+            Ok(_) => Err(E::custom("포트 번호는 0보다 커야 합니다")),
+            Err(_) => Err(E::custom(format!("포트 번호 파싱 실패: {}", value))),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ValidPort {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: serde::Deserializer<'de> {
+        deserializer.deserialize_any(ValidPortVisitor)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -927,5 +1012,45 @@ mod tests {
         assert_eq!(parsed.path(), "/path");
         assert_eq!(parsed.query(), Some("query=value"));
         assert_eq!(parsed.fragment(), Some("fragment"));
+    }
+
+    #[test]
+    fn test_valid_ports() {
+        // 유효한 포트들
+        assert!(ValidPort::new(1).is_some());
+        assert!(ValidPort::new(80).is_some());
+        assert!(ValidPort::new(443).is_some());
+        assert!(ValidPort::new(8080).is_some());
+        assert!(ValidPort::new(65535).is_some());
+        
+        // 유효하지 않은 포트들
+        assert!(ValidPort::new(0).is_none());
+    }
+    
+    #[test]
+    fn test_port_display() {
+        let port = ValidPort::new(8080).unwrap();
+        assert_eq!(format!("{}", port), "8080");
+    }
+    
+    #[test]
+    fn test_port_serialize_deserialize() {
+        let port = ValidPort::new(8080).unwrap();
+        
+        // 직렬화 테스트
+        let serialized = serde_json::to_string(&port).unwrap();
+        assert_eq!(serialized, "8080");
+        
+        // 역직렬화 테스트
+        let deserialized: ValidPort = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(deserialized, port);
+        
+        // 문자열에서 역직렬화
+        let from_str: ValidPort = serde_json::from_str("\"8080\"").unwrap();
+        assert_eq!(from_str, port);
+        
+        // 유효하지 않은 값
+        let invalid: Result<ValidPort, _> = serde_json::from_str("0");
+        assert!(invalid.is_err());
     }
 } 
