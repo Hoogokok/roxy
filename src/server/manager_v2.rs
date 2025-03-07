@@ -463,18 +463,47 @@ where
     }
     
     info!("설정 파일 처리 중: {} 파일", paths.len());
+    
+    // 1. 유효한 JSON 설정 파일만 수집
+    let config_files = collect_json_files(&paths);
+    if config_files.is_empty() {
+        debug!("처리할 JSON 설정 파일이 없습니다");
+        return Ok(false);
+    }
+    
+    // 2. 설정 파일 처리 및 업데이트
+    let updated = process_json_configs(config_files, &shared_config).await?;
+    
+    // 3. 미들웨어 매니저 업데이트 (필요한 경우)
+    if updated {
+        update_middleware_manager(&shared_config, &shared_middleware_manager).await?;
+    }
+    
+    Ok(updated)
+}
+
+// JSON 파일만 수집
+fn collect_json_files(paths: &[PathBuf]) -> Vec<PathBuf> {
+    paths.iter()
+        .filter(|path| {
+            path.extension()
+                .map_or(false, |ext| ext == "json")
+        })
+        .cloned()
+        .collect()
+}
+
+// JSON 설정 파일 처리
+async fn process_json_configs<HttpsState>(
+    config_files: Vec<PathBuf>,
+    shared_config: &Arc<RwLock<Settings<HttpsState>>>
+) -> Result<bool> 
+where
+    HttpsState: Clone + Send + Sync + 'static,
+{
     let mut config_updated = false;
     
-    // 각 파일 처리
-    for path in paths {
-        if let Some(extension) = path.extension() {
-            if extension != "json" {
-                continue;
-            }
-        } else {
-            continue;
-        }
-        
+    for path in config_files {
         info!(path = %path.display(), "JSON 설정 파일 로드 중");
         
         // 설정 파일 로드 및 검증
@@ -486,51 +515,58 @@ where
             }
         };
         
-        // 설정 ID 또는 파일명 추출
+        // 설정 ID 추출
         let config_id = json_config.get_id(&path);
         
-        // 설정 업데이트
-        let mut config_lock = shared_config.write().await;
-        
-        // 설정 백업
-        let config_backup = config_lock.clone();
-        
-        // 미들웨어 설정 업데이트
-        let middleware_updated = update_middleware_settings(&mut config_lock, &json_config, &config_id);
-        
-        // 라우터-미들웨어 매핑 업데이트
-        let router_updated = update_router_middleware_mappings(&mut config_lock, &json_config, &config_id);
-        
-        // 설정 유효성 검증
-        if middleware_updated || router_updated {
-            if !validate_middleware_manager(&mut config_lock, &config_backup, middleware_updated) {
-                // 유효성 검증 실패 시 설정 복원
-                *config_lock = config_backup;
-                error!(config_id = %config_id, "미들웨어 설정 유효성 검증 실패");
-                continue;
-            }
-            
+        // 단일 설정 파일 처리
+        if process_single_config(json_config, config_id, shared_config).await? {
             config_updated = true;
-            info!(
-                config_id = %config_id, 
-                middleware_updated = %middleware_updated,
-                router_updated = %router_updated,
-                "설정 업데이트 성공"
-            );
-        } else {
-            debug!(config_id = %config_id, "설정 변경 없음");
-        }
-    }
-    
-    // 미들웨어 매니저 업데이트
-    if config_updated {
-        if let Err(e) = update_middleware_manager(&shared_config, &shared_middleware_manager).await {
-            error!(error = %e, "미들웨어 매니저 업데이트 실패");
-            return Err(Error::ConfigWatchError(format!("미들웨어 매니저 업데이트 실패: {}", e)));
         }
     }
     
     Ok(config_updated)
+}
+
+// 단일 설정 파일 처리
+async fn process_single_config<HttpsState>(
+    json_config: crate::settings::JsonConfig,
+    config_id: String,
+    shared_config: &Arc<RwLock<Settings<HttpsState>>>
+) -> Result<bool> 
+where
+    HttpsState: Clone + Send + Sync + 'static,
+{
+    let mut config_lock = shared_config.write().await;
+    
+    // 설정 백업
+    let config_backup = config_lock.clone();
+    
+    // 미들웨어 설정 업데이트
+    let middleware_updated = update_middleware_settings(&mut config_lock, &json_config, &config_id);
+    
+    // 라우터-미들웨어 매핑 업데이트
+    let router_updated = update_router_middleware_mappings(&mut config_lock, &json_config, &config_id);
+    
+    // 설정 유효성 검증
+    if middleware_updated || router_updated {
+        if !validate_middleware_manager(&mut config_lock, &config_backup, middleware_updated) {
+            // 유효성 검증 실패 시 설정 복원
+            *config_lock = config_backup;
+            error!(config_id = %config_id, "미들웨어 설정 유효성 검증 실패");
+            return Ok(false);
+        }
+        
+        info!(
+            config_id = %config_id, 
+            middleware_updated = %middleware_updated,
+            router_updated = %router_updated,
+            "설정 업데이트 성공"
+        );
+        return Ok(true);
+    } else {
+        debug!(config_id = %config_id, "설정 변경 없음");
+        return Ok(false);
+    }
 }
 
 // 설정 파일 로드 및 유효성 검증
