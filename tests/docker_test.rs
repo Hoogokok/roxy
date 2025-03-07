@@ -1,4 +1,4 @@
-use bollard::secret::{ContainerSummaryNetworkSettings, EndpointSettings, NetworkSettings};
+use bollard::secret::{ContainerSummaryNetworkSettings, EndpointSettings};
 use reverse_proxy_traefik::docker::container::ContainerInfo;
 use reverse_proxy_traefik::docker::{DockerManager, DockerError, DockerClient, ContainerInfoExtractor};
 use bollard::container::ListContainersOptions;
@@ -7,17 +7,9 @@ use futures_util::Stream;
 use reverse_proxy_traefik::routing_v2::{BackendService, PathMatcher};
 use std::pin::Pin;
 use std::sync::Arc;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 use std::collections::HashMap;
 use reverse_proxy_traefik::settings::DockerSettings;
-use std::fs::File;
-use std::io::Write;
-use tempfile::tempdir;
-use tokio::time::{sleep, Duration, timeout};
-use reverse_proxy_traefik::settings::Settings;
-use reverse_proxy_traefik::server::ServerManager;
-use reverse_proxy_traefik::middleware::MiddlewareManager;
-use reverse_proxy_traefik::routing_v2::RoutingTable;
 
 // Mock Docker Client
 #[derive(Clone)]
