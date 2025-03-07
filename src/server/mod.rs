@@ -5,9 +5,7 @@ pub mod error;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
-mod manager;
 pub mod manager_v2;
 
 use error::Error;
-pub use manager::ServerManager;
 pub use manager_v2::ServerInterface; 
