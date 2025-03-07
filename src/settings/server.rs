@@ -390,19 +390,25 @@ impl ServerSettings<Raw, HttpsEnabled> {
 
 // 직렬화/역직렬화 구현
 #[derive(Serialize, Deserialize)]
-struct TempServerSettings {
+pub struct TempServerSettings {
     #[serde(default = "default_http_port")]
-    http_port: ValidPort,
+    pub http_port: ValidPort,
     
     #[serde(default)]
-    https_enabled: bool,
+    pub https_enabled: bool,
     
     #[serde(default = "default_https_port")]
-    https_port: ValidPort,
+    pub https_port: ValidPort,
     
-    tls_cert_path: Option<String>,
+    pub tls_cert_path: Option<String>,
     
-    tls_key_path: Option<String>,
+    pub tls_key_path: Option<String>,
+}
+
+// TOML 파일에서 [server] 섹션을 파싱하기 위한 래퍼 구조체
+#[derive(Deserialize)]
+pub struct ServerWrapper {
+    pub server: TempServerSettings
 }
 
 // Raw 상태 직렬화/역직렬화
