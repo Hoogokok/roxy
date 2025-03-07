@@ -94,6 +94,8 @@ mod tests {
             http_port = 9090
             https_enabled = true
             https_port = 443
+            tls_cert_path = "/path/to/cert.pem"
+            tls_key_path = "/path/to/key.pem"
 
             [logging]
             format = "json"
@@ -109,7 +111,7 @@ mod tests {
         
         assert_eq!(settings.server.http_port(), 9090);
         assert!(settings.server.https_enabled());
-        assert_eq!(settings.server.http_port(), 443);
+        assert_eq!(settings.server.https_port(), 443);
         assert_eq!(settings.docker.network, "test-network");
         teardown();
     }
