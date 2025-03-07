@@ -4,8 +4,8 @@ use tracing::{debug, info};
 use types::ValidMiddlewareId;
 use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
 
-mod server;
 pub mod logging;
+mod server;
 mod tls;
 mod error;
 pub mod docker;
