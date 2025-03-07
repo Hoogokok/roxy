@@ -17,7 +17,7 @@ pub mod types;
 pub mod schema;
 pub mod parser;
 
-pub use server::{ServerSettings, Validated, parse_env_var};
+pub use server::{ServerSettings, Validated, parse_env_var, Either, HttpsDisabled, HttpsEnabled, Raw};
 pub use logging::LogSettings;
 pub use tls::TlsSettings;
 pub use docker::DockerSettings;
@@ -27,36 +27,30 @@ pub use parser::{ConfigParser, ValidatedConfig};
 
 pub type Result<T> = std::result::Result<T, SettingsError>;
 
-#[derive(Debug, Clone, Deserialize)]
-pub struct Settings {
-    // 서버 설정
-    #[serde(default)]
-    pub server: ServerSettings<Validated>,
+#[derive(Debug, Clone)]
+pub struct Settings<HttpsState = HttpsDisabled> {
+    // 타입 매개변수로 인한 역직렬화 문제 방지를 위해 server 필드는 직접 처리
+    pub server: ServerSettings<Validated, HttpsState>,
     
     // 로깅 설정
-    #[serde(default)]
     pub logging: LogSettings,
     
     // TLS 설정
-    #[serde(default)]
     pub tls: TlsSettings,
 
-    #[serde(default)]
     pub docker: DockerSettings,
     
     /// 미들웨어 설정
-    #[serde(default)]
     pub middleware: HashMap<String, MiddlewareConfig>,
     
     /// 라우터-미들웨어 매핑
-    #[serde(default)]
     pub router_middlewares: HashMap<String, Vec<ValidMiddlewareId>>,
 }
 
-impl Default for Settings {
+impl Default for Settings<HttpsDisabled> {
     fn default() -> Self {
         Self {
-            server: ServerSettings::default(),
+            server: ServerSettings::<Validated, HttpsDisabled>::default(),
             logging: LogSettings::default(),
             tls: TlsSettings::default(),
             docker: DockerSettings::default(),
@@ -66,51 +60,95 @@ impl Default for Settings {
     }
 }
 
-impl Settings {
+impl Settings<HttpsEnabled> {
+    pub fn create() -> Self {
+        Self {
+            server: ServerSettings::<Validated, HttpsEnabled>::default(),
+            logging: LogSettings::default(),
+            tls: TlsSettings::default(),
+            docker: DockerSettings::default(),
+            middleware: HashMap::new(),
+            router_middlewares: HashMap::new(),
+        }
+    }
+}
+
+impl<HttpsState> Settings<HttpsState> {
     /// 환경변수 및 설정 파일에서 설정을 로드합니다.
-    pub async fn load() -> Result<Self> {
-        let settings = Self {
-            server: ServerSettings::from_env()?,
-            logging: LogSettings::from_env()?,
-            tls: TlsSettings::from_env()?,
-            docker: DockerSettings::from_env()?,
-            middleware: HashMap::new(),
-            router_middlewares: HashMap::new(),
-        };
-
-        // 설정 생성 시점에 바로 검증
-        // settings.server.validate()?;
-        settings.validate().await?;
-        Ok(settings)
+    pub async fn load() -> Result<Either<Settings<HttpsDisabled>, Settings<HttpsEnabled>>> {
+        // 통합 인터페이스를 호출하여 상태에 따라 적절한 타입 반환
+        match ServerSettings::from_env_unified()? {
+            Either::Left(http_server) => {
+                // HTTP 전용
+                let settings = Settings::<HttpsDisabled> {
+                    server: http_server,
+                    logging: LogSettings::from_env()?,
+                    tls: TlsSettings::from_env()?,
+                    docker: DockerSettings::from_env()?,
+                    middleware: HashMap::new(),
+                    router_middlewares: HashMap::new(),
+                };
+                settings.validate().await?;
+                Ok(Either::Left(settings))
+            },
+            Either::Right(https_server) => {
+                // HTTPS 활성화
+                let settings = Settings::<HttpsEnabled> {
+                    server: https_server,
+                    logging: LogSettings::from_env()?,
+                    tls: TlsSettings::from_env()?,
+                    docker: DockerSettings::from_env()?,
+                    middleware: HashMap::new(),
+                    router_middlewares: HashMap::new(),
+                };
+                settings.validate().await?;
+                Ok(Either::Right(settings))
+            }
+        }
     }
 
-    pub async fn from_toml_file<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let content = fs::read_to_string(&path).map_err(|e| SettingsError::FileError {
-            path: path.as_ref().to_string_lossy().to_string(),
-            error: e,
-        })?;
-
-        let settings: Self = toml::from_str(&content)
-            .map_err(|e| SettingsError::ParseError { source: e })?;
+    pub async fn from_toml_file<P: AsRef<Path>>(path: P) -> Result<Either<Settings<HttpsDisabled>, Settings<HttpsEnabled>>> {
+        // 파일 내용 로드
+        let content = fs::read_to_string(&path)?;
         
-        Ok(settings)
+        // 비어있는 설정 로드 (server 필드 제외)
+        let mut base_settings: Settings<HttpsDisabled> = toml::from_str(&content)?;
+        
+        // HTTPS 상태 확인 후 적절한 타입 생성
+        let toml_value: toml::Value = toml::from_str(&content)?;
+        let https_enabled = toml_value
+            .get("server")
+            .and_then(|s| s.get("https_enabled"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        
+        if https_enabled {
+            // HTTPS 활성화
+            let server: ServerSettings<Raw, HttpsEnabled> = toml::from_str(&content)?;
+            let validated_server = server.validated()?;
+            
+            let https_settings = Settings::<HttpsEnabled> {
+                server: validated_server,
+                logging: base_settings.logging,
+                tls: base_settings.tls,
+                docker: base_settings.docker,
+                middleware: base_settings.middleware,
+                router_middlewares: base_settings.router_middlewares,
+            };
+            
+            https_settings.validate().await?;
+            Ok(Either::Right(https_settings))
+        } else {
+            // HTTPS 비활성화
+            let server: ServerSettings<Raw, HttpsDisabled> = toml::from_str(&content)?;
+            let validated_server = server.validated()?;
+            
+            base_settings.server = validated_server;
+            base_settings.validate().await?;
+            Ok(Either::Left(base_settings))
+        }
     }
-
-    pub async fn from_env() -> Result<Self> {
-        let settings = Self {
-            server: ServerSettings::from_env()?,
-            logging: LogSettings::from_env()?,
-            tls: TlsSettings::from_env()?,
-            docker: DockerSettings::from_env()?,
-            middleware: HashMap::new(),
-            router_middlewares: HashMap::new(),
-        };
-
-        // 설정 생성 시점에 바로 검증
-        settings.validate().await?;
-        Ok(settings)
-    }
-
+   
     /// 설정 유효성 검증
     pub async fn validate(&self) -> Result<()> {
         // self.server.validated()?;
@@ -395,7 +433,17 @@ impl Settings {
                 settings
             }
             Some("toml") => {
-                Self::from_toml_file(&path).await?
+                // TOML 파일에서 설정 로드 후, 현재 인스턴스 타입에 맞게 미들웨어와 라우터 설정만 가져옴
+                let loaded = Self::from_toml_file(&path).await?;
+                let (middleware, router_middlewares) = match loaded {
+                    Either::Left(settings) => (settings.middleware, settings.router_middlewares),
+                    Either::Right(settings) => (settings.middleware, settings.router_middlewares),
+                };
+                
+                let mut settings = Settings::default();
+                settings.middleware = middleware;
+                settings.router_middlewares = router_middlewares;
+                settings
             }
             _ => return Err(SettingsError::InvalidConfig(
                 format!("지원하지 않는 설정 파일 형식: {}", path.as_ref().display())
@@ -502,6 +550,38 @@ impl Settings {
     }
 }
 
+// Deserialize를 직접 구현
+impl<'de> Deserialize<'de> for Settings<HttpsDisabled> {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct SettingsHelper {
+            #[serde(default)]
+            logging: LogSettings,
+            #[serde(default)]
+            tls: TlsSettings,
+            #[serde(default)]
+            docker: DockerSettings,
+            #[serde(default)]
+            middleware: HashMap<String, MiddlewareConfig>,
+            #[serde(default)]
+            router_middlewares: HashMap<String, Vec<ValidMiddlewareId>>,
+        }
+
+        let helper = SettingsHelper::deserialize(deserializer)?;
+        Ok(Settings {
+            server: ServerSettings::<Validated, HttpsDisabled>::default(),
+            logging: helper.logging,
+            tls: helper.tls,
+            docker: helper.docker,
+            middleware: helper.middleware,
+            router_middlewares: helper.router_middlewares,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -557,7 +637,7 @@ mod tests {
         file.write_all(json_content.as_bytes()).unwrap();
         
         let mut settings = Settings {
-            server: ServerSettings::default(),
+            server: ServerSettings::<Validated, HttpsDisabled>::default(),
             logging: LogSettings::default(),
             tls: TlsSettings::default(),
             docker: DockerSettings::default(),
@@ -663,7 +743,7 @@ mod tests {
         
         // 디렉토리 로드 테스트
         let mut settings = Settings {
-            server: ServerSettings::default(),
+            server: ServerSettings::<Validated, HttpsDisabled>::default(),
             logging: LogSettings::default(),
             tls: TlsSettings::default(),
             docker: DockerSettings::default(),
