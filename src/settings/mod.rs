@@ -1,6 +1,7 @@
 use std::{collections::HashMap, env, fs, path::Path};
 use serde::Deserialize;
 use tracing::{debug, info};
+use types::ValidMiddlewareId;
 use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
 
 mod server;
@@ -49,7 +50,7 @@ pub struct Settings {
     
     /// 라우터-미들웨어 매핑
     #[serde(default)]
-    pub router_middlewares: HashMap<String, Vec<crate::settings::types::ValidMiddlewareId>>,
+    pub router_middlewares: HashMap<String, Vec<ValidMiddlewareId>>,
 }
 
 impl Default for Settings {
@@ -245,7 +246,7 @@ impl Settings {
         // let mut config = JsonConfig::from_file(&path)?;
         
         // 새로운 방식: 강력한 타입 검증 사용
-        let mut config = JsonConfig::from_file_strongly_typed(&path)?;
+        let config = JsonConfig::from_file_strongly_typed(&path)?;
         
         let config_id = config.get_id(path_ref);
         debug!("설정 ID: {}", config_id);
