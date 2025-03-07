@@ -16,6 +16,43 @@ pub enum ConfigEvent {
     Deleted(PathBuf),
 }
 
+/// 감시자 설정
+#[derive(Debug, Clone)]
+pub struct WatcherConfig {
+    pub enabled: bool,
+    pub debounce_timeout: Duration,
+    pub poll_interval: Duration,
+    pub config_path: PathBuf,
+}
+
+impl WatcherConfig {
+    /// 환경 변수에서 감시자 설정 로드
+    pub fn from_env() -> Self {
+        Self {
+            enabled: std::env::var("CONFIG_WATCHER_ENABLED")
+                .unwrap_or_else(|_| "true".to_string())
+                .parse()
+                .unwrap_or(true),
+            debounce_timeout: Duration::from_millis(
+                std::env::var("CONFIG_WATCHER_DEBOUNCE_MS")
+                    .unwrap_or_else(|_| "100".to_string())
+                    .parse()
+                    .unwrap_or(100),
+            ),
+            poll_interval: Duration::from_secs(
+                std::env::var("CONFIG_WATCHER_POLL_INTERVAL_SEC")
+                    .unwrap_or_else(|_| "2".to_string())
+                    .parse()
+                    .unwrap_or(2),
+            ),
+            config_path: PathBuf::from(
+                std::env::var("CONFIG_DIR")
+                    .unwrap_or_else(|_| "/config".to_string()),
+            ),
+        }
+    }
+}
+
 /// 설정 파일 감시자
 pub struct ConfigWatcher {
     /// 감시할 파일/디렉토리 경로 목록
@@ -146,11 +183,43 @@ impl ConfigWatcher {
             Some(events)
         }
     }
+    
+    /// 새로운 ConfigWatcher 생성 및 초기화 (경로, 폴링 간격, 디바운스 타임아웃 지정)
+    pub(crate) async fn new_v2(config_path: &PathBuf, poll_interval: Duration, debounce_timeout: Duration) -> Result<Self> {
+        let mut watcher = Self::new();
+        watcher.add_path(config_path);
+        watcher.start_with_interval(poll_interval).await?;
+        
+        debug!(
+            path = %config_path.display(),
+            poll_ms = %poll_interval.as_millis(),
+            debounce_ms = %debounce_timeout.as_millis(),
+            "설정 감시자 초기화"
+        );
+        
+        Ok(watcher)
+    }
 }
 
 impl Default for ConfigWatcher {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ConfigWatcher를 복제하는 방법을 명시적으로 구현
+impl Clone for ConfigWatcher {
+    fn clone(&self) -> Self {
+        // 새 인스턴스 생성
+        let mut new_watcher = Self::new();
+        
+        // 기존 경로 복사
+        for path in &self.paths {
+            new_watcher.add_path(path.clone());
+        }
+        
+        // 기존 설정과 동일하게 설정 (watcher는 start 시점에 초기화됨)
+        new_watcher
     }
 }
 
