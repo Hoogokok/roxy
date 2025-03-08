@@ -237,9 +237,18 @@ impl ServerManager<HttpsDisabled> {
                 // 설정 파일 처리
                 let notify_tx = tx.clone();
                 
-                // TODO: 설정 파일 처리 로직 구현
-                // 현재는 임시로 항상 업데이트가 있다고 가정
-                let updated = true;
+                // 설정 파일 처리 로직 구현
+                let updated = match process_config_files(
+                    file_paths, 
+                    shared_config.clone(), 
+                    shared_middleware_manager.clone()
+                ).await {
+                    Ok(updated) => updated,
+                    Err(e) => {
+                        error!("설정 파일 처리 중 오류 발생: {}", e);
+                        false
+                    }
+                };
                 
                 if updated {
                     if let Err(e) = Self::send_config_update_notification(&notify_tx, true).await {
@@ -380,9 +389,18 @@ impl ServerManager<HttpsEnabled> {
                 // 설정 파일 처리
                 let notify_tx = tx.clone();
                 
-                // TODO: 설정 파일 처리 로직 구현
-                // 현재는 임시로 항상 업데이트가 있다고 가정
-                let updated = true;
+                // 설정 파일 처리 로직 구현
+                let updated = match process_config_files(
+                    file_paths, 
+                    shared_config.clone(), 
+                    shared_middleware_manager.clone()
+                ).await {
+                    Ok(updated) => updated,
+                    Err(e) => {
+                        error!("설정 파일 처리 중 오류 발생: {}", e);
+                        false
+                    }
+                };
                 
                 if updated {
                     if let Err(e) = Self::send_config_update_notification(&notify_tx, true).await {
