@@ -16,6 +16,7 @@ mod validator;
 pub mod types;
 pub mod schema;
 pub mod parser;
+mod raw;
 
 pub use server::{ServerSettings, Validated, parse_env_var, Either, HttpsDisabled, HttpsEnabled, Raw};
 pub use logging::LogSettings;
@@ -24,6 +25,7 @@ pub use docker::DockerSettings;
 pub use error::SettingsError;
 pub use json::JsonConfig;
 pub use parser::{ConfigParser, ValidatedConfig};
+pub use raw::RawSettings;
 
 pub type Result<T> = std::result::Result<T, SettingsError>;
 
@@ -36,7 +38,7 @@ pub struct Settings<HttpsState = HttpsDisabled> {
     pub logging: LogSettings,
     
     // TLS 설정
-    pub tls: TlsSettings,
+    pub tls: TlsSettings<Validated>,
 
     pub docker: DockerSettings,
     
@@ -76,121 +78,31 @@ impl Settings<HttpsEnabled> {
 impl<HttpsState> Settings<HttpsState> {
     /// 환경변수 및 설정 파일에서 설정을 로드합니다.
     pub async fn load() -> Result<Either<Settings<HttpsDisabled>, Settings<HttpsEnabled>>> {
-        // 통합 인터페이스를 호출하여 상태에 따라 적절한 타입 반환
-        match ServerSettings::from_env_unified()? {
-            Either::Left(http_server) => {
-                // HTTP 전용
-                let settings = Settings::<HttpsDisabled> {
-                    server: http_server,
-                    logging: LogSettings::from_env()?,
-                    tls: TlsSettings::from_env()?,
-                    docker: DockerSettings::from_env()?,
-                    middleware: HashMap::new(),
-                    router_middlewares: HashMap::new(),
-                };
-                settings.validate().await?;
-                Ok(Either::Left(settings))
-            },
-            Either::Right(https_server) => {
-                // HTTPS 활성화
-                let settings = Settings::<HttpsEnabled> {
-                    server: https_server,
-                    logging: LogSettings::from_env()?,
-                    tls: TlsSettings::from_env()?,
-                    docker: DockerSettings::from_env()?,
-                    middleware: HashMap::new(),
-                    router_middlewares: HashMap::new(),
-                };
-                settings.validate().await?;
-                Ok(Either::Right(settings))
-            }
+        // 환경 변수에서 HTTPS 활성화 여부 확인
+        let https_enabled = parse_env_var::<bool, _>("PROXY_HTTPS_ENABLED", || false)?;
+        
+        if https_enabled {
+            // HTTPS 설정 로드 및 검증
+            let raw_settings = RawSettings::<HttpsEnabled>::from_env()?;
+            let validated_settings = raw_settings.validate().await?;
+            Ok(Either::Right(validated_settings))
+        } else {
+            // HTTP 설정 로드 및 검증
+            let raw_settings = RawSettings::<HttpsDisabled>::from_env()?;
+            let validated_settings = raw_settings.validate().await?;
+            Ok(Either::Left(validated_settings))
         }
     }
 
     pub async fn from_toml_file<P: AsRef<Path>>(path: P) -> Result<Either<Settings<HttpsDisabled>, Settings<HttpsEnabled>>> {
-        use std::marker::PhantomData;
-        
-        // 파일 내용 로드
-        let content = fs::read_to_string(&path)?;
-        
-        // ServerWrapper를 통해 server 섹션 파싱
-        let server_wrapper: server::ServerWrapper = toml::from_str(&content)?;
-        let temp_server = server_wrapper.server;
-        
-        // HTTPS 상태 확인
-        let https_enabled = temp_server.https_enabled;
-        
-        // 나머지 설정 필드 파싱
-        #[derive(Deserialize)]
-        struct SettingsHelper {
-            #[serde(default)]
-            logging: LogSettings,
-            #[serde(default)]
-            tls: TlsSettings,
-            #[serde(default)]
-            docker: DockerSettings,
-            #[serde(default)]
-            middleware: HashMap<String, MiddlewareConfig>,
-            #[serde(default)]
-            router_middlewares: HashMap<String, Vec<ValidMiddlewareId>>,
-        }
-        
-        // 서버 설정 외 다른 설정 로드
-        let helper: SettingsHelper = toml::from_str(&content)?;
-        
-        if https_enabled {
-            // HTTPS 활성화 - ServerBuilder 사용
-            let builder = server::ServerBuilder::new(temp_server.http_port)
-                .with_https_port(temp_server.https_port);
-                
-            // TLS 인증서와 키 설정
-            let builder = match (temp_server.tls_cert_path, temp_server.tls_key_path) {
-                (Some(cert), Some(key)) => builder.with_tls_cert_path(cert).with_tls_key_path(key),
-                _ => return Err(SettingsError::ValidationError { 
-                    field: "tls_paths".to_string(), 
-                    message: "HTTPS가 활성화된 경우 TLS 인증서와 키 경로가 필요합니다".to_string() 
-                }),
-            };
-            
-            // 서버 설정 생성 및 검증
-            let server = builder.build_https()?;
-            let validated_server = server.validated()?;
-            
-            let https_settings = Settings::<HttpsEnabled> {
-                server: validated_server,
-                logging: helper.logging,
-                tls: helper.tls,
-                docker: helper.docker,
-                middleware: helper.middleware,
-                router_middlewares: helper.router_middlewares,
-            };
-            
-            https_settings.validate().await?;
-            Ok(Either::Right(https_settings))
-        } else {
-            // HTTPS 비활성화 - ServerBuilder 사용
-            let builder = server::ServerBuilder::new(temp_server.http_port);
-            let server = builder.build_http();
-            let validated_server = server.validated()?;
-            
-            let http_settings = Settings::<HttpsDisabled> {
-                server: validated_server,
-                logging: helper.logging,
-                tls: helper.tls,
-                docker: helper.docker,
-                middleware: helper.middleware,
-                router_middlewares: helper.router_middlewares,
-            };
-            
-            http_settings.validate().await?;
-            Ok(Either::Left(http_settings))
-        }
+        // RawSettings의 from_toml_file 헬퍼 함수 사용
+        RawSettings::<HttpsEnabled>::from_toml_file(path).await
     }
    
     /// 설정 유효성 검증
     pub async fn validate(&self) -> Result<()> {
         // self.server.validated()?;
-        self.tls.validate().await?;
+        // self.tls.validated().await?;
         self.docker.validate()?;
 
         // 미들웨어 설정 검증
@@ -594,12 +506,13 @@ impl<'de> Deserialize<'de> for Settings<HttpsDisabled> {
     where
         D: serde::Deserializer<'de>,
     {
+        // RawSettings의 SettingsHelper 재사용
         #[derive(Deserialize)]
         struct SettingsHelper {
             #[serde(default)]
             logging: LogSettings,
             #[serde(default)]
-            tls: TlsSettings,
+            tls: TlsSettings<Raw>,
             #[serde(default)]
             docker: DockerSettings,
             #[serde(default)]
@@ -607,12 +520,14 @@ impl<'de> Deserialize<'de> for Settings<HttpsDisabled> {
             #[serde(default)]
             router_middlewares: HashMap<String, Vec<ValidMiddlewareId>>,
         }
-
+        
         let helper = SettingsHelper::deserialize(deserializer)?;
+        
+        // 비동기 검증을 수행할 수 없으므로 기본값 사용 (후에 validate 호출 필요)
         Ok(Settings {
             server: ServerSettings::<Validated, HttpsDisabled>::default(),
             logging: helper.logging,
-            tls: helper.tls,
+            tls: TlsSettings::<Validated>::default(),
             docker: helper.docker,
             middleware: helper.middleware,
             router_middlewares: helper.router_middlewares,
