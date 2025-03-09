@@ -3,7 +3,6 @@ use std::env;
 use std::marker::PhantomData;
 use super::SettingsError;
 use super::types::ValidPort;
-use std::any::TypeId;
 
 // 기존 상태 타입
 #[derive(Debug, Clone, Copy)]
@@ -39,11 +38,11 @@ pub struct ServerSettings<State = Validated, HttpsState = HttpsDisabled> {
     _marker: PhantomData<(State, HttpsState)>,
 }
 
-fn default_http_port() -> ValidPort { 
+pub fn default_http_port() -> ValidPort { 
     ValidPort::new(80).expect("기본 HTTP 포트는 항상 유효해야 합니다") 
 }
 
-fn default_https_port() -> ValidPort { 
+pub fn default_https_port() -> ValidPort { 
     ValidPort::new(443).expect("기본 HTTPS 포트는 항상 유효해야 합니다") 
 }
 
@@ -531,9 +530,18 @@ where
 }
 
 // 기본값 구현 (Raw, HttpsDisabled)
-impl Default for ServerSettings<Raw, HttpsDisabled> {
+impl<HttpsState> Default for ServerSettings<Raw, HttpsState>
+where
+    HttpsState: Default,
+{
     fn default() -> Self {
-        Self::new()
+        ServerSettings {
+            http_port: default_http_port(),
+            https_port: default_https_port(),
+            tls_cert_path: None,
+            tls_key_path: None,
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -559,4 +567,4 @@ impl Default for ServerSettings<Validated, HttpsEnabled> {
         raw.validated()
             .unwrap_or_else(|_| panic!("기본 HTTPS ServerSettings 검증 실패"))
     }
-} 
+}
