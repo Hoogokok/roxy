@@ -592,7 +592,7 @@ impl fmt::Display for ValidUrl {
 
 /// 유효한 포트 번호를 나타내는 타입
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ValidPort(u16);
+pub struct ValidPort(pub(crate) u16);
 
 impl ValidPort {
     /// 유효한 포트인 경우에만 Some(ValidPort) 반환
@@ -1053,4 +1053,4 @@ mod tests {
         let invalid: Result<ValidPort, _> = serde_json::from_str("0");
         assert!(invalid.is_err());
     }
-} 
+}
