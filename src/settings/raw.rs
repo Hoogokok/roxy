@@ -1,29 +1,33 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use serde::Deserialize;
 
 use crate::middleware::config::MiddlewareConfig;
 use crate::settings::types::ValidMiddlewareId;
-use crate::settings::server::{self, ServerSettings, Raw, HttpsDisabled, HttpsEnabled};
+use crate::settings::server::{self, ServerSettings, HttpsDisabled, HttpsEnabled};
 use crate::settings::tls::TlsSettings;
 use crate::settings::logging::LogSettings;
 use crate::settings::docker::DockerSettings;
 use crate::settings::{SettingsError, Settings, Either, Result, parse_env_var};
 
+use super::types::ValidPort;
+use super::typestate::Raw;
+
 /// 검증되지 않은 원시 설정을 나타내는 구조체
 #[derive(Deserialize)]
 pub struct RawSettings<HttpsState = HttpsDisabled> {
     #[serde(skip_deserializing)]
+    #[serde(default = "default_server_settings")]
     pub server: ServerSettings<Raw, HttpsState>,
     
     #[serde(default)]
-    pub logging: LogSettings,
+    pub logging: LogSettings<Raw>,
     
     #[serde(default)]
     pub tls: TlsSettings<Raw>,
     
     #[serde(default)]
-    pub docker: DockerSettings,
+    pub docker: DockerSettings<Raw>,
     
     #[serde(default)]
     pub middleware: HashMap<String, MiddlewareConfig>,
@@ -36,9 +40,9 @@ impl<HttpsState> RawSettings<HttpsState> {
     /// 기본 RawSettings 인스턴스 생성
     pub fn new(
         server: ServerSettings<Raw, HttpsState>,
-        logging: LogSettings,
+        logging: LogSettings<Raw>,
         tls: TlsSettings<Raw>,
-        docker: DockerSettings,
+        docker: DockerSettings<Raw>,
         middleware: HashMap<String, MiddlewareConfig>,
         router_middlewares: HashMap<String, Vec<ValidMiddlewareId>>,
     ) -> Self {
@@ -80,13 +84,15 @@ impl RawSettings<HttpsDisabled> {
         // 각 컴포넌트 검증
         let validated_server = self.server.validated()?;
         let validated_tls = self.tls.validated().await?;
+        let validated_logging = self.logging.validated()?;
+        let validated_docker = self.docker.validated()?;
         
         // 검증된 설정으로 Settings 생성
         let settings = Settings {
             server: validated_server,
-            logging: self.logging,
+            logging: validated_logging,
             tls: validated_tls,
-            docker: self.docker,
+            docker: validated_docker,
             middleware: self.middleware,
             router_middlewares: self.router_middlewares,
         };
@@ -109,7 +115,13 @@ impl RawSettings<HttpsEnabled> {
         let tls_key = std::env::var("PROXY_TLS_KEY").ok();
         
         // 서버 빌더 설정
-        let server_builder = server_builder.with_https_port(server::ValidPort::new(https_port).unwrap());
+        let valid_port = ValidPort::new(https_port).ok_or_else(|| 
+            SettingsError::ValidationError {
+                field: "https_port".to_string(),
+                message: format!("유효하지 않은 포트: {}", https_port),
+            }
+        )?;
+        let server_builder = server_builder.with_https_port(valid_port);
         
         // TLS 인증서/키 설정
         let server_builder = match (tls_cert, tls_key) {
@@ -142,13 +154,15 @@ impl RawSettings<HttpsEnabled> {
         // 각 컴포넌트 검증
         let validated_server = self.server.validated()?;
         let validated_tls = self.tls.validated().await?;
+        let validated_logging = self.logging.validated()?;
+        let validated_docker = self.docker.validated()?;
         
         // 검증된 설정으로 Settings 생성
         let settings = Settings {
             server: validated_server,
-            logging: self.logging,
+            logging: validated_logging,
             tls: validated_tls,
-            docker: self.docker,
+            docker: validated_docker,
             middleware: self.middleware,
             router_middlewares: self.router_middlewares,
         };
@@ -168,11 +182,11 @@ impl RawSettings<HttpsEnabled> {
         #[derive(Deserialize)]
         struct SettingsHelper {
             #[serde(default)]
-            logging: LogSettings,
+            logging: LogSettings<Raw>,
             #[serde(default)]
             tls: TlsSettings<Raw>,
             #[serde(default)]
-            docker: DockerSettings,
+            docker: DockerSettings<Raw>,
             #[serde(default)]
             middleware: HashMap<String, MiddlewareConfig>,
             #[serde(default)]
@@ -197,9 +211,9 @@ impl RawSettings<HttpsEnabled> {
             
             let settings = Settings {
                 server: validated_server,
-                logging: helper.logging,
+                logging: helper.logging.validated()?,
                 tls: validated_tls,
-                docker: helper.docker,
+                docker: helper.docker.validated()?,
                 middleware: helper.middleware,
                 router_middlewares: helper.router_middlewares,
             };
@@ -214,9 +228,9 @@ impl RawSettings<HttpsEnabled> {
             
             let settings = Settings {
                 server: validated_server,
-                logging: helper.logging,
+                logging: helper.logging.validated()?,
                 tls: validated_tls,
-                docker: helper.docker,
+                docker: helper.docker.validated()?,
                 middleware: helper.middleware,
                 router_middlewares: helper.router_middlewares,
             };
@@ -225,4 +239,12 @@ impl RawSettings<HttpsEnabled> {
             Ok(Either::Left(settings))
         }
     }
+}
+
+// 기본 ServerSettings 생성 함수
+fn default_server_settings<H>() -> ServerSettings<Raw, H> {
+    // HttpsDisabled 타입의 기본 설정 생성
+    let settings = ServerSettings::<Raw, HttpsDisabled>::default();
+    // 안전한 타입 변환 (메모리 레이아웃이 동일하다고 가정)
+    unsafe { std::mem::transmute(settings) }
 }
