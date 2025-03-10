@@ -1,7 +1,7 @@
 use serde_json::Value;
 use crate::middleware::MiddlewareConfig;
 
-use super::types::{ValidServiceId, ValidMiddlewareId, ValidRouterId, ValidRule, Version};
+use super::types::{ValidMiddlewareId, ValidMiddlewareReference, ValidRouterId, ValidRule, ValidServiceId, ValidServiceReference, Version};
 use super::error::SettingsError;
 use super::json::{HealthConfig, RouterConfig, ServiceConfig};
 use std::collections::HashMap;
@@ -31,10 +31,10 @@ pub struct ValidJsonConfig {
     #[serde(default)]
     pub services: HashMap<String, ServiceConfig>,
     #[serde(default)]
-    pub middlewares: HashMap<String, crate::middleware::config::MiddlewareConfig>,
+    pub middlewares: HashMap<String, MiddlewareConfig>,
     #[serde(default)]
     pub routers: HashMap<String, RouterConfig>,
-    pub health: Option<crate::settings::json::HealthConfig>,
+    pub health: Option<HealthConfig>,
 }
 
 impl TryFrom<RawJsonConfig> for ValidJsonConfig {
@@ -69,8 +69,8 @@ pub struct ValidatedConfig {
 #[derive(Debug)]
 pub struct ValidatedRouter {
     pub rule: ValidRule,
-    pub service: ValidServiceId,
-    pub middlewares: Option<Vec<ValidMiddlewareId>>,
+    pub service: ValidServiceReference,
+    pub middlewares: Option<Vec<ValidMiddlewareReference>>,
 }
 
 /// 검증된 서버 설정
@@ -90,6 +90,40 @@ pub struct ValidatedLoadBalancer {
 #[derive(Debug)]
 pub struct ValidatedService {
     pub loadbalancer: ValidatedLoadBalancer,
+}
+
+// 라우터 구성을 검증된 라우터로 변환하기 위한 도우미 함수
+fn validate_router(
+    config: RouterConfig,
+    services: &HashMap<ValidServiceId, ValidatedService>,
+    middlewares: &HashMap<ValidMiddlewareId, MiddlewareConfig>
+) -> Result<ValidatedRouter, SettingsError> {
+    // 서비스 참조 검증
+    let service_ref = ValidServiceReference::new(
+        config.service, 
+        services
+    )?;
+    
+    // 미들웨어 참조 검증 (있는 경우)
+    let middleware_refs = if let Some(mw_ids) = config.middlewares {
+        let mut validated_refs = Vec::with_capacity(mw_ids.len());
+        for mw_id in mw_ids {
+            let mw_ref = ValidMiddlewareReference::new(
+                mw_id, 
+                middlewares
+            )?;
+            validated_refs.push(mw_ref);
+        }
+        Some(validated_refs)
+    } else {
+        None
+    };
+    
+    Ok(ValidatedRouter {
+        rule: config.rule,
+        service: service_ref,
+        middlewares: middleware_refs,
+    })
 }
 
 impl TryFrom<ValidJsonConfig> for ValidatedConfig {
@@ -129,7 +163,9 @@ impl TryFrom<ValidJsonConfig> for ValidatedConfig {
                     message: "Invalid router ID format".to_string(),
                 })?;
             
-            routers.insert(valid_id, ValidatedRouter::try_from(router_config)?);
+            // 참조 검증 포함한 라우터 검증
+            let validated_router = validate_router(router_config, &services, &middlewares)?;
+            routers.insert(valid_id, validated_router);
         }
         
         Ok(ValidatedConfig {
@@ -138,19 +174,6 @@ impl TryFrom<ValidJsonConfig> for ValidatedConfig {
             middlewares,
             routers,
             health: config.health,
-        })
-    }
-}
-
-impl TryFrom<RouterConfig> for ValidatedRouter {
-    type Error = SettingsError;
-
-    fn try_from(config: RouterConfig) -> Result<Self, Self::Error> {
-        // 이미 타입 시스템을 통해 검증되었으므로 추가 검증 불필요
-        Ok(ValidatedRouter {
-            rule: config.rule,
-            service: config.service,
-            middlewares: config.middlewares,
         })
     }
 }
