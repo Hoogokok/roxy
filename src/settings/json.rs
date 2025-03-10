@@ -2,14 +2,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use tracing::debug;
+use tracing::{debug, info};
 
 use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
 use super::error::SettingsError;
+use super::parser::ConfigParser;
 use super::types::{ValidMiddlewareId, ValidRule, ValidServiceId, Version};
 use super::{Result, ValidatedConfig};
 use super::converter::{labels_to_json, json_to_labels};
-use super::validator::JsonConfigValidator;
+use super::typestate::TypeState;
 
 /// JSON 설정 파일을 위한 구조체
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -186,7 +187,7 @@ impl JsonConfig {
         
         // 방법 2: 새로운 파싱 방식 (타입 시스템을 활용한 유효성 검사)
         // ConfigParser를 사용하여 강력한 타입 검증을 수행
-        let validated_config = crate::settings::parser::ConfigParser::parse(&file_content)?;
+        let validated_config = ConfigParser::parse(&file_content)?;
         
         // 검증된 설정에서 JsonConfig 생성
         let mut config = Self::from_validated_config(validated_config);
@@ -412,35 +413,36 @@ impl JsonConfig {
     
     /// 설정 유효성 검증
     pub fn validate(&mut self) -> Result<()> {
-        // 스키마 검증기 초기화
-        let validator = JsonConfigValidator::new()?;
-        
-        // 설정을 JSON으로 직렬화
+        // JSON 문자열로 변환
         let json_str = match serde_json::to_string(self) {
             Ok(s) => s,
             Err(e) => return Err(SettingsError::JsonParseError { source: e }),
         };
         
-        // 스키마 검증 수행
-        let _value = match validator.validate(&json_str) {
-            Ok(v) => v,
-            Err(errors) => {
-                let file_name = self.source_path
-                    .as_ref()
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "unknown".to_string());
-                
-                return Err(SettingsError::from(errors).into_with_file(file_name));
+        // 기존 방식: JsonConfigValidator 사용
+        // 새로운 방식: ConfigParser를 사용한 타입 변환으로 검증
+        let file_name = self.source_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+            
+        // ConfigParser로 파싱 시도 - 성공하면 모든 유효성 검사 통과
+        match crate::settings::parser::ConfigParser::parse(&json_str) {
+            Ok(_) => {
+                // 검증 성공 시 타임스탬프 업데이트
+                self.last_validated = Some(SystemTime::now());
+                Ok(())
+            },
+            Err(err) => {
+                // 파일 정보 추가
+                match err {
+                    SettingsError::ValidationErrors { errors, .. } => {
+                        Err(SettingsError::ValidationErrors { errors, file: file_name })
+                    },
+                    other => Err(other.into_with_file(file_name)),
+                }
             }
-        };
-        
-        // 참조 유효성 검사는 validator 내부에서 수행됨
-        
-        // 검증 성공 시 타임스탬프 업데이트
-        self.last_validated = Some(SystemTime::now());
-        debug!("설정 검증 성공");
-        
-        Ok(())
+        }
     }
 
     /// Docker 라벨을 현재 JsonConfig와 병합
@@ -503,58 +505,56 @@ impl JsonConfig {
 
     /// ValidatedConfig에서 JsonConfig 인스턴스 생성
     pub fn from_validated_config(validated: ValidatedConfig) -> Self {
-        // 서비스 변환
-        let mut services = HashMap::new();
-        for (id, service) in validated.services {
-            // 서버 구성 변환
-            let servers = service.loadbalancer.servers.into_iter()
-                .map(|s| ServerConfig {
-                    url: s.url,
-                    weight: s.weight,
+        // ValidatedConfig에서 JsonConfig로 변환
+        let services = validated.services.into_iter()
+            .map(|(id, service)| {
+                let servers = service.loadbalancer.servers.into_iter()
+                    .map(|s| ServerConfig {
+                        url: s.url,
+                        weight: s.weight,
+                    })
+                    .collect();
+                
+                (id.into_inner(), ServiceConfig {
+                    loadbalancer: LoadBalancerConfig { servers }
                 })
-                .collect();
+            })
+            .collect();
             
-            let loadbalancer = LoadBalancerConfig {
-                servers,
-            };
+        let middlewares = validated.middlewares.into_iter()
+            .map(|(id, mw)| (id.into_inner(), mw))
+            .collect();
             
-            services.insert(id.into_inner(), ServiceConfig { loadbalancer });
-        }
-        
-        // 미들웨어 변환
-        let mut middlewares = HashMap::new();
-        for (id, middleware_config) in validated.middlewares {
-            middlewares.insert(id.into_inner(), middleware_config);
-        }
-        
-        // 라우터 변환
-        let mut routers = HashMap::new();
-        let mut router_middlewares = HashMap::new();
-        
-        for (id, router) in validated.routers {
-            let router_id = id.into_inner();
-            
-            // middlewares를 미리 클론하여 소유권 문제 해결
-            let middlewares_clone = router.middlewares.clone();
-            
-            let router_config = RouterConfig {
-                rule: router.rule,
-                service: router.service,
-                middlewares: middlewares_clone,
-            };
-            
-            routers.insert(router_id.clone(), router_config);
-            
-            // 미들웨어가 있는 경우 라우터-미들웨어 매핑에 추가
-            if let Some(mids) = &router.middlewares {
-                if !mids.is_empty() {
-                    let middleware_ids: Vec<String> = mids.iter()
-                        .map(|m| m.clone().into_inner())
-                        .collect();
-                    router_middlewares.insert(router_id, middleware_ids);
+        // router_middlewares를 먼저 생성
+        let router_middlewares = validated.routers.iter()
+            .filter_map(|(id, router)| {
+                if let Some(mids) = &router.middlewares {
+                    if !mids.is_empty() {
+                        let middleware_ids: Vec<String> = mids.iter()
+                            .map(|m| m.id().to_string())
+                            .collect();
+                        Some((id.to_string(), middleware_ids))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
                 }
-            }
-        }
+            })
+            .collect();
+            
+        // 그 후 routers 생성
+        let routers = validated.routers.into_iter()
+            .map(|(id, router)| {
+                (id.into_inner(), RouterConfig {
+                    rule: router.rule,
+                    service: router.service.into_inner(),
+                    middlewares: router.middlewares.map(|mids| 
+                        mids.into_iter().map(|m| m.into_inner()).collect()
+                    ),
+                })
+            })
+            .collect();
         
         JsonConfig {
             version: validated.version,
@@ -564,7 +564,7 @@ impl JsonConfig {
             services,
             router_middlewares,
             health: validated.health,
-            last_validated: Some(std::time::SystemTime::now()),
+            last_validated: Some(SystemTime::now()),
             source_path: None,
         }
     }
