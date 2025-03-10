@@ -237,6 +237,20 @@ fn default_https_port() -> u16 {
     443
 }
 
+impl<State: TypeState> TlsSettings<State> {
+    /// 테스트용 TLS 설정 생성 (테스트 코드에서만 사용)
+    #[cfg(test)]
+    pub fn create_for_test(enabled: bool, port: u16, cert_path: Option<PathBuf>, key_path: Option<PathBuf>) -> Self {
+        Self {
+            enabled,
+            port,
+            cert_path,
+            key_path,
+            _marker: PhantomData,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
