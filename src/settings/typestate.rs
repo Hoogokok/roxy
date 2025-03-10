@@ -1,3 +1,5 @@
+use std::future::Future;
+
 /// 검증 상태를 나타내는 마커 트레이트
 pub trait TypeState {}
 
@@ -18,22 +20,27 @@ pub trait Validatable<T> {
     fn validate(self) -> Result<T, Self::Error>;
 }
 
-/// 비동기 검증 가능한 타입에 대한 트레이트
+/// 비동기 검증을 위한 트레이트
 pub trait AsyncValidatable<T> {
     type Error;
-    async fn validate_async(self) -> Result<T, Self::Error>;
+    fn validate_async(self) -> impl Future<Output = Result<T, Self::Error>> + Send
+    where
+        Self: Send;
 }
 
 /// 동기 검증 가능한 타입을 비동기 검증으로 확장
 /// 이를 통해 동기 검증 타입은 기본적으로 비동기 검증도 지원
 impl<T, V> AsyncValidatable<T> for V 
 where 
-    V: Validatable<T>,
+    V: Validatable<T> + Send,
+    V::Error: Send,
 {
     type Error = V::Error;
     
-    async fn validate_async(self) -> Result<T, Self::Error> {
-        self.validate() // 기본 구현은 동기 validate 호출
+    fn validate_async(self) -> impl Future<Output = Result<T, Self::Error>> + Send {
+        async move {
+            self.validate() // 기본 구현은 동기 validate 호출
+        }
     }
 }
 
@@ -64,35 +71,44 @@ pub trait AsyncPartialValidatable<T> {
     type Error;
     
     /// 비동기 방식으로 특정 필드만 검증
-    async fn validate_field_async<F>(&self, field: F) -> Result<(), Self::Error>
+    fn validate_field_async<F>(&self, field: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
-        F: AsRef<str>;
+        F: AsRef<str> + Send;
     
     /// 비동기 방식으로 지정된 필드들만 검증
-    async fn validate_fields_async<I, F>(&self, fields: I) -> Result<(), Self::Error>
+    fn validate_fields_async<I, F>(&self, fields: I) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
+        Self: Sync,
         I: IntoIterator<Item = F>,
-        F: AsRef<str>,
+        F: AsRef<str> + Send,
     {
-        for field in fields {
-            self.validate_field_async(field).await?;
+        // 모든 필드를 벡터로 먼저 수집
+        let collected_fields: Vec<F> = fields.into_iter().collect();
+        
+        async move {
+            for field in collected_fields {
+                self.validate_field_async(field).await?;
+            }
+            Ok(())
         }
-        Ok(())
     }
 }
 
 /// 동기 부분 검증 가능한 타입을 비동기 부분 검증으로 확장
 impl<T, V> AsyncPartialValidatable<T> for V 
 where 
-    V: PartialValidatable<T>,
+    V: PartialValidatable<T> + Send + Sync,
+    V::Error: Send,
 {
     type Error = V::Error;
     
-    async fn validate_field_async<F>(&self, field: F) -> Result<(), Self::Error>
+    fn validate_field_async<F>(&self, field: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
-        F: AsRef<str>,
+        F: AsRef<str> + Send,
     {
-        self.validate_field(field)
+        async move {
+            self.validate_field(field)
+        }
     }
 }
 
@@ -102,10 +118,13 @@ pub trait ContextValidatable<T, C> {
     fn validate_with_context(self, context: &C) -> Result<T, Self::Error>;
 }
 
-/// 비동기 문맥 검증
+/// 컨텍스트 기반 비동기 검증을 위한 트레이트
 pub trait AsyncContextValidatable<T, C> {
     type Error;
-    async fn validate_with_context_async(self, context: &C) -> Result<T, Self::Error>;
+    fn validate_with_context_async(self, context: &C) -> impl Future<Output = Result<T, Self::Error>> + Send
+    where
+        Self: Send,
+        C: Sync;
 }
 
 /// 검증 오류를 수집하는 트레이트
@@ -173,38 +192,48 @@ impl<T, E> ValidationChain<T, E> for Result<T, E> {
 /// 비동기 연속 검증을 위한 트레이트
 pub trait AsyncValidationChain<T, E> {
     /// 비동기 검증 성공 시 다음 검증 단계 실행
-    async fn and_then_async<U, F, Fut>(self, f: F) -> Result<U, E>
+    fn and_then_async<U, F, Fut>(self, f: F) -> impl Future<Output = Result<U, E>> + Send
     where
-        F: FnOnce(T) -> Fut,
-        Fut: std::future::Future<Output = Result<U, E>>;
+        Self: Send,
+        T: Send,
+        E: Send,
+        F: FnOnce(T) -> Fut + Send,
+        Fut: Future<Output = Result<U, E>> + Send;
     
     /// 비동기 검증 실패 시 대체 값 사용
-    async fn or_else_async<F, Fut>(self, f: F) -> Result<T, E>
+    fn or_else_async<F, Fut>(self, f: F) -> impl Future<Output = Result<T, E>> + Send
     where
-        F: FnOnce(E) -> Fut,
-        Fut: std::future::Future<Output = Result<T, E>>;
+        Self: Send,
+        T: Send,
+        E: Send,
+        F: FnOnce(E) -> Fut + Send,
+        Fut: Future<Output = Result<T, E>> + Send;
 }
 
-impl<T, E> AsyncValidationChain<T, E> for Result<T, E> {
-    async fn and_then_async<U, F, Fut>(self, f: F) -> Result<U, E>
+impl<T: Send, E: Send> AsyncValidationChain<T, E> for Result<T, E> {
+    fn and_then_async<U, F, Fut>(self, f: F) -> impl Future<Output = Result<U, E>> + Send
     where
-        F: FnOnce(T) -> Fut,
-        Fut: std::future::Future<Output = Result<U, E>>,
+        F: FnOnce(T) -> Fut + Send,
+        Fut: Future<Output = Result<U, E>> + Send,
     {
-        match self {
-            Ok(t) => f(t).await,
-            Err(e) => Err(e),
+        async move {
+            match self {
+                Ok(t) => f(t).await,
+                Err(e) => Err(e),
+            }
         }
     }
     
-    async fn or_else_async<F, Fut>(self, f: F) -> Result<T, E>
+    fn or_else_async<F, Fut>(self, f: F) -> impl Future<Output = Result<T, E>> + Send
     where
-        F: FnOnce(E) -> Fut,
-        Fut: std::future::Future<Output = Result<T, E>>,
+        F: FnOnce(E) -> Fut + Send,
+        Fut: Future<Output = Result<T, E>> + Send,
     {
-        match self {
-            Ok(t) => Ok(t),
-            Err(e) => f(e).await,
+        async move {
+            match self {
+                Ok(t) => Ok(t),
+                Err(e) => f(e).await,
+            }
         }
     }
 }
