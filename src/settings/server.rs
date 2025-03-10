@@ -3,9 +3,11 @@ use std::env;
 use std::marker::PhantomData;
 use super::SettingsError;
 use super::types::ValidPort;
-use crate::settings::typestate::{Raw, Validated, TypeState};
+use crate::settings::typestate::{Raw, Validated, TypeState, ValidationErrorCollector, ContextValidatable, AsyncContextValidatable};
 use crate::settings::error::SettingsValidator;
-use crate::settings::typestate::ValidationErrorCollector;
+use crate::settings::tls::TlsSettings;
+use std::future::Future;
+use std::path::PathBuf;
 
 // HTTPS 활성화 상태를 표현하는 타입
 #[derive(Debug, Default, Clone, Copy)]
@@ -79,6 +81,23 @@ impl<State: TypeState, HttpsState> ServerSettings<State, HttpsState> {
     /// TLS 키 경로 getter
     pub fn tls_key_path(&self) -> Option<&String> {
         self.tls_key_path.as_ref()
+    }
+
+    /// 테스트용 ServerSettings 생성 (테스트 코드에서만 사용)
+    #[cfg(test)]
+    pub fn create_for_test(
+        http_port: ValidPort,
+        https_port: ValidPort,
+        tls_cert_path: Option<String>,
+        tls_key_path: Option<String>
+    ) -> Self {
+        Self {
+            http_port,
+            https_port,
+            tls_cert_path,
+            tls_key_path,
+            _marker: PhantomData,
+        }
     }
 }
 
@@ -336,6 +355,8 @@ impl ServerSettings<Raw, HttpsDisabled> {
 impl ServerSettings<Raw, HttpsEnabled> {
     /// 유효성 검사 - HttpsEnabled 상태에서는 더 복잡함
     pub fn validated(self) -> Result<ServerSettings<Validated, HttpsEnabled>, SettingsError> {
+        // 참고: 컨텍스트 기반 검증을 위해 ContextValidatable.validate_with_context 사용 권장
+        // 이 메서드는 하위 호환성을 위해 유지됩니다.
         let mut validator = SettingsValidator::new();
         validator.start_collecting();
         
@@ -563,5 +584,159 @@ impl Default for ServerSettings<Validated, HttpsEnabled> {
         
         raw.validated()
             .unwrap_or_else(|_| panic!("기본 HTTPS ServerSettings 검증 실패"))
+    }
+}
+
+impl ContextValidatable<ServerSettings<Validated, HttpsEnabled>, TlsSettings<Validated>> for ServerSettings<Raw, HttpsEnabled> {
+    type Error = SettingsError;
+
+    fn validate_with_context(self, tls_context: &TlsSettings<Validated>) -> Result<ServerSettings<Validated, HttpsEnabled>, Self::Error> {
+        let mut validator = SettingsValidator::new();
+        validator.start_collecting();
+        
+        // 포트 충돌 검사
+        if self.http_port.value() == self.https_port.value() {
+            validator.add_error(SettingsError::InvalidValue {
+                field: "https_port".to_string(),
+                context: "서버 설정".to_string(),
+                message: "HTTP와 HTTPS 포트는 달라야 합니다".to_string()
+            });
+        }
+        
+        // TLS 컨텍스트와의 일관성 검사
+        if !tls_context.is_enabled() {
+            validator.add_error(SettingsError::InvalidConfig(
+                "HTTPS 서버는 TLS가 활성화되어야 합니다".to_string()
+            ));
+        }
+        
+        // TLS 설정 검사 (상태로 보장되지만 추가 검사)
+        if self.tls_cert_path.is_none() {
+            validator.add_error(SettingsError::MissingField { 
+                field: "tls_cert_path".to_string(),
+                context: "서버 설정".to_string()
+            });
+        }
+        
+        if self.tls_key_path.is_none() {
+            validator.add_error(SettingsError::MissingField { 
+                field: "tls_key_path".to_string(),
+                context: "서버 설정".to_string()
+            });
+        }
+        
+        // TLS 인증서 경로와 설정의 일관성 검사
+        if let Some(cert_path) = &self.tls_cert_path {
+            if let Some(tls_cert_path) = tls_context.cert_path() {
+                if cert_path != &tls_cert_path.to_string_lossy().to_string() {
+                    validator.add_error(SettingsError::InvalidValue {
+                        field: "tls_cert_path".to_string(),
+                        context: "서버 설정".to_string(),
+                        message: format!("서버 TLS 인증서 경로 ({})와 TLS 설정의 인증서 경로 ({})가 일치하지 않습니다", 
+                            cert_path, tls_cert_path.to_string_lossy())
+                    });
+                }
+            }
+        }
+        
+        if validator.has_errors() {
+            return Err(validator.into_error());
+        }
+        
+        Ok(ServerSettings {
+            http_port: self.http_port,
+            https_port: self.https_port,
+            tls_cert_path: self.tls_cert_path,
+            tls_key_path: self.tls_key_path,
+            _marker: PhantomData,
+        })
+    }
+}
+
+impl AsyncContextValidatable<ServerSettings<Validated, HttpsEnabled>, TlsSettings<Validated>> for ServerSettings<Raw, HttpsEnabled> {
+    type Error = SettingsError;
+
+    fn validate_with_context_async(self, tls_context: &TlsSettings<Validated>) -> impl Future<Output = Result<ServerSettings<Validated, HttpsEnabled>, Self::Error>> + Send
+    where
+        Self: Send,
+    {
+        async move {
+            // 컨텍스트 기반 검증 단계에서 추가적인 비동기 검사 가능
+            // 예: 비동기 파일 시스템 확인, 네트워크 리소스 확인 등
+            
+            // 기본 구현은 동기식 validate_with_context 호출
+            self.validate_with_context(tls_context)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use crate::settings::tls::TlsSettings;
+
+    // 테스트용 TlsSettings 생성 헬퍼 함수
+    fn create_test_tls(enabled: bool, cert_path: Option<&str>, key_path: Option<&str>) -> TlsSettings<Validated> {
+        // 테스트 전용 함수를 사용
+        TlsSettings::create_for_test(
+            enabled, 
+            443, 
+            cert_path.map(PathBuf::from), 
+            key_path.map(PathBuf::from)
+        )
+    }
+    
+    // 테스트용 서버 설정 생성 헬퍼 함수
+    fn create_test_server(http_port: u16, https_port: u16, cert_path: Option<&str>, key_path: Option<&str>) -> ServerSettings<Raw, HttpsEnabled> {
+        // 테스트 전용 함수를 사용
+        ServerSettings::create_for_test(
+            ValidPort::new(http_port).unwrap(),
+            ValidPort::new(https_port).unwrap(),
+            cert_path.map(String::from),
+            key_path.map(String::from)
+        )
+    }
+
+    #[tokio::test]
+    async fn test_context_validation() {
+        // 유효한 TLS + 서버 설정 테스트
+        {
+            let tls_validated = create_test_tls(true, Some("cert.pem"), Some("key.pem"));
+            let server_raw = create_test_server(80, 443, Some("cert.pem"), Some("key.pem"));
+
+            // 컨텍스트 기반 검증 실행
+            let result = server_raw.validate_with_context(&tls_validated);
+            assert!(result.is_ok());
+        }
+
+        // TLS 비활성화 테스트
+        {
+            let tls_disabled = create_test_tls(false, None, None);
+            let server_raw = create_test_server(80, 443, Some("cert.pem"), Some("key.pem"));
+
+            // 컨텍스트 기반 검증 실행 - 실패해야 함
+            let invalid_result = server_raw.validate_with_context(&tls_disabled);
+            assert!(invalid_result.is_err());
+        }
+        
+        // 경로 불일치 테스트
+        {
+            let tls_different_path = create_test_tls(true, Some("different_cert.pem"), Some("key.pem"));
+            let server_raw = create_test_server(80, 443, Some("cert.pem"), Some("key.pem"));
+            
+            let path_mismatch_result = server_raw.validate_with_context(&tls_different_path);
+            assert!(path_mismatch_result.is_err());
+        }
+    }
+    
+    #[tokio::test]
+    async fn test_async_context_validation() {
+        let tls_validated = create_test_tls(true, Some("cert.pem"), Some("key.pem"));
+        let server_raw = create_test_server(80, 443, Some("cert.pem"), Some("key.pem"));
+
+        // 비동기 컨텍스트 기반 검증 실행
+        let result = server_raw.validate_with_context_async(&tls_validated).await;
+        assert!(result.is_ok());
     }
 }
