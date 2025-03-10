@@ -1,5 +1,5 @@
 use std::{collections::HashMap, env, path::Path};
-use serde::{Deserialize, de};
+use serde::Deserialize;
 use tracing::{debug, info};
 use types::ValidMiddlewareId;
 use typestate::{Raw, Validated};
@@ -26,8 +26,7 @@ pub use tls::TlsSettings;
 pub use docker::DockerSettings;
 pub use error::SettingsError;
 pub use json::JsonConfig;
-pub use parser::{ConfigParser, ValidatedConfig};
-pub use watcher::{ConfigWatcher, ConfigEvent};
+pub use parser::ValidatedConfig;
 pub use raw::RawSettings;
 
 pub type Result<T> = std::result::Result<T, SettingsError>;
