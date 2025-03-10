@@ -44,28 +44,6 @@ where
     }
 }
 
-/// 특정 필드만 검증 가능한 타입을 위한 트레이트
-pub trait PartialValidatable<T> {
-    type Error;
-    
-    /// 특정 필드만 검증
-    fn validate_field<F>(&self, field: F) -> Result<(), Self::Error>
-    where
-        F: AsRef<str>;
-    
-    /// 지정된 필드들만 검증
-    fn validate_fields<I, F>(&self, fields: I) -> Result<(), Self::Error>
-    where
-        I: IntoIterator<Item = F>,
-        F: AsRef<str>,
-    {
-        for field in fields {
-            self.validate_field(field)?;
-        }
-        Ok(())
-    }
-}
-
 /// 타입 변환 문맥에서 사용 가능한 검증
 pub trait ContextValidatable<T, C> {
     type Error;
