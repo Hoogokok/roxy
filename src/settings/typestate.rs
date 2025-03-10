@@ -44,7 +44,7 @@ where
     }
 }
 
-/// 부분 검증을 위한 트레이트
+/// 특정 필드만 검증 가능한 타입을 위한 트레이트
 pub trait PartialValidatable<T> {
     type Error;
     
@@ -63,52 +63,6 @@ pub trait PartialValidatable<T> {
             self.validate_field(field)?;
         }
         Ok(())
-    }
-}
-
-/// 부분 비동기 검증을 위한 트레이트
-pub trait AsyncPartialValidatable<T> {
-    type Error;
-    
-    /// 비동기 방식으로 특정 필드만 검증
-    fn validate_field_async<F>(&self, field: F) -> impl Future<Output = Result<(), Self::Error>> + Send
-    where
-        F: AsRef<str> + Send;
-    
-    /// 비동기 방식으로 지정된 필드들만 검증
-    fn validate_fields_async<I, F>(&self, fields: I) -> impl Future<Output = Result<(), Self::Error>> + Send
-    where
-        Self: Sync,
-        I: IntoIterator<Item = F>,
-        F: AsRef<str> + Send,
-    {
-        // 모든 필드를 벡터로 먼저 수집
-        let collected_fields: Vec<F> = fields.into_iter().collect();
-        
-        async move {
-            for field in collected_fields {
-                self.validate_field_async(field).await?;
-            }
-            Ok(())
-        }
-    }
-}
-
-/// 동기 부분 검증 가능한 타입을 비동기 부분 검증으로 확장
-impl<T, V> AsyncPartialValidatable<T> for V 
-where 
-    V: PartialValidatable<T> + Send + Sync,
-    V::Error: Send,
-{
-    type Error = V::Error;
-    
-    fn validate_field_async<F>(&self, field: F) -> impl Future<Output = Result<(), Self::Error>> + Send
-    where
-        F: AsRef<str> + Send,
-    {
-        async move {
-            self.validate_field(field)
-        }
     }
 }
 
