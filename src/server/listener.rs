@@ -3,6 +3,7 @@ use tokio::net::TcpListener;
 use hyper_util::rt::TokioIo;
 use crate::server::error::Error;
 use crate::settings::{Settings, HttpsEnabled};
+use crate::settings::typestate::TypeState;
 use crate::tls::TlsConfig;
 use tracing::{debug, error, info};
 use super::handler::RequestHandler;
@@ -14,7 +15,7 @@ pub struct ServerListener {
 }
 
 impl ServerListener {
-    pub async fn new<HttpsState: Clone + Send + Sync + 'static>(
+    pub async fn new<HttpsState: TypeState + Clone + Send + Sync + 'static>(
         settings: &Settings<HttpsState>
     ) -> Result<Self> {
         // HTTP 리스너 초기화
