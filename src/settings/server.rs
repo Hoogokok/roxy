@@ -3,13 +3,9 @@ use std::env;
 use std::marker::PhantomData;
 use super::SettingsError;
 use super::types::ValidPort;
-
-// 기존 상태 타입
-#[derive(Debug, Clone, Copy)]
-pub struct Raw;
-
-#[derive(Debug, Clone, Copy)]
-pub struct Validated;
+use crate::settings::typestate::{Raw, Validated, TypeState};
+use crate::settings::error::SettingsValidator;
+use crate::settings::typestate::ValidationErrorCollector;
 
 // HTTPS 활성화 상태를 표현하는 타입
 #[derive(Debug, Default, Clone, Copy)]
@@ -19,9 +15,12 @@ pub struct HttpsEnabled;
 #[derive(Debug, Default, Clone, Copy)]
 pub struct HttpsDisabled;
 
+impl TypeState for HttpsDisabled {}
+impl TypeState for HttpsEnabled {}
+
 // HttpsState 타입 매개변수가 추가된 ServerSettings
-#[derive(Clone, Debug)]
-pub struct ServerSettings<State = Validated, HttpsState = HttpsDisabled> {
+#[derive(Debug, Clone)]
+pub struct ServerSettings<State: TypeState = Validated, HttpsState = HttpsDisabled> {
     /// HTTP 포트
     http_port: ValidPort,
 
@@ -65,8 +64,8 @@ where
     }
 }
 
-// 공통 메서드 (모든 상태 조합에 적용)
-impl<State, HttpsState> ServerSettings<State, HttpsState> {
+// 일반 메서드 블록 - TypeState 트레이트 경계 추가
+impl<State: TypeState, HttpsState> ServerSettings<State, HttpsState> {
     /// HTTP 포트 getter
     pub fn http_port(&self) -> u16 {
         self.http_port.value()
@@ -84,7 +83,7 @@ impl<State, HttpsState> ServerSettings<State, HttpsState> {
 }
 
 // HttpsDisabled 상태 메서드
-impl<State> ServerSettings<State, HttpsDisabled> {
+impl<State: TypeState> ServerSettings<State, HttpsDisabled> {
     /// HTTPS 활성화 여부 getter (항상 false)
     pub fn https_enabled(&self) -> bool {
         false
@@ -98,7 +97,7 @@ impl<State> ServerSettings<State, HttpsDisabled> {
 }
 
 // HttpsEnabled 상태 메서드
-impl<State> ServerSettings<State, HttpsEnabled> {
+impl<State: TypeState> ServerSettings<State, HttpsEnabled> {
     /// HTTPS 활성화 여부 getter (항상 true)
     pub fn https_enabled(&self) -> bool {
         true
@@ -281,7 +280,7 @@ impl ServerSettings {
     }
 }
 
-// Raw + HttpsDisabled 상태에 특화된 메서드들
+// Raw 상태 메서드 블록
 impl ServerSettings<Raw, HttpsDisabled> {
     /// 기본값으로 새 ServerSettings 생성
     pub fn new() -> Self {
@@ -326,39 +325,46 @@ impl ServerSettings<Raw, HttpsDisabled> {
             let raw = builder.build_http();
             raw.validated()
         } else {
-            Err(SettingsError::ValidationError {
+            Err(SettingsError::MissingField {
                 field: "https_enabled".to_string(),
-                message: "HTTPS가 활성화되어 있어 HttpsDisabled 타입으로 로드할 수 없습니다".to_string()
+                context: "HTTPS가 활성화되어 있어 HttpsDisabled 타입으로 로드할 수 없습니다".to_string()
             })
         }
     }
 }
 
-// Raw + HttpsEnabled 상태에 특화된 메서드들
 impl ServerSettings<Raw, HttpsEnabled> {
     /// 유효성 검사 - HttpsEnabled 상태에서는 더 복잡함
     pub fn validated(self) -> Result<ServerSettings<Validated, HttpsEnabled>, SettingsError> {
+        let mut validator = SettingsValidator::new();
+        validator.start_collecting();
+        
         // 포트 충돌 검사
         if self.http_port.value() == self.https_port.value() {
-            return Err(SettingsError::ValidationError {
+            validator.add_error(SettingsError::InvalidValue {
                 field: "https_port".to_string(),
+                context: "서버 설정".to_string(),
                 message: "HTTP와 HTTPS 포트는 달라야 합니다".to_string()
             });
         }
         
         // TLS 설정 검사 (상태로 보장되지만 추가 검사)
         if self.tls_cert_path.is_none() {
-            return Err(SettingsError::ValidationError { 
+            validator.add_error(SettingsError::MissingField { 
                 field: "tls_cert_path".to_string(),
-                message: "HTTPS가 활성화된 경우 TLS 인증서 경로가 필요합니다".to_string()
+                context: "서버 설정".to_string()
             });
         }
         
         if self.tls_key_path.is_none() {
-            return Err(SettingsError::ValidationError { 
+            validator.add_error(SettingsError::MissingField { 
                 field: "tls_key_path".to_string(),
-                message: "HTTPS가 활성화된 경우 TLS 키 경로가 필요합니다".to_string()
+                context: "서버 설정".to_string()
             });
+        }
+        
+        if validator.has_errors() {
+            return Err(validator.into_error());
         }
         
         Ok(ServerSettings {
@@ -530,18 +536,9 @@ where
 }
 
 // 기본값 구현 (Raw, HttpsDisabled)
-impl<HttpsState> Default for ServerSettings<Raw, HttpsState>
-where
-    HttpsState: Default,
-{
+impl Default for ServerSettings<Raw, HttpsDisabled> {
     fn default() -> Self {
-        ServerSettings {
-            http_port: default_http_port(),
-            https_port: default_https_port(),
-            tls_cert_path: None,
-            tls_key_path: None,
-            _marker: PhantomData,
-        }
+        ServerBuilder::default().build_http()
     }
 }
 
