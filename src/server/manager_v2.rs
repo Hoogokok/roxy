@@ -8,6 +8,7 @@ use crate::middleware::{MiddlewareConfig, MiddlewareManager};
 use crate::routing_v2::RoutingTable;
 use crate::settings::{Either, HttpsDisabled, HttpsEnabled, Settings};
 use crate::settings::watcher::{ConfigEvent, ConfigWatcher, WatcherConfig};
+use crate::settings::typestate::TypeState;
 use super::docker::DockerEventHandler;
 use super::error::Error;
 use super::handler::RequestHandler;
@@ -21,7 +22,10 @@ pub trait ServerInterface: Send + Sync {
 }
 
 // 서버 매니저 (제네릭)
-pub struct ServerManager<HttpsState = HttpsDisabled> {
+pub struct ServerManager<HttpsState = HttpsDisabled> 
+where
+    HttpsState: TypeState,
+{
     pub config: Settings<HttpsState>,
     pub docker_manager: DockerManager,
     pub routing_table: Arc<RwLock<RoutingTable>>,
@@ -34,7 +38,7 @@ pub struct ServerManager<HttpsState = HttpsDisabled> {
 // 모든 ServerManager에 공통적인 기능 구현
 impl<HttpsState> ServerManager<HttpsState> 
 where
-    HttpsState: Clone + Send + Sync + 'static,
+    HttpsState: TypeState + Clone + Send + Sync + 'static,
 {
     // 공통 생성자
     pub fn new(
@@ -485,7 +489,7 @@ async fn process_config_files<HttpsState>(
     shared_middleware_manager: Arc<RwLock<MiddlewareManager>>
 ) -> Result<bool> 
 where
-    HttpsState: Clone + Send + Sync + 'static,
+    HttpsState: TypeState + Clone + Send + Sync + 'static,
 {
     if paths.is_empty() {
         return Ok(false);
@@ -528,7 +532,7 @@ async fn process_json_configs<HttpsState>(
     shared_config: &Arc<RwLock<Settings<HttpsState>>>
 ) -> Result<bool> 
 where
-    HttpsState: Clone + Send + Sync + 'static,
+    HttpsState: TypeState + Clone + Send + Sync + 'static,
 {
     let mut config_updated = false;
     
@@ -563,7 +567,7 @@ async fn process_single_config<HttpsState>(
     shared_config: &Arc<RwLock<Settings<HttpsState>>>
 ) -> Result<bool> 
 where
-    HttpsState: Clone + Send + Sync + 'static,
+    HttpsState: TypeState + Clone + Send + Sync + 'static,
 {
     let mut config_lock = shared_config.write().await;
     
@@ -622,7 +626,7 @@ async fn load_and_validate_json_config(path: &Path) -> Result<crate::settings::J
 }
 
 // 미들웨어 설정 업데이트
-fn update_middleware_settings<HttpsState>(
+fn update_middleware_settings<HttpsState: TypeState>(
     config_lock: &mut Settings<HttpsState>,
     json_config: &crate::settings::JsonConfig,
     config_id: &str
@@ -647,7 +651,7 @@ fn update_middleware_settings<HttpsState>(
 }
 
 // 라우터-미들웨어 매핑 업데이트
-fn update_router_middleware_mappings<HttpsState>(
+fn update_router_middleware_mappings<HttpsState: TypeState>(
     config_lock: &mut Settings<HttpsState>,
     json_config: &crate::settings::JsonConfig,
     config_id: &str
@@ -689,7 +693,7 @@ async fn update_middleware_manager<HttpsState>(
     shared_middleware_manager: &Arc<RwLock<MiddlewareManager>>
 ) -> Result<()>
 where
-    HttpsState: Clone + Send + Sync + 'static,
+    HttpsState: TypeState + Clone + Send + Sync + 'static,
 {
     // 설정에서 미들웨어 목록 가져오기
     let config = shared_config.read().await;
@@ -709,7 +713,7 @@ where
 }
 
 // 미들웨어 매니저 유효성 검증
-fn validate_middleware_manager<HttpsState>(
+fn validate_middleware_manager<HttpsState: TypeState>(
     config_lock: &mut Settings<HttpsState>,
     config_backup: &Settings<HttpsState>,
     config_updated: bool
