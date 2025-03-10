@@ -2,9 +2,11 @@
 pub trait TypeState {}
 
 /// 원시 상태 (검증되지 않음)
+#[derive(Debug, Clone)]
 pub struct Raw {}
 
 /// 검증된 상태
+#[derive(Debug, Clone)]
 pub struct Validated {}
 
 impl TypeState for Raw {}
