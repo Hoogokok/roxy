@@ -7,7 +7,6 @@ use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
 
 pub mod logging;
 mod server;
-mod legacy_server;
 mod tls;
 mod error;
 pub mod docker;
