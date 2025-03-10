@@ -130,6 +130,14 @@ impl TryFrom<ValidJsonConfig> for ValidatedConfig {
     type Error = SettingsError;
 
     fn try_from(config: ValidJsonConfig) -> Result<Self, Self::Error> {
+        // 버전 검증 - 현재 "1.0" 버전만 지원
+        if config.version.as_str() != "1.0" {
+            return Err(SettingsError::ValidationError {
+                field: "version".to_string(),
+                message: format!("Unsupported version: {}, only 1.0 is supported", config.version.as_str())
+            });
+        }
+    
         // 서비스 ID 검증
         let mut services = HashMap::new();
         for (id, service_config) in config.services {
