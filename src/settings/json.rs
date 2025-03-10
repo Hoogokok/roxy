@@ -621,7 +621,9 @@ mod tests {
     #[test]
     fn test_validate_version() {
         let mut config = JsonConfig::default();
-        config.version = crate::settings::types::Version::new("2.0").unwrap(); // 지원되지 않는 버전
+        
+        // 테스트 전용 메서드를 사용하여 유효하지 않은 버전을 설정
+        config.version = crate::settings::types::Version::new_unchecked("2.0");
         
         // 유효한 서비스 추가 (스키마 검증이 가능하도록)
         config.services.insert("test-service".to_string(), ServiceConfig {
