@@ -12,6 +12,7 @@ use crate::settings::{SettingsError, Settings, Either, Result, parse_env_var};
 
 use super::types::ValidPort;
 use super::typestate::Raw;
+use crate::settings::typestate::{ContextValidatable, AsyncContextValidatable};
 
 /// 검증되지 않은 원시 설정을 나타내는 구조체
 #[derive(Deserialize)]
@@ -151,9 +152,41 @@ impl RawSettings<HttpsEnabled> {
     
     /// Raw 상태에서 Validated 상태로 변환
     pub async fn validate(self) -> Result<Settings<HttpsEnabled>> {
-        // 각 컴포넌트 검증
-        let validated_server = self.server.validated()?;
+        // TLS 설정 먼저 검증 - 이후 컨텍스트로 사용
         let validated_tls = self.tls.validated().await?;
+        
+        // 서버 설정을 TLS 컨텍스트와 함께 검증
+        let validated_server = self.server.validate_with_context(&validated_tls)?;
+        
+        // 다른 컴포넌트 검증
+        let validated_logging = self.logging.validated()?;
+        let validated_docker = self.docker.validated()?;
+        
+        // 검증된 설정으로 Settings 생성
+        let settings = Settings {
+            server: validated_server,
+            logging: validated_logging,
+            tls: validated_tls,
+            docker: validated_docker,
+            middleware: self.middleware,
+            router_middlewares: self.router_middlewares,
+        };
+        
+        // 추가 검증이 필요한 경우
+        settings.validate().await?;
+        
+        Ok(settings)
+    }
+    
+    /// 비동기 버전의 Raw 상태에서 Validated 상태로 변환
+    pub async fn validate_async(self) -> Result<Settings<HttpsEnabled>> {
+        // TLS 설정 먼저 검증 - 이후 컨텍스트로 사용
+        let validated_tls = self.tls.validated().await?;
+        
+        // 서버 설정을 TLS 컨텍스트와 함께 비동기적으로 검증
+        let validated_server = self.server.validate_with_context_async(&validated_tls).await?;
+        
+        // 다른 컴포넌트 검증
         let validated_logging = self.logging.validated()?;
         let validated_docker = self.docker.validated()?;
         
