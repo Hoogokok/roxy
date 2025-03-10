@@ -1,12 +1,11 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::marker::PhantomData;
 use std::future::Future;
-use std::path::PathBuf;
 
 use crate::settings::error::SettingsError;
 use crate::settings::error::SettingsValidator;
 use crate::settings::server::types::{HttpsEnabled, HttpsDisabled};
-use crate::settings::server::utils::{ServerWrapper};
+use crate::settings::server::utils::ServerWrapper;
 use crate::settings::tls::TlsSettings;
 use crate::settings::types::ValidPort;
 use crate::settings::typestate::{Raw, Validated, TypeState, ValidationErrorCollector, ContextValidatable, AsyncContextValidatable};
@@ -452,6 +451,7 @@ impl ServerSettings {
 mod tests {
     use super::*;
     use crate::settings::tls::TlsSettings;
+    use std::path::PathBuf;
 
     /// 테스트용 TLS 설정 생성
     fn create_test_tls(enabled: bool, cert_path: Option<&str>, key_path: Option<&str>) -> TlsSettings<Validated> {
