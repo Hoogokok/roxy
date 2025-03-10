@@ -10,7 +10,6 @@ use toml;
 mod tests {
     use super::*;
     use std::path::Path;
-    use reverse_proxy_traefik::settings::{Raw, ServerSettings};
     use tempfile::TempDir;
 
     static INIT: Once = Once::new();
