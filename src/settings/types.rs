@@ -439,6 +439,13 @@ impl Version {
         Some(Version(version))
     }
     
+    /// 테스트 목적으로만 사용하는 메서드
+    /// 유효성 검사를 건너뛰고 Version 인스턴스를 생성합니다.
+    #[cfg(test)]
+    pub fn new_unchecked(version: impl Into<String>) -> Self {
+        Version(version.into())
+    }
+    
     /// Returns the major version number.
     pub fn major(&self) -> u32 {
         self.0.split('.')
