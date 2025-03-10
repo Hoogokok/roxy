@@ -1,10 +1,12 @@
 use std::{env, path::PathBuf, marker::PhantomData};
 use serde::Deserialize;
 use tokio::fs;
-use super::{server::{Raw, Validated, parse_env_var}, SettingsError};
+use super::{SettingsError, parse_env_var};
+use crate::settings::error::SettingsValidator;
+use crate::settings::typestate::{Raw, Validated, TypeState, AsyncValidatable, ValidationErrorCollector};
 
 #[derive(Debug, Clone)]
-pub struct TlsSettings<State = Validated> {
+pub struct TlsSettings<State: TypeState = Validated> {
     /// HTTPS 활성화 여부
     pub enabled: bool,
 
@@ -21,24 +23,26 @@ pub struct TlsSettings<State = Validated> {
     _marker: PhantomData<State>,
 }
 
-// 역직렬화는 Raw 상태로 수행
+// TlsSettings<Raw>에 대한 커스텀 역직렬화 구현
 impl<'de> Deserialize<'de> for TlsSettings<Raw> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        // 기존 구조체와 동일한 필드를 가진 헬퍼 구조체
+        // 임시 구조체로 역직렬화
         #[derive(Deserialize)]
-        struct Helper {
+        struct TlsHelper {
             #[serde(default)]
             enabled: bool,
+            
             #[serde(default = "default_https_port")]
             port: u16,
+            
             cert_path: Option<PathBuf>,
             key_path: Option<PathBuf>,
         }
-
-        let helper = Helper::deserialize(deserializer)?;
+        
+        let helper = TlsHelper::deserialize(deserializer)?;
         
         Ok(TlsSettings {
             enabled: helper.enabled,
@@ -81,50 +85,100 @@ impl TlsSettings<Raw> {
         })
     }
     
-    // Raw에서 Validated로 검증하여 상태 전환
+    /// 유효성 검사를 수행하고 Validated 상태로 전환
     pub async fn validated(self) -> Result<TlsSettings<Validated>, SettingsError> {
-        // TLS가 활성화되어 있을 때만 검증
+        // 내부적으로 AsyncValidatable 트레이트를 활용
+        self.validate_async().await
+    }
+}
+
+/// AsyncValidatable 트레이트 구현 - 비동기 검증 수행
+impl AsyncValidatable<TlsSettings<Validated>> for TlsSettings<Raw> {
+    type Error = SettingsError;
+    
+    async fn validate_async(self) -> Result<TlsSettings<Validated>, Self::Error> {
+        let mut validator = SettingsValidator::new();
+        validator.start_collecting();
+        
+        // TLS가 활성화된 경우에만 인증서와 키 파일 검증
         if self.enabled {
-            // 인증서 및 키 파일 경로 검증
-            if self.cert_path.is_none() {
-                return Err(SettingsError::ValidationError {
+            // 인증서 파일 존재 여부 확인
+            if let Some(cert_path) = &self.cert_path {
+                if !cert_path.exists() {
+                    let err = SettingsError::FileNotFound {
+                        path: cert_path.to_string_lossy().to_string(),
+                        context: "TLS 인증서".to_string(),
+                    };
+                    validator.add_error(err);
+                } else {
+                    // 파일 읽기 권한 확인
+                    match fs::metadata(cert_path).await {
+                        Ok(_) => {}, // 메타데이터 접근 가능
+                        Err(e) => {
+                            let err = SettingsError::FileAccessError {
+                                path: cert_path.to_string_lossy().to_string(),
+                                context: "TLS 인증서".to_string(),
+                                error: e.to_string(),
+                            };
+                            validator.add_error(err);
+                        }
+                    }
+                }
+            } else {
+                let err = SettingsError::MissingField {
                     field: "cert_path".to_string(),
-                    message: "TLS가 활성화된 경우 인증서 경로가 필요합니다".to_string(),
-                });
+                    context: "TLS 설정".to_string(),
+                };
+                validator.add_error(err);
             }
             
-            if self.key_path.is_none() {
-                return Err(SettingsError::ValidationError {
+            // 키 파일 존재 여부 확인
+            if let Some(key_path) = &self.key_path {
+                if !key_path.exists() {
+                    let err = SettingsError::FileNotFound {
+                        path: key_path.to_string_lossy().to_string(),
+                        context: "TLS 개인키".to_string(),
+                    };
+                    validator.add_error(err);
+                } else {
+                    // 파일 읽기 권한 확인
+                    match fs::metadata(key_path).await {
+                        Ok(_) => {}, // 메타데이터 접근 가능
+                        Err(e) => {
+                            let err = SettingsError::FileAccessError {
+                                path: key_path.to_string_lossy().to_string(),
+                                context: "TLS 개인키".to_string(),
+                                error: e.to_string(),
+                            };
+                            validator.add_error(err);
+                        }
+                    }
+                }
+            } else {
+                let err = SettingsError::MissingField {
                     field: "key_path".to_string(),
-                    message: "TLS가 활성화된 경우 개인키 경로가 필요합니다".to_string(),
-                });
+                    context: "TLS 설정".to_string(),
+                };
+                validator.add_error(err);
             }
             
-            // 파일 존재 여부 확인
-            let cert_path = self.cert_path.as_ref().unwrap();
-            if !fs::try_exists(cert_path).await.map_err(|e| SettingsError::FileError { 
-                path: cert_path.to_string_lossy().to_string(),
-                error: e,
-            })? {
-                return Err(SettingsError::ValidationError {
-                    field: "cert_path".to_string(),
-                    message: format!("인증서 파일이 존재하지 않습니다: {}", cert_path.to_string_lossy()),
-                });
-            }
-            
-            let key_path = self.key_path.as_ref().unwrap();
-            if !fs::try_exists(key_path).await.map_err(|e| SettingsError::FileError { 
-                path: key_path.to_string_lossy().to_string(),
-                error: e,
-            })? {
-                return Err(SettingsError::ValidationError {
-                    field: "key_path".to_string(),
-                    message: format!("개인키 파일이 존재하지 않습니다: {}", key_path.to_string_lossy()),
-                });
+            // 포트 범위 검증
+            if self.port < 1 || self.port > 65535 {
+                let err = SettingsError::InvalidValue {
+                    field: "port".to_string(),
+                    context: "TLS 설정".to_string(),
+                    message: format!("포트 범위는 1-65535여야 합니다. 현재 값: {}", self.port),
+                };
+                validator.add_error(err);
             }
         }
         
-        // 검증이 성공하면 Validated 상태로 전환
+        // 오류가 있는 경우 처리
+        if validator.has_errors() {
+            return Err(validator.into_error());
+        }
+        
+        // 검증 완료 후 Validated 상태로 변환
         Ok(TlsSettings {
             enabled: self.enabled,
             port: self.port,
@@ -186,33 +240,62 @@ fn default_https_port() -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::fs::File;
-    use tokio::io::AsyncWriteExt;
-
+    use tempfile::tempdir;
+    use std::io::Write;
+    use std::fs::File;
+    
     #[tokio::test]
     async fn test_tls_settings_validation() {
-        // 임시 인증서와 키 파일 생성
-        let cert_path = PathBuf::from("test_cert.pem");
-        let key_path = PathBuf::from("test_key.pem");
-
-        let mut cert_file = File::create(&cert_path).await.unwrap();
-        cert_file.write_all(b"test cert").await.unwrap();
-
-        let mut key_file = File::create(&key_path).await.unwrap();
-        key_file.write_all(b"test key").await.unwrap();
-
-        let settings = TlsSettings {
+        // 테스트용 임시 파일 생성
+        let temp_dir = tempdir().unwrap();
+        let cert_path = temp_dir.path().join("cert.pem");
+        let key_path = temp_dir.path().join("key.pem");
+        
+        // 임시 인증서 및 키 파일 생성
+        File::create(&cert_path).unwrap().write_all(b"TEST CERT").unwrap();
+        File::create(&key_path).unwrap().write_all(b"TEST KEY").unwrap();
+        
+        // Raw 버전 테스트
+        let settings = TlsSettings::<Raw> {
             enabled: true,
             port: 443,
             cert_path: Some(cert_path.clone()),
             key_path: Some(key_path.clone()),
             _marker: PhantomData,
         };
-
-        assert!(settings.validated().await.is_ok());
-
-        // 테스트 파일 정리
-        tokio::fs::remove_file(&cert_path).await.unwrap();
-        tokio::fs::remove_file(&key_path).await.unwrap();
+        
+        // 유효성 검사 수행
+        let validated = settings.validated().await.unwrap();
+        assert!(validated.is_enabled());
+        assert_eq!(validated.port(), 443);
+        assert_eq!(validated.cert_path().unwrap(), &cert_path);
+        assert_eq!(validated.key_path().unwrap(), &key_path);
+        
+        // 잘못된 경로로 검증 실패 테스트
+        let invalid_settings = TlsSettings::<Raw> {
+            enabled: true,
+            port: 443,
+            cert_path: Some(PathBuf::from("/not/exists/cert.pem")),
+            key_path: Some(PathBuf::from("/not/exists/key.pem")),
+            _marker: PhantomData,
+        };
+        
+        assert!(invalid_settings.validated().await.is_err());
+        
+        // TLS 비활성화 상태 테스트
+        let disabled_settings = TlsSettings::<Raw> {
+            enabled: false,
+            port: 443,
+            cert_path: None,
+            key_path: None,
+            _marker: PhantomData,
+        };
+        
+        // 비활성화 상태에서는 인증서/키 파일 검증 스킵
+        let disabled_validated = disabled_settings.validated().await.unwrap();
+        assert!(!disabled_validated.is_enabled());
+        assert_eq!(disabled_validated.port(), 443);
+        assert!(disabled_validated.cert_path().is_none());
+        assert!(disabled_validated.key_path().is_none());
     }
 } 
