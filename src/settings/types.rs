@@ -675,6 +675,110 @@ impl<'de> serde::Deserialize<'de> for ValidPort {
     }
 }
 
+/// 유효한 서비스에 대한 참조.
+///
+/// 이 타입은 참조된 서비스가 실제로 존재함을 보장합니다.
+/// 일단 `ValidServiceReference`가 생성되면, 유효한 서비스에 대한
+/// 참조임이 프로그램 생명 주기 동안 보장됩니다.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ValidServiceReference(ValidServiceId);
+
+impl ValidServiceReference {
+    /// 새로운 `ValidServiceReference`를 생성합니다.
+    ///
+    /// 이 함수는 제공된 서비스 ID가 사용 가능한 서비스 목록에 
+    /// 존재하는지 확인하고, 존재하는 경우에만 참조를 생성합니다.
+    pub fn new(
+        id: ValidServiceId, 
+        available_services: &std::collections::HashMap<ValidServiceId, crate::settings::parser::ValidatedService>
+    ) -> std::result::Result<Self, crate::settings::error::SettingsError> {
+        if available_services.contains_key(&id) {
+            Ok(Self(id))
+        } else {
+            Err(crate::settings::error::SettingsError::ReferenceError { 
+                reference_type: "service".to_string(),
+                reference_id: id.to_string(),
+                message: format!("서비스 '{}'가 존재하지 않습니다", id),
+            })
+        }
+    }
+    
+    /// 내부의 서비스 ID를 반환합니다.
+    pub fn id(&self) -> &ValidServiceId {
+        &self.0
+    }
+    
+    /// 내부의 서비스 ID를 소비하고 반환합니다.
+    pub fn into_inner(self) -> ValidServiceId {
+        self.0
+    }
+}
+
+impl fmt::Display for ValidServiceReference {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl serde::Serialize for ValidServiceReference {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where S: serde::Serializer {
+        self.0.serialize(serializer)
+    }
+}
+
+/// 유효한 미들웨어에 대한 참조.
+///
+/// 이 타입은 참조된 미들웨어가 실제로 존재함을 보장합니다.
+/// 일단 `ValidMiddlewareReference`가 생성되면, 유효한 미들웨어에 대한
+/// 참조임이 프로그램 생명 주기 동안 보장됩니다.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ValidMiddlewareReference(ValidMiddlewareId);
+
+impl ValidMiddlewareReference {
+    /// 새로운 `ValidMiddlewareReference`를 생성합니다.
+    ///
+    /// 이 함수는 제공된 미들웨어 ID가 사용 가능한 미들웨어 목록에 
+    /// 존재하는지 확인하고, 존재하는 경우에만 참조를 생성합니다.
+    pub fn new(
+        id: ValidMiddlewareId, 
+        available_middlewares: &std::collections::HashMap<ValidMiddlewareId, crate::middleware::config::MiddlewareConfig>
+    ) -> std::result::Result<Self, crate::settings::error::SettingsError> {
+        if available_middlewares.contains_key(&id) {
+            Ok(Self(id))
+        } else {
+            Err(crate::settings::error::SettingsError::ReferenceError { 
+                reference_type: "middleware".to_string(),
+                reference_id: id.to_string(),
+                message: format!("미들웨어 '{}'가 존재하지 않습니다", id),
+            })
+        }
+    }
+    
+    /// 내부의 미들웨어 ID를 반환합니다.
+    pub fn id(&self) -> &ValidMiddlewareId {
+        &self.0
+    }
+    
+    /// 내부의 미들웨어 ID를 소비하고 반환합니다.
+    pub fn into_inner(self) -> ValidMiddlewareId {
+        self.0
+    }
+}
+
+impl fmt::Display for ValidMiddlewareReference {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl serde::Serialize for ValidMiddlewareReference {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where S: serde::Serializer {
+        self.0.serialize(serializer)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
