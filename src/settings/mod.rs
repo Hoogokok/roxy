@@ -1,7 +1,8 @@
-use std::{collections::HashMap, env, fs, path::Path};
-use serde::Deserialize;
+use std::{collections::HashMap, env, path::Path};
+use serde::{Deserialize, de};
 use tracing::{debug, info};
 use types::ValidMiddlewareId;
+use typestate::{Raw, Validated};
 use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
 
 pub mod logging;
@@ -17,8 +18,9 @@ pub mod types;
 pub mod schema;
 pub mod parser;
 mod raw;
+pub mod typestate;
 
-pub use server::{ServerSettings, Validated, parse_env_var, Either, HttpsDisabled, HttpsEnabled, Raw};
+pub use server::{ServerSettings, parse_env_var, Either, HttpsDisabled, HttpsEnabled};
 pub use logging::LogSettings;
 pub use tls::TlsSettings;
 pub use docker::DockerSettings;
@@ -35,12 +37,12 @@ pub struct Settings<HttpsState = HttpsDisabled> {
     pub server: ServerSettings<Validated, HttpsState>,
     
     // 로깅 설정
-    pub logging: LogSettings,
+    pub logging: LogSettings<Validated>,
     
     // TLS 설정
     pub tls: TlsSettings<Validated>,
 
-    pub docker: DockerSettings,
+    pub docker: DockerSettings<Validated>,
     
     /// 미들웨어 설정
     pub middleware: HashMap<String, MiddlewareConfig>,
@@ -103,7 +105,6 @@ impl<HttpsState> Settings<HttpsState> {
     pub async fn validate(&self) -> Result<()> {
         // self.server.validated()?;
         // self.tls.validated().await?;
-        self.docker.validate()?;
 
         // 미들웨어 설정 검증
         for (name, middleware) in &self.middleware {
@@ -510,11 +511,11 @@ impl<'de> Deserialize<'de> for Settings<HttpsDisabled> {
         #[derive(Deserialize)]
         struct SettingsHelper {
             #[serde(default)]
-            logging: LogSettings,
+            logging: LogSettings<Raw>,
             #[serde(default)]
             tls: TlsSettings<Raw>,
             #[serde(default)]
-            docker: DockerSettings,
+            docker: DockerSettings<Raw>,
             #[serde(default)]
             middleware: HashMap<String, MiddlewareConfig>,
             #[serde(default)]
@@ -523,12 +524,12 @@ impl<'de> Deserialize<'de> for Settings<HttpsDisabled> {
         
         let helper = SettingsHelper::deserialize(deserializer)?;
         
-        // 비동기 검증을 수행할 수 없으므로 기본값 사용 (후에 validate 호출 필요)
+        // 비동기 검증은 여기서 수행할 수 없음 (나중에 validate 메서드에서 수행)
         Ok(Settings {
             server: ServerSettings::<Validated, HttpsDisabled>::default(),
-            logging: helper.logging,
+            logging: LogSettings::<Validated>::default(),
             tls: TlsSettings::<Validated>::default(),
-            docker: helper.docker,
+            docker: DockerSettings::<Validated>::default(),
             middleware: helper.middleware,
             router_middlewares: helper.router_middlewares,
         })
