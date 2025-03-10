@@ -6,7 +6,7 @@ use typestate::{Raw, Validated};
 use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
 
 pub mod logging;
-mod server;
+pub mod server;
 mod tls;
 mod error;
 pub mod docker;
@@ -27,6 +27,7 @@ pub use docker::DockerSettings;
 pub use error::SettingsError;
 pub use json::JsonConfig;
 pub use parser::{ConfigParser, ValidatedConfig};
+pub use watcher::{ConfigWatcher, ConfigEvent};
 pub use raw::RawSettings;
 
 pub type Result<T> = std::result::Result<T, SettingsError>;
