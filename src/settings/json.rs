@@ -10,7 +10,6 @@ use super::parser::ConfigParser;
 use super::types::{ValidMiddlewareId, ValidRule, ValidServiceId, Version};
 use super::{Result, ValidatedConfig};
 use super::converter::{labels_to_json, json_to_labels};
-use super::typestate::TypeState;
 
 /// JSON 설정 파일을 위한 구조체
 #[derive(Debug, Clone, Serialize, Deserialize)]
