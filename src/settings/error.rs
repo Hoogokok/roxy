@@ -54,8 +54,8 @@ pub enum SettingsError {
         message: String,
     },
     ReferenceError {
-        entity: String,
-        reference: String,
+        reference_type: String,
+        reference_id: String,
         message: String,
     },
 }
@@ -95,8 +95,8 @@ impl fmt::Display for SettingsError {
             },
             Self::ValidationError { field, message } =>
                 write!(f, "필드 '{}' 검증 오류: {}", field, message),
-            Self::ReferenceError { entity, reference, message } => 
-                write!(f, "참조 오류 - 엔티티: {}, 참조: {}, 이유: {}", entity, reference, message),
+            Self::ReferenceError { reference_type, reference_id, message } => 
+                write!(f, "참조 오류 - 유형: {}, 참조: {}, 이유: {}", reference_type, reference_id, message),
         }
     }
 }
@@ -159,13 +159,13 @@ impl SettingsValidator {
     /// 참조 오류 추가
     pub fn add_reference_error(
         &mut self, 
-        entity: impl Into<String>, 
-        reference: impl Into<String>, 
+        reference_type: impl Into<String>, 
+        reference_id: impl Into<String>, 
         message: impl Into<String>
     ) {
         self.add_error(SettingsError::ReferenceError {
-            entity: entity.into(),
-            reference: reference.into(),
+            reference_type: reference_type.into(),
+            reference_id: reference_id.into(),
             message: message.into(),
         });
     }
@@ -284,9 +284,9 @@ impl SettingsError {
                 field: field.clone(),
                 message: message.clone(),
             },
-            Self::ReferenceError { entity, reference, message } => Self::ReferenceError {
-                entity: entity.clone(),
-                reference: reference.clone(),
+            Self::ReferenceError { reference_type, reference_id, message } => Self::ReferenceError {
+                reference_type: reference_type.clone(),
+                reference_id: reference_id.clone(),
                 message: message.clone(),
             },
         }
