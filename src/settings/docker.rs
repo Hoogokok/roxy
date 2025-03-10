@@ -7,6 +7,24 @@ use crate::settings::typestate::ValidationErrorCollector;
 
 pub type Result<T> = std::result::Result<T, SettingsError>;
 
+// 기본값 함수 정의
+fn default_docker_network() -> String {
+    "reverse-proxy-network".to_string()
+}
+
+fn default_label_prefix() -> String {
+    "rproxy.".to_string()
+}
+
+/// HTTP 헬스 체크 기본 메서드
+fn default_http_method() -> String {
+    "GET".to_string()
+}
+
+fn default_http_status() -> u16 {
+    200
+}
+
 /// 헬스 체크 타입
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -37,14 +55,6 @@ impl Default for HealthCheckType {
             expected_status: default_http_status(),
         }
     }
-}
-
-fn default_http_method() -> String {
-    "GET".to_string()
-}
-
-fn default_http_status() -> u16 {
-    200
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -338,95 +348,6 @@ impl Default for DockerSettings<Validated> {
             .expect("기본 Docker 설정은 항상 유효해야 합니다")
     }
 }
-
-/// 기존 Legacy 호환성을 위한 구현
-impl From<DockerSettings<Validated>> for LegacyDockerSettings {
-    fn from(settings: DockerSettings<Validated>) -> Self {
-        Self {
-            network: settings.network,
-            label_prefix: settings.label_prefix,
-            health_check: settings.health_check,
-            retry: settings.retry,
-            load_balancer: settings.load_balancer,
-            setup_initial_health_checks: settings.setup_initial_health_checks,
-        }
-    }
-}
-
-/// Legacy DockerSettings 타입 (기존 코드와의 호환성을 위함)
-#[derive(Debug, Clone, Deserialize)]
-pub struct LegacyDockerSettings {
-    /// Docker 네트워크 이름
-    #[serde(default = "default_docker_network")]
-    pub network: String,
-
-    /// 라벨 접두사
-    #[serde(default = "default_label_prefix")]
-    pub label_prefix: String,
-
-    /// 헬스 체크 설정
-    #[serde(default)]
-    pub health_check: HealthCheckSettings,
-
-    /// 재시도 설정
-    #[serde(default)]
-    pub retry: RetrySettings,
-
-    /// 로드밸런서 설정
-    #[serde(default)]
-    pub load_balancer: LoadBalancerSettings,
-
-    /// 초기 헬스체크 설정 여부
-    #[serde(default)]
-    pub setup_initial_health_checks: bool,
-}
-
-impl LegacyDockerSettings {
-    pub fn from_env() -> Result<Self> {
-        let typed_settings = DockerSettings::<Raw>::from_env()?.validated()?;
-        Ok(typed_settings.into())
-    }
-
-   pub fn validate(&self) -> Result<()> {
-        // 기존 호환성을 위해 유지
-        // Raw 타입으로 변환하고 검증
-        let raw = DockerSettings::<Raw> {
-            network: self.network.clone(),
-            label_prefix: self.label_prefix.clone(),
-            health_check: self.health_check.clone(),
-            retry: self.retry.clone(),
-            load_balancer: self.load_balancer.clone(),
-            setup_initial_health_checks: self.setup_initial_health_checks,
-            _marker: PhantomData,
-        };
-        
-        match raw.validated() {
-            Ok(_) => Ok(()),
-            Err(e) => Err(e),
-        }
-    }
-}
-
-impl Default for LegacyDockerSettings {
-    fn default() -> Self {
-        Self {
-            network: default_docker_network(),
-            label_prefix: default_label_prefix(),
-            health_check: HealthCheckSettings::default(),
-            retry: RetrySettings::default(),
-            load_balancer: LoadBalancerSettings::default(),
-            setup_initial_health_checks: false,
-        }
-    }
-}
-
-fn default_docker_network() -> String {
-    "reverse-proxy-network".to_string()
-}
-
-fn default_label_prefix() -> String {
-    "rproxy.".to_string()
-} 
 
 #[cfg(test)]
 mod tests {
