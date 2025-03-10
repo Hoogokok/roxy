@@ -174,7 +174,6 @@ pub mod server;
 // 주요 타입들을 최상위에서 바로 사용할 수 있도록 re-export
 pub use crate::{
     settings::Settings,
-    server::ServerManager,
     docker::DockerManager,
     routing_v2::{RoutingTable, BackendService, PathMatcher},
 };

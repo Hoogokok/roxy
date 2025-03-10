@@ -425,45 +425,65 @@ fn process_service_item(
     }
 }
 
-/// 로드밸런서 필드 처리
+/// 서버 객체에서 URL과 weight 추출
+fn process_server(
+    prefix: &str,
+    service_name: &str,
+    idx: usize,
+    server: &Map<String, Value>,
+) -> Vec<(String, String)> {
+    let mut server_data = Vec::new();
+
+    // URL 처리
+    if let Some(Value::String(url)) = server.get("url") {
+        let url_path = format!(
+            "{}services.{}.loadbalancer.servers.{}.url",
+            prefix, service_name, idx
+        );
+        server_data.push((url_path, url.clone()));
+    }
+
+    // weight 처리
+    if let Some(weight) = server.get("weight") {
+        if let Some(w) = weight.as_u64() {
+            let weight_path = format!(
+                "{}services.{}.loadbalancer.servers.{}.weight",
+                prefix, service_name, idx
+            );
+            server_data.push((weight_path, w.to_string()));
+        }
+    }
+
+    server_data
+}
+
+/// 로드밸런서 필드 처리 (함수형)
 fn process_loadbalancer_field(
     result: &mut HashMap<String, String>,
     prefix: &str,
     service_name: &str,
-    lb_obj: &Map<String, Value>
+    lb_obj: &Map<String, Value>,
 ) {
     for (lb_key, lb_val) in lb_obj {
-        // servers 배열 처리
         if lb_key == "servers" && lb_val.is_array() {
             if let Some(servers) = lb_val.as_array() {
-                servers.iter().enumerate().for_each(|(idx, server_val)| {
-                    if let Some(server) = server_val.as_object() {
-                        // url 처리
-                        if let Some(Value::String(url)) = server.get("url") {
-                            let url_path = format!(
-                                "{}services.{}.loadbalancer.servers.{}.url", 
-                                prefix, service_name, idx
-                            );
-                            result.insert(url_path, url.clone());
-                        }
-                        
-                        // weight 처리
-                        if let Some(weight) = server.get("weight") {
-                            if let Some(w) = weight.as_u64() {
-                                let weight_path = format!(
-                                    "{}services.{}.loadbalancer.servers.{}.weight", 
-                                    prefix, service_name, idx
-                                );
-                                result.insert(weight_path, w.to_string());
-                            }
-                        }
-                    }
-                });
+                let server_data: Vec<(String, String)> = servers
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(idx, server_val)| {
+                        server_val.as_object().map(|server| {
+                            process_server(prefix, service_name, idx, server)
+                        })
+                    })
+                    .flatten()
+                    .collect();
+
+                result.extend(server_data);
             }
         } else {
             // 기타 loadbalancer 필드 처리
             let lb_path = format!(
-                "{}services.{}.loadbalancer.{}", 
+                "{}services.{}.loadbalancer.{}",
                 prefix, service_name, lb_key
             );
             add_value_to_result(result, &lb_path, lb_val);
@@ -918,4 +938,4 @@ mod tests {
         // 잘못된 포트 번호
         assert_eq!(extract_port_from_url("http://example.com:invalid"), None);
     }
-} 
+}
