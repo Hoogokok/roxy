@@ -1,6 +1,7 @@
 use std::hash::Hash;
 use regex_lite as regex;
 use crate::routing_v2::error::RoutingError;
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PathMatcherKind {
@@ -44,6 +45,16 @@ impl PathMatcher {
         }
     }
 
+    /// 접두사 매처를 생성합니다.
+    /// 이 메서드는 항상 Prefix 타입의 매처를 반환하며, 실패하지 않습니다.
+    pub fn prefix(pattern: &str) -> Self {
+        PathMatcher {
+            kind: PathMatcherKind::Prefix,
+            pattern: pattern.trim_end_matches('*').trim_end_matches('/').to_string(),
+            regex: None,
+        }
+    }
+
     pub fn matches(&self, path: &str) -> bool {
         if self.pattern == "/" {
             return true;
@@ -76,5 +87,15 @@ impl Hash for PathMatcher {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         self.kind.hash(state);
         self.pattern.hash(state);
+    }
+}
+
+impl fmt::Display for PathMatcher {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind {
+            PathMatcherKind::Exact => write!(f, "Exact({})", self.pattern),
+            PathMatcherKind::Prefix => write!(f, "Prefix({})", self.pattern),
+            PathMatcherKind::Regex => write!(f, "Regex({})", self.pattern),
+        }
     }
 } 
