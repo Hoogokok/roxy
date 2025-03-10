@@ -13,7 +13,6 @@ pub mod docker;
 pub mod json;
 pub mod watcher;
 pub mod converter;
-mod validator;
 pub mod types;
 pub mod schema;
 pub mod parser;
