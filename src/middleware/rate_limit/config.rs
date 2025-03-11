@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Duration;
 use std::marker::PhantomData;
@@ -107,6 +107,7 @@ impl Validatable<RateLimitConfig<Validated>> for RateLimitConfig<Raw> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::middleware::get_value_case_insensitive;
 
     #[test]
     fn test_default_config() {
@@ -151,5 +152,28 @@ mod tests {
         let result = RateLimitConfig::<Validated>::from_labels(&labels);
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("average는 0보다 커야 합니다"));
+    }
+
+    #[test]
+    fn test_from_labels_case_insensitive() {
+        let mut labels = HashMap::new();
+        // 다양한 케이스 스타일 테스트
+        labels.insert("ratelimit.average".to_string(), "200".to_string());
+        labels.insert("ratelimit.BURST".to_string(), "100".to_string());
+
+        let config = RateLimitConfig::<Validated>::from_labels(&labels).unwrap();
+        assert_eq!(config.average, 200);
+        assert_eq!(config.burst, 100);
+    }
+    
+    #[test]
+    fn test_from_labels_snake_case() {
+        let mut labels = HashMap::new();
+        labels.insert("rate_limit.average".to_string(), "300".to_string());
+        labels.insert("rate_limit.burst".to_string(), "150".to_string());
+
+        let config = RateLimitConfig::<Validated>::from_labels(&labels).unwrap();
+        assert_eq!(config.average, 300);
+        assert_eq!(config.burst, 150);
     }
 }
