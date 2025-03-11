@@ -1,5 +1,7 @@
 use crate::middleware::{Middleware, MiddlewareError, Request, Response};
-use super::{config::RateLimitConfig, store::RateLimitStore};
+use super::config::RateLimitConfig;
+use super::store::RateLimitStore;
+use crate::settings::typestate::Validated;
 use async_trait::async_trait;
 use hyper::StatusCode;
 use http_body_util::Full;
@@ -8,12 +10,12 @@ use tracing::debug;
 
 /// Rate Limit 미들웨어
 pub struct RateLimitMiddleware<S: RateLimitStore> {
-    config: RateLimitConfig,
+    pub config: RateLimitConfig<Validated>,
     store: S,
 }
 
 impl<S: RateLimitStore> RateLimitMiddleware<S> {
-    pub fn new(config: RateLimitConfig, store: S) -> Self {
+    pub fn new(config: RateLimitConfig<Validated>, store: S) -> Self {
         Self { config, store }
     }
 
