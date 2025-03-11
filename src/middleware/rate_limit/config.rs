@@ -1,9 +1,9 @@
-use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Duration;
 use std::marker::PhantomData;
 use crate::settings::typestate::{TypeState, Raw, Validated, Validatable, ValidationErrorCollector};
 use crate::middleware::typestate::{MiddlewareValidator, MiddlewareConfigError};
+use crate::middleware::utils::get_value_case_insensitive;
 
 /// Rate Limit 설정
 #[derive(Debug, Clone)]
@@ -38,17 +38,23 @@ impl RateLimitConfig<Validated> {
     /// Docker 라벨에서 설정을 파싱하고 검증합니다.
     /// 파싱과 검증을 한 번에 수행하여 검증된 설정을 반환합니다.
     pub fn from_labels(labels: &HashMap<String, String>) -> Result<Self, String> {
-        // 파싱: 값 추출하기
-        let average = labels.get("rateLimit.average")
+        // 대소문자 구분 없는 키 조회 사용
+        let average = get_value_case_insensitive(labels, "rateLimit.average")
             .map(|v| v.parse::<u32>())
             .unwrap_or(Ok(100))
             .map_err(|_| "유효하지 않은 average 값".to_string())?;
             
-        let burst = labels.get("rateLimit.burst")
+        let burst = get_value_case_insensitive(labels, "rateLimit.burst")
             .map(|v| v.parse::<u32>())
             .unwrap_or(Ok(50))
             .map_err(|_| "유효하지 않은 burst 값".to_string())?;
-            
+        
+        // 기간 설정 (기본값 60초)
+        let period = get_value_case_insensitive(labels, "rateLimit.period")
+            .map(|v| v.parse::<u64>().map(Duration::from_secs))
+            .unwrap_or(Ok(Duration::from_secs(60)))
+            .map_err(|_| "유효하지 않은 period 값".to_string())?;
+        
         // 검증: 비즈니스 규칙 적용
         if average == 0 {
             return Err("average는 0보다 커야 합니다".to_string());
@@ -58,11 +64,10 @@ impl RateLimitConfig<Validated> {
             return Err("burst는 0보다 커야 합니다".to_string());
         }
         
-        // 검증된 설정 생성
         Ok(Self {
             average,
             burst,
-            period: Duration::from_secs(1),
+            period,
             _state: PhantomData,
         })
     }
@@ -107,7 +112,6 @@ impl Validatable<RateLimitConfig<Validated>> for RateLimitConfig<Raw> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::middleware::get_value_case_insensitive;
 
     #[test]
     fn test_default_config() {
