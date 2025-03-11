@@ -13,6 +13,7 @@ mod response;
 pub mod parser;
 mod cors;
 pub mod rate_limit;
+mod typestate;
 
 pub use chain::MiddlewareChain;
 pub use config::MiddlewareConfig;
