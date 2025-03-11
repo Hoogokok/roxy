@@ -6,6 +6,7 @@ use hyper::{header, StatusCode};
 use http_body_util::Full;
 use bytes::Bytes;
 use super::auth::Authenticator;
+use std::collections::HashMap;
 
 
 /// Basic 인증 미들웨어
@@ -105,8 +106,9 @@ impl Middleware for BasicAuthMiddleware {
 #[cfg(test)]
 mod tests {
 
+    use crate::middleware::basic_auth::config::AuthSource;
+
     use super::*;
-    use std::collections::HashMap;
 
     fn create_test_middleware() -> BasicAuthMiddleware {
         let mut users = HashMap::new();
@@ -115,11 +117,11 @@ mod tests {
             "$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/".to_string()
         );
 
-        let config = BasicAuthConfig {
+        let config = BasicAuthConfig::new(
             users,
-            realm: "Test Realm".to_string(),
-            ..Default::default()
-        };
+            "Test Realm".to_string(),
+            AuthSource::Labels
+        );
 
         BasicAuthMiddleware::new(config).unwrap()
     }

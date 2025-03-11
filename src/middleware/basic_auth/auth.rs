@@ -217,11 +217,11 @@ mod tests {
         let hash = bcrypt::hash("test-password", DEFAULT_COST).unwrap();
         users.insert("test".to_string(), hash);
 
-        let config = BasicAuthConfig {
+        let config = BasicAuthConfig::new(
             users,
-            realm: "Test Realm".to_string(),
-            source: AuthSource::Labels,
-        };
+            "Test Realm".to_string(),
+            AuthSource::Labels
+        );
 
         let authenticator = LabelAuthenticator::new(&config);
         assert!(authenticator.verify_credentials("test", "test-password"));

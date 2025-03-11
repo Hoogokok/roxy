@@ -1,7 +1,10 @@
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use serde::{Deserialize, Serialize};
 use crate::middleware::MiddlewareError;
 use crate::middleware::utils::get_value_case_insensitive;
+use crate::middleware::typestate::{MiddlewareConfigError, MiddlewareValidator};
+use crate::settings::typestate::{Raw, TypeState, Validatable, Validated, ValidationErrorCollector};
 
 /// Basic 인증 소스 설정
 /// 
@@ -61,8 +64,8 @@ impl Default for AuthSource {
 }
 
 /// Basic 인증 설정
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct BasicAuthConfig {
+#[derive(Debug, Clone, Deserialize)]
+pub struct BasicAuthConfig<S: TypeState = Raw> {
     /// 사용자 이름과 해시된 비밀번호 맵
     #[serde(default)]
     pub users: HashMap<String, String>,
@@ -74,13 +77,24 @@ pub struct BasicAuthConfig {
     /// 인증 소스
     #[serde(default)]
     pub source: AuthSource,
+    
+    /// 타입스테이트 마커
+    #[serde(skip)]
+    _state: PhantomData<S>,
 }
 
-fn default_realm() -> String {
-    "Restricted Area".to_string()
+impl<S: TypeState> Default for BasicAuthConfig<S> {
+    fn default() -> Self {
+        Self {
+            users: HashMap::new(),
+            realm: default_realm(),
+            source: AuthSource::default(),
+            _state: PhantomData,
+        }
+    }
 }
 
-impl BasicAuthConfig {
+impl BasicAuthConfig<Raw> {
     /// 기본 설정 키 패턴
     pub const DEFAULT_KEY_PATTERNS: [(&'static str, &'static str); 12] = [
         // 패턴 형식: (패턴, 설정 타입)
@@ -98,12 +112,39 @@ impl BasicAuthConfig {
         ("basicAuth.secret.path", "secret_path"),
     ];
 
-    /// Docker 라벨에서 설정을 파싱
+    /// 새로운 BasicAuthConfig 인스턴스 생성
+    pub fn new(users: HashMap<String, String>, realm: String, source: AuthSource) -> Self {
+        Self {
+            users,
+            realm,
+            source,
+            _state: PhantomData,
+        }
+    }
+
+    /// 사용자를 추가합니다
+    pub fn add_user(&mut self, username: &str, password_hash: &str) {
+        self.users.insert(username.to_string(), password_hash.to_string());
+    }
+
+    /// 인증 영역(realm)을 설정합니다
+    pub fn with_realm(mut self, realm: &str) -> Self {
+        self.realm = realm.to_string();
+        self
+    }
+
+    /// 인증 소스를 설정합니다
+    pub fn with_source(mut self, source: AuthSource) -> Self {
+        self.source = source;
+        self
+    }
+
+    /// Docker 라벨에서 설정을 파싱하여 Raw 상태의 설정을 생성합니다
     pub fn from_labels(labels: &HashMap<String, String>) -> Result<Self, MiddlewareError> {
         Self::from_labels_with_patterns(labels, &Self::DEFAULT_KEY_PATTERNS)
     }
     
-    /// 사용자 지정 패턴을 사용하여 Docker 라벨에서 설정을 파싱
+    /// 사용자 지정 패턴을 사용하여 Docker 라벨에서 설정을 파싱합니다
     pub fn from_labels_with_patterns(
         labels: &HashMap<String, String>,
         key_patterns: &[(&str, &str)]
@@ -137,6 +178,96 @@ impl BasicAuthConfig {
         
         Ok(config)
     }
+}
+
+impl Validatable<BasicAuthConfig<Validated>> for BasicAuthConfig<Raw> {
+    type Error = MiddlewareConfigError;
+
+    fn validate(self) -> Result<BasicAuthConfig<Validated>, Self::Error> {
+        let mut validator = MiddlewareValidator::new();
+        validator.start_collecting();
+        
+        // 1. 사용자가 없고 소스가 Labels인 경우 오류
+        if self.users.is_empty() && self.source == AuthSource::Labels {
+            validator.add_error(MiddlewareConfigError::InvalidValue {
+                field: "users".to_string(),
+                message: "Labels 소스를 사용할 경우 최소 한 명의 사용자가 필요합니다".to_string(),
+            });
+        }
+        
+        // 2. 사용자 이름 검증
+        for (username, password) in &self.users {
+            if username.is_empty() {
+                validator.add_error(MiddlewareConfigError::InvalidValue {
+                    field: "users.username".to_string(),
+                    message: "사용자 이름은 비어있을 수 없습니다".to_string(),
+                });
+            }
+            
+            if password.is_empty() {
+                validator.add_error(MiddlewareConfigError::InvalidValue {
+                    field: format!("users.{}.password", username),
+                    message: "비밀번호 해시는 비어있을 수 없습니다".to_string(),
+                });
+            }
+        }
+        
+        // 3. realm 검증
+        if self.realm.is_empty() {
+            validator.add_error(MiddlewareConfigError::InvalidValue {
+                field: "realm".to_string(),
+                message: "인증 영역(realm)은 비어있을 수 없습니다".to_string(),
+            });
+        }
+        
+        // 4. 소스 유형에 따른 추가 검증
+        match &self.source {
+            AuthSource::HtpasswdFile(path) => {
+                if path.is_empty() {
+                    validator.add_error(MiddlewareConfigError::InvalidValue {
+                        field: "source.htpasswd_path".to_string(),
+                        message: "htpasswd 파일 경로는 비어있을 수 없습니다".to_string(),
+                    });
+                }
+            },
+            AuthSource::EnvVar(prefix) => {
+                if prefix.is_empty() {
+                    validator.add_error(MiddlewareConfigError::InvalidValue {
+                        field: "source.env_prefix".to_string(),
+                        message: "환경 변수 접두사는 비어있을 수 없습니다".to_string(),
+                    });
+                }
+            },
+            AuthSource::DockerSecret(path) => {
+                if path.is_empty() {
+                    validator.add_error(MiddlewareConfigError::InvalidValue {
+                        field: "source.secret_path".to_string(),
+                        message: "Docker Secret 파일 경로는 비어있을 수 없습니다".to_string(),
+                    });
+                }
+            },
+            _ => {}
+        }
+        
+        // 검증 결과 처리
+        if validator.has_errors() {
+            // 첫 번째 오류 반환
+            let errors = validator.into_errors();
+            Err(errors.into_iter().next().unwrap())
+        } else {
+            // 검증된 설정 반환
+            Ok(BasicAuthConfig {
+                users: self.users,
+                realm: self.realm,
+                source: self.source,
+                _state: PhantomData,
+            })
+        }
+    }
+}
+
+fn default_realm() -> String {
+    "Restricted Area".to_string()
 }
 
 /// 설정 값들을 저장하는 임시 구조체
@@ -294,6 +425,10 @@ mod tests {
             "$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/"
         );
         assert_eq!(config.source, AuthSource::Labels);
+        
+        // 검증 테스트
+        let validated = config.validate();
+        assert!(validated.is_ok());
     }
 
     #[test]
@@ -368,5 +503,80 @@ mod tests {
         assert_eq!(config.users.get("admin").unwrap(), "$hash1");
         assert_eq!(config.users.get("user").unwrap(), "$hash2");
         assert_eq!(config.users.get("guest").unwrap(), "$hash3");
+    }
+    
+    #[test]
+    fn test_basic_auth_config_validation_success() {
+        let mut users = HashMap::new();
+        users.insert("admin".to_string(), "$hash1".to_string());
+        
+        let config = BasicAuthConfig::<Raw>::new(
+            users,
+            "Test Realm".to_string(),
+            AuthSource::Labels
+        );
+        
+        let validated = config.validate();
+        assert!(validated.is_ok());
+    }
+    
+    #[test]
+    fn test_basic_auth_config_validation_failure_empty_users() {
+        let config = BasicAuthConfig::<Raw>::new(
+            HashMap::new(),
+            "Test Realm".to_string(),
+            AuthSource::Labels
+        );
+        
+        let validated = config.validate();
+        assert!(validated.is_err());
+        
+        match validated.err().unwrap() {
+            MiddlewareConfigError::InvalidValue { field, .. } => {
+                assert_eq!(field, "users");
+            },
+            _ => panic!("예상치 못한 오류 타입"),
+        }
+    }
+    
+    #[test]
+    fn test_basic_auth_config_validation_failure_empty_realm() {
+        let mut users = HashMap::new();
+        users.insert("admin".to_string(), "$hash1".to_string());
+        
+        let config = BasicAuthConfig::<Raw>::new(
+            users,
+            "".to_string(),
+            AuthSource::Labels
+        );
+        
+        let validated = config.validate();
+        assert!(validated.is_err());
+        
+        match validated.err().unwrap() {
+            MiddlewareConfigError::InvalidValue { field, .. } => {
+                assert_eq!(field, "realm");
+            },
+            _ => panic!("예상치 못한 오류 타입"),
+        }
+    }
+    
+    #[test]
+    fn test_basic_auth_config_validation_htpasswd_path() {
+        let config = BasicAuthConfig::<Raw>::new(
+            HashMap::new(),
+            "Test Realm".to_string(),
+            AuthSource::HtpasswdFile("".to_string())
+        );
+        
+        let validated = config.validate();
+        assert!(validated.is_err());
+        
+        match validated.err().unwrap() {
+            MiddlewareConfigError::InvalidValue { field, .. } => {
+                assert_eq!(field, "source.htpasswd_path");
+            },
+            _ => panic!("예상치 못한 오류 타입"),
+        }
     }
 }
