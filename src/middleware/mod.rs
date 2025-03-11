@@ -14,7 +14,9 @@ pub mod parser;
 mod cors;
 pub mod rate_limit;
 mod typestate;
+mod utils;
 
+pub use utils::get_value_case_insensitive;
 pub use chain::MiddlewareChain;
 pub use config::MiddlewareConfig;
 pub use error::MiddlewareError;
