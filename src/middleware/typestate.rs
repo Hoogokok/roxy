@@ -1,5 +1,7 @@
-use crate::settings::typestate::{TypeState, Raw, Validated, ValidationErrorCollector};
 use std::fmt;
+use std::time::Duration;
+
+use crate::settings::typestate::ValidationErrorCollector;
 
 /// 미들웨어 설정 오류
 #[derive(Debug, Clone)]
@@ -91,7 +93,8 @@ impl ValidationErrorCollector for MiddlewareValidator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::typestate::{Raw, Validated};
+    use crate::{middleware::rate_limit::{store::RateLimitStore, RateLimitConfig, RateLimitMiddleware}, settings::typestate::{Raw, TypeState, Validatable, Validated}};
+    use std::marker::PhantomData;
 
     #[test]
     fn test_middleware_validator_collects_errors() {
@@ -214,5 +217,144 @@ mod tests {
             format!("{}", error3),
             "설정 파싱 오류: 파싱 실패"
         );
+    }
+
+    // 미들웨어 설정을 위한 타입스테이트 테스트
+    #[derive(Debug, Clone)]
+    struct TestMiddlewareConfig<S: TypeState = Raw> {
+        name: String,
+        value: i32,
+        _state: PhantomData<S>,
+    }
+
+    impl TestMiddlewareConfig<Raw> {
+        fn new(name: &str, value: i32) -> Self {
+            Self {
+                name: name.to_string(),
+                value,
+                _state: PhantomData,
+            }
+        }
+    }
+
+    impl Validatable<TestMiddlewareConfig<Validated>> for TestMiddlewareConfig<Raw> {
+        type Error = MiddlewareConfigError;
+
+        fn validate(self) -> Result<TestMiddlewareConfig<Validated>, Self::Error> {
+            let mut validator = MiddlewareValidator::new();
+            validator.start_collecting();
+            
+            // 이름 검증
+            if self.name.is_empty() {
+                validator.add_error(MiddlewareConfigError::InvalidValue {
+                    field: "name".to_string(),
+                    message: "이름은 비어있을 수 없습니다".to_string(),
+                });
+            }
+            
+            // 값 검증
+            if self.value <= 0 {
+                validator.add_error(MiddlewareConfigError::InvalidValue {
+                    field: "value".to_string(),
+                    message: "값은 0보다 커야 합니다".to_string(),
+                });
+            }
+            
+            // 검증 결과 처리
+            match validator.into_result(()) {
+                Ok(_) => Ok(TestMiddlewareConfig {
+                    name: self.name,
+                    value: self.value,
+                    _state: PhantomData,
+                }),
+                Err(errors) => Err(errors[0].clone()),
+            }
+        }
+    }
+
+    #[test]
+    fn test_middleware_typestate_validation_success() {
+        // 유효한 설정으로 테스트
+        let raw_config = TestMiddlewareConfig::new("test", 42);
+        let validated_result = raw_config.validate();
+        
+        assert!(validated_result.is_ok());
+        let validated = validated_result.unwrap();
+        assert_eq!(validated.name, "test");
+        assert_eq!(validated.value, 42);
+    }
+
+    #[test]
+    fn test_middleware_typestate_validation_failure() {
+        // 유효하지 않은 설정으로 테스트
+        let raw_config = TestMiddlewareConfig::new("", -5);
+        let validated_result = raw_config.validate();
+        
+        assert!(validated_result.is_err());
+        let error = validated_result.unwrap_err();
+        
+        match error {
+            MiddlewareConfigError::InvalidValue { field, .. } => {
+                // 첫 번째 오류가 name 또는 value 필드에 관련된 것인지 확인
+                assert!(field == "name" || field == "value");
+            },
+            _ => panic!("예상치 못한 오류 타입"),
+        }
+    }
+
+    #[test]
+    fn test_rate_limit_config_validation_success() {
+        // 유효한 값으로 설정
+        let raw_config = RateLimitConfig::<Raw>::new(100, 60);
+        let validated_result = raw_config.validate();
+        
+        assert!(validated_result.is_ok());
+        let validated = validated_result.unwrap();
+        assert_eq!(validated.average, 100);
+        assert_eq!(validated.burst, 60);
+    }
+
+    #[test]
+    fn test_rate_limit_config_validation_failure() {
+        // 유효하지 않은 값으로 설정
+        let raw_config = RateLimitConfig::<Raw>::new(0, 0);
+        let validated_result = raw_config.validate();
+        
+        assert!(validated_result.is_err());
+        // 특정 오류 타입과 메시지 검증
+        match validated_result.unwrap_err() {
+            MiddlewareConfigError::InvalidValue { field, message } => {
+                assert!(field == "average" || field == "burst");
+                assert!(message.contains("0보다 커야 합니다"));
+            },
+            _ => panic!("예상치 못한 오류 타입"),
+        }
+    }
+    
+    // 테스트 모듈에 추가할 모의 구현
+    #[derive(Default)]
+    struct MockRateLimitStore;
+
+    #[async_trait::async_trait]
+    impl RateLimitStore for MockRateLimitStore {
+        async fn check_rate(&self, _key: &str, _rate: f64, _burst: f64) -> bool {
+            true
+        }
+        
+        async fn time_to_next_request(&self, _key: &str) -> Option<Duration> {
+            None
+        }
+    }
+
+    // 테스트 수정
+    #[test]
+    fn test_rate_limit_middleware_requires_validated_config() {
+        let validated_config = RateLimitConfig::<Raw>::new(100, 60)
+            .validate()
+            .expect("설정 검증에 실패했습니다");
+        
+        let mock_store = MockRateLimitStore;
+        let middleware = RateLimitMiddleware::new(validated_config, mock_store);
+        assert_eq!(middleware.config.average, 100);
     }
 }
