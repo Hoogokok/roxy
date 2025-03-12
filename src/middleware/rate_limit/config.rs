@@ -23,6 +23,7 @@ pub struct RateLimitConfig<S: TypeState = Raw> {
 
 impl RateLimitConfig<Raw> {
     /// 새로운 원시(Raw) 설정 생성
+    #[allow(dead_code)]
     pub fn new(average: u32, burst: u32) -> Self {
         Self {
             average,
