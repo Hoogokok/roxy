@@ -612,3 +612,61 @@ services:
 - **JSON 설정 파일**: 공통 미들웨어, 복잡한 라우팅 규칙, 기본 설정
 - **Docker 라벨**: 컨테이너별 특정 설정, 동적으로 변경되는 설정
 
+## 미들웨어 타입스테이트 패턴
+
+리버스 프록시의 미들웨어 설정은 타입스테이트 패턴(Type State Pattern)을 사용하여 타입 안전성을 강화하고 검증 오류를 컴파일 타임에 방지합니다.
+
+### 타입스테이트 패턴의 장점
+
+1. **컴파일 타임 검증**: 검증되지 않은 설정이 실행 시점에 사용되는 것을 방지
+2. **명확한 상태 구분**: `Raw`와 `Validated` 상태 명확히 구분
+3. **오류 처리 향상**: 검증 오류에 대한 풍부한 정보 제공
+4. **자동 완성 지원**: IDE에서 현재 상태에 유효한 메서드만 표시
+
+### 지원되는 미들웨어 설정 클래스
+
+다음 미들웨어 설정 클래스는 타입스테이트 패턴을 구현하고 있습니다:
+
+- `BasicAuthConfig<S: TypeState>`
+- `HeadersConfig<S: TypeState>`
+- `CorsConfig<S: TypeState>`
+- `RateLimitConfig<S: TypeState>`
+
+### 빌더 패턴 지원
+
+`BasicAuthConfig`는 설정을 쉽게 구성할 수 있는 빌더 패턴을 제공합니다:
+
+```rust
+let config = BasicAuthConfig::<Raw>::builder()
+    .realm("Admin Area")
+    .add_user("admin", "$2y$05$...")
+    .add_user("user", "$2y$05$...")
+    .source(AuthSource::Labels)
+    .build()
+    .unwrap();
+```
+
+또는 체인 메서드를 사용한 구성도 가능합니다:
+
+```rust
+let config = BasicAuthConfig::<Raw>::new(users, "Default Realm", AuthSource::Labels)
+    .with_realm("Custom Realm")
+    .add_user("guest", "$2y$05$...")
+    .into_validated()
+    .unwrap();
+```
+
+### 타입 안전한 설정 변환
+
+모든 미들웨어 설정은 `validate()` 메서드를 통해 안전하게 `Raw`에서 `Validated` 상태로 변환됩니다:
+
+```rust
+// 원시 설정에서 검증된 설정으로 변환
+let validated_config = raw_config.validate()?;
+
+// 검증된 설정만 미들웨어 생성에 사용 가능
+let middleware = BasicAuthMiddleware::new(validated_config);
+```
+
+이 접근 방식은 런타임 오류의 가능성을 크게 줄이고 코드의 안정성을 향상시킵니다.
+
