@@ -107,7 +107,7 @@ impl Middleware for BasicAuthMiddleware {
 mod tests {
     use std::collections::HashMap;
     use crate::middleware::basic_auth::config::AuthSource;
-    use crate::settings::typestate::{Raw, Validated, Validatable};
+    use crate::settings::typestate::{Raw, Validatable};
     use super::*;
 
     fn create_test_middleware() -> BasicAuthMiddleware {
