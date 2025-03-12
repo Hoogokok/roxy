@@ -22,16 +22,10 @@ fn create_middleware(config: &MiddlewareConfig) -> Result<Box<dyn Middleware>, M
             Ok(Box::new(BasicAuthMiddleware::new(auth_config)?))
         }
         MiddlewareType::Headers => {
-            let raw_headers_config = HeadersConfig::from_flat_map(&config.settings)
-                .map_err(|e| MiddlewareError::InvalidFormat(e.to_string()))?;
-            debug!("생성된 헤더 설정(Raw): {:?}", raw_headers_config);
+            let headers_config = HeadersConfig::<Validated>::from_labels(&config.settings)?;
+            debug!("생성된 헤더 설정(Validated): {:?}", headers_config);
             
-            // 설정 검증
-            let validated_headers_config = raw_headers_config.validate()
-                .map_err(|e| MiddlewareError::Config { message: e.to_string() })?;
-            debug!("검증된 헤더 설정: {:?}", validated_headers_config);
-            
-            Ok(Box::new(HeadersMiddleware::new(validated_headers_config)))
+            Ok(Box::new(HeadersMiddleware::new(headers_config)))
         }
         MiddlewareType::Cors => {
             let cors_config = CorsConfig::<Validated>::from_labels(&config.settings)
