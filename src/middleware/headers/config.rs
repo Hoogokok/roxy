@@ -3,10 +3,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracing::{debug, error};
 use std::str::FromStr;
+use std::marker::PhantomData;
+use crate::middleware::utils::get_value_case_insensitive;
+use crate::middleware::typestate::{MiddlewareConfigError, MiddlewareValidator};
+use crate::settings::typestate::{Raw, TypeState, Validatable, Validated, ValidationErrorCollector};
 
 /// 헤더 수정 작업 설정
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct HeaderModification {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeaderModification<S: TypeState = Raw> {
     /// 추가할 헤더
     #[serde(default)]
     pub add: HashMap<String, String>,
@@ -18,9 +22,24 @@ pub struct HeaderModification {
     /// 덮어쓸 헤더
     #[serde(default)]
     pub set: HashMap<String, String>,
+    
+    /// 타입스테이트 마커
+    #[serde(skip)]
+    _state: PhantomData<S>,
 }
 
-impl HeaderModification {
+impl<S: TypeState> Default for HeaderModification<S> {
+    fn default() -> Self {
+        Self {
+            add: HashMap::new(),
+            remove: Vec::new(),
+            set: HashMap::new(),
+            _state: PhantomData,
+        }
+    }
+}
+
+impl<S: TypeState> HeaderModification<S> {
     /// 헤더 맵에 설정된 수정사항을 적용합니다.
     pub fn apply_to_headers(&self, headers: &mut hyper::HeaderMap) {
         debug!("헤더 수정 시작: add={:?}, remove={:?}, set={:?}", self.add, self.remove, self.set);
@@ -61,19 +80,124 @@ impl HeaderModification {
     }
 }
 
+impl HeaderModification<Raw> {
+    /// 새로운 HeaderModification 인스턴스 생성
+    pub fn new(
+        add: HashMap<String, String>,
+        remove: Vec<String>,
+        set: HashMap<String, String>
+    ) -> Self {
+        Self {
+            add,
+            remove,
+            set,
+            _state: PhantomData,
+        }
+    }
+}
+
+impl Validatable<HeaderModification<Validated>> for HeaderModification<Raw> {
+    type Error = MiddlewareConfigError;
+
+    fn validate(self) -> Result<HeaderModification<Validated>, Self::Error> {
+        let mut validator = MiddlewareValidator::new();
+        validator.start_collecting();
+        
+        // 헤더 이름과 값 검증
+        for (name, value) in &self.add {
+            if let Err(msg) = validate_header_name(name) {
+                validator.add_error(MiddlewareConfigError::InvalidValue {
+                    field: format!("add.{}", name),
+                    message: msg.to_string(),
+                });
+            }
+            
+            if HeaderValue::from_str(value).is_err() {
+                validator.add_error(MiddlewareConfigError::InvalidValue {
+                    field: format!("add.{}", name),
+                    message: format!("헤더 값이 유효하지 않습니다: {}", value),
+                });
+            }
+        }
+        
+        for (name, value) in &self.set {
+            if let Err(msg) = validate_header_name(name) {
+                validator.add_error(MiddlewareConfigError::InvalidValue {
+                    field: format!("set.{}", name),
+                    message: msg.to_string(),
+                });
+            }
+            
+            if HeaderValue::from_str(value).is_err() {
+                validator.add_error(MiddlewareConfigError::InvalidValue {
+                    field: format!("set.{}", name),
+                    message: format!("헤더 값이 유효하지 않습니다: {}", value),
+                });
+            }
+        }
+        
+        for name in &self.remove {
+            if let Err(msg) = validate_header_name(name) {
+                validator.add_error(MiddlewareConfigError::InvalidValue {
+                    field: format!("remove.{}", name),
+                    message: msg.to_string(),
+                });
+            }
+        }
+        
+        if validator.has_errors() {
+            let errors = validator.into_errors();
+            Err(errors.into_iter().next().unwrap())
+        } else {
+            Ok(HeaderModification {
+                add: self.add,
+                remove: self.remove,
+                set: self.set,
+                _state: PhantomData,
+            })
+        }
+    }
+}
+
 /// 헤더 미들웨어 설정
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct HeadersConfig {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeadersConfig<S: TypeState = Raw> {
     /// 요청 헤더 수정 설정
     #[serde(default)]
-    pub request: HeaderModification,
+    pub request: HeaderModification<S>,
     
     /// 응답 헤더 수정 설정
     #[serde(default)]
-    pub response: HeaderModification,
+    pub response: HeaderModification<S>,
+    
+    /// 타입스테이트 마커
+    #[serde(skip)]
+    _state: PhantomData<S>,
 }
 
-impl HeadersConfig {
+impl<S: TypeState> Default for HeadersConfig<S> {
+    fn default() -> Self {
+        Self {
+            request: HeaderModification::default(),
+            response: HeaderModification::default(),
+            _state: PhantomData,
+        }
+    }
+}
+
+impl HeadersConfig<Raw> {
+    /// 새로운 HeadersConfig 인스턴스 생성
+    pub fn new(
+        request: HeaderModification<Raw>,
+        response: HeaderModification<Raw>
+    ) -> Self {
+        Self {
+            request,
+            response,
+            _state: PhantomData,
+        }
+    }
+
     pub fn from_flat_map(settings: &HashMap<String, String>) -> Result<Self, serde_json::Error> {
         let mut config = HeadersConfig::default();
         
@@ -154,6 +278,28 @@ impl HeadersConfig {
         Ok(config)
     }
 }
+
+impl Validatable<HeadersConfig<Validated>> for HeadersConfig<Raw> {
+    type Error = MiddlewareConfigError;
+
+    fn validate(self) -> Result<HeadersConfig<Validated>, Self::Error> {
+        // 요청 헤더 검증
+        let validated_request = self.request.validate()?;
+        
+        // 응답 헤더 검증
+        let validated_response = self.response.validate()?;
+        
+        Ok(HeadersConfig {
+            request: validated_request,
+            response: validated_response,
+            _state: PhantomData,
+        })
+    }
+}
+
+/// 레거시 코드와의 호환성을 위한 타입 별칭
+pub type HeadersConfigLegacy = HeadersConfig<Validated>;
+pub type HeaderModificationLegacy = HeaderModification<Validated>;
 
 /// 헤더 설정 키를 분석하여 (섹션, 액션, 헤더이름) 튜플을 반환합니다.
 /// 예: "headers.request.add.X-Key" -> ("request", "add", "X-Key")
@@ -247,5 +393,99 @@ mod tests {
         assert_eq!(config.request.add.get("X-Test"), Some(&"test".to_string()));
         assert!(config.request.remove.contains(&"Authorization".to_string()));
         assert_eq!(config.response.set.get("Server"), Some(&"TestServer".to_string()));
+    }
+    
+    #[test]
+    fn test_header_modification_validate_success() {
+        // 유효한 헤더로 설정
+        let mut add = HashMap::new();
+        add.insert("X-Test".to_string(), "test".to_string());
+        
+        let mut set = HashMap::new();
+        set.insert("Content-Type".to_string(), "application/json".to_string());
+        
+        let remove = vec!["Authorization".to_string()];
+        
+        let header_mod = HeaderModification::<Raw>::new(add, remove, set);
+        let validated = header_mod.validate();
+        
+        assert!(validated.is_ok());
+    }
+    
+    #[test]
+    fn test_header_modification_validate_invalid_header_name() {
+        // 유효하지 않은 헤더 이름으로 설정
+        let mut add = HashMap::new();
+        add.insert("".to_string(), "test".to_string()); // 빈 헤더 이름
+        
+        let header_mod = HeaderModification::<Raw>::new(add, vec![], HashMap::new());
+        let validated = header_mod.validate();
+        
+        assert!(validated.is_err());
+        let err = validated.unwrap_err();
+        match err {
+            MiddlewareConfigError::InvalidValue { field, message } => {
+                assert!(field.starts_with("add."));
+                assert!(message.contains("비어있을 수 없습니다"));
+            },
+            _ => panic!("잘못된 오류 타입"),
+        }
+    }
+    
+    #[test]
+    fn test_headers_config_validate_success() {
+        // 유효한 설정으로 테스트
+        let mut settings = HashMap::new();
+        settings.insert("headers.request.add.X-Test".to_string(), "test".to_string());
+        settings.insert("headers.response.set.Server".to_string(), "TestServer".to_string());
+        
+        let config = HeadersConfig::from_flat_map(&settings).unwrap();
+        let validated = config.validate();
+        
+        assert!(validated.is_ok());
+    }
+    
+    #[test]
+    fn test_headers_config_validate_invalid_request() {
+        // 요청 헤더에 유효하지 않은 값 설정
+        let mut add = HashMap::new();
+        add.insert("".to_string(), "test".to_string()); // 빈 헤더 이름
+        
+        let request = HeaderModification::<Raw>::new(add, vec![], HashMap::new());
+        let response = HeaderModification::<Raw>::default();
+        let config = HeadersConfig::<Raw>::new(request, response);
+        
+        let validated = config.validate();
+        
+        // 유효성 검사 실패 확인
+        assert!(validated.is_err());
+        
+        if let Err(err) = validated {
+            match err {
+                MiddlewareConfigError::InvalidValue { field, message } => {
+                    assert!(field.starts_with("add."));
+                    assert!(message.contains("비어있을 수 없습니다"));
+                },
+                _ => panic!("잘못된 오류 타입"),
+            }
+        }
+    }
+    
+    #[test]
+    fn test_headers_config_from_flat_map_with_validation() {
+        // 설정으로부터 검증된 설정 생성
+        let mut settings = HashMap::new();
+        settings.insert("headers.request.add.X-Test".to_string(), "test".to_string());
+        settings.insert("headers.response.set.Server".to_string(), "TestServer".to_string());
+        
+        let config = HeadersConfig::from_flat_map(&settings).unwrap();
+        let validated = config.validate();
+        
+        assert!(validated.is_ok());
+        let validated_config = validated.unwrap();
+        
+        // 검증된 설정 확인
+        assert_eq!(validated_config.request.add.get("X-Test"), Some(&"test".to_string()));
+        assert_eq!(validated_config.response.set.get("Server"), Some(&"TestServer".to_string()));
     }
 } 
