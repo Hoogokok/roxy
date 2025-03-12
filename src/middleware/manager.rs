@@ -6,7 +6,7 @@ use crate::middleware::{
     cors::{CorsConfig, CorsMiddleware},
 };
 use crate::middleware::config::MiddlewareType;
-use crate::settings::typestate::Validatable;
+use crate::settings::typestate::{Validatable, Validated};
 use std::collections::HashMap;
 use tracing::{debug, error, info};
 
@@ -39,15 +39,11 @@ fn create_middleware(config: &MiddlewareConfig) -> Result<Box<dyn Middleware>, M
             Ok(Box::new(HeadersMiddleware::new(validated_headers_config)))
         }
         MiddlewareType::Cors => {
-            let cors_config_raw = CorsConfig::from_labels(&config.settings)?;
-            debug!("생성된 CORS 설정(Raw): {:?}", cors_config_raw);
-            
-            // 설정 검증
-            let cors_config_validated = cors_config_raw.validate()
+            let cors_config = CorsConfig::<Validated>::from_labels(&config.settings)
                 .map_err(|e| MiddlewareError::Config { message: e.to_string() })?;
-            debug!("검증된 CORS 설정: {:?}", cors_config_validated);
+            debug!("생성된 CORS 설정(Validated): {:?}", cors_config);
             
-            Ok(Box::new(CorsMiddleware::new(cors_config_validated)))
+            Ok(Box::new(CorsMiddleware::new(cors_config)))
         }
         MiddlewareType::RateLimit => {
             let rate_limit_config = RateLimitConfig::from_labels(&config.settings)

@@ -78,8 +78,8 @@ impl CorsConfig<Raw> {
         }
     }
 
-    /// Docker 라벨에서 설정을 파싱합니다.
-    pub fn from_labels(labels: &HashMap<String, String>) -> Result<Self, serde_json::Error> {
+    /// Docker 라벨에서 설정을 파싱합니다. (내부용)
+    fn parse_labels(labels: &HashMap<String, String>) -> Result<Self, serde_json::Error> {
         let mut config = Self::default();
         
         // 설정값 처리
@@ -132,6 +132,18 @@ impl CorsConfig<Raw> {
         }
         
         Ok(config)
+    }
+}
+
+impl CorsConfig<Validated> {
+    /// Docker 라벨에서 설정을 파싱하고 곧바로 검증합니다.
+    pub fn from_labels(labels: &HashMap<String, String>) -> Result<Self, MiddlewareConfigError> {
+        // 1. 원시 설정 파싱
+        let raw_config = CorsConfig::<Raw>::parse_labels(labels)
+            .map_err(|e| MiddlewareConfigError::ParseError(e.to_string()))?;
+        
+        // 2. 파싱된 설정 검증
+        raw_config.validate()
     }
 }
 
@@ -214,8 +226,8 @@ mod tests {
         // 불리언 설정
         labels.insert("cors.allowCredentials".to_string(), "true".to_string());
         
-        // 설정 로드
-        let config = CorsConfig::from_labels(&labels).unwrap();
+        // 설정 로드 (이제 Validated 버전을 사용)
+        let config = CorsConfig::<Validated>::from_labels(&labels).unwrap();
         
         // 설정 검증
         assert_eq!(config.allow_origins, vec!["http://example.com", "http://localhost:3000"]);
@@ -230,7 +242,7 @@ mod tests {
     fn test_cors_config_default_values() {
         // 빈 설정으로 테스트
         let labels = HashMap::new();
-        let config = CorsConfig::from_labels(&labels).unwrap();
+        let config = CorsConfig::<Validated>::from_labels(&labels).unwrap();
         
         // 기본값 검증
         assert!(config.allow_origins.is_empty());
@@ -307,11 +319,8 @@ mod tests {
         let mut labels = HashMap::new();
         labels.insert("cors.allowOrigins".to_string(), "https://example.com".to_string());
         
-        let config_raw = CorsConfig::<Raw>::from_labels(&labels).unwrap();
-        let validated = config_raw.validate();
-        
-        assert!(validated.is_ok());
-        let validated_config = validated.unwrap();
+        // 이제 한 단계로 파싱 및 검증
+        let validated_config = CorsConfig::<Validated>::from_labels(&labels).unwrap();
         assert_eq!(validated_config.allow_origins, vec!["https://example.com"]);
     }
 } 
