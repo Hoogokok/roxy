@@ -5,15 +5,16 @@ use hyper::{header, Method, HeaderMap};
 use tracing::{debug, instrument};
 use http_body_util::Full;
 use bytes::Bytes;
+use crate::settings::typestate::Validated;
 
 /// CORS 미들웨어
 #[derive(Debug)]
 pub struct CorsMiddleware {
-    config: CorsConfig,
+    config: CorsConfig<Validated>,
 }
 
 impl CorsMiddleware {
-    pub fn new(config: CorsConfig) -> Self {
+    pub fn new(config: CorsConfig<Validated>) -> Self {
         Self { config }
     }
 

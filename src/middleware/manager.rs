@@ -39,14 +39,19 @@ fn create_middleware(config: &MiddlewareConfig) -> Result<Box<dyn Middleware>, M
             Ok(Box::new(HeadersMiddleware::new(validated_headers_config)))
         }
         MiddlewareType::Cors => {
-            let cors_config = CorsConfig::from_labels(&config.settings)?;
-            // 타입스테이트는 아직 CORS 미들웨어에서 사용하지 않으므로 변환하지 않음
-            Ok(Box::new(CorsMiddleware::new(cors_config)))
+            let cors_config_raw = CorsConfig::from_labels(&config.settings)?;
+            debug!("생성된 CORS 설정(Raw): {:?}", cors_config_raw);
+            
+            // 설정 검증
+            let cors_config_validated = cors_config_raw.validate()
+                .map_err(|e| MiddlewareError::Config { message: e.to_string() })?;
+            debug!("검증된 CORS 설정: {:?}", cors_config_validated);
+            
+            Ok(Box::new(CorsMiddleware::new(cors_config_validated)))
         }
         MiddlewareType::RateLimit => {
             let rate_limit_config = RateLimitConfig::from_labels(&config.settings)
                 .map_err(|e| MiddlewareError::Config { message: e })?;
-            // 타입스테이트는 아직 RateLimit 미들웨어에서 사용하지 않으므로 변환하지 않음
             let store = MemoryStore::new();
             Ok(Box::new(RateLimitMiddleware::new(rate_limit_config, store)))
         }

@@ -1,9 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use crate::middleware::utils::get_value_case_insensitive;
+use crate::middleware::typestate::{MiddlewareConfigError, MiddlewareValidator};
+use crate::settings::typestate::{Raw, TypeState, Validatable, Validated, ValidationErrorCollector};
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct CorsConfig {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorsConfig<S: TypeState = Raw> {
     /// 허용할 Origin 목록
     #[serde(default)]
     pub allow_origins: Vec<String>,
@@ -27,6 +30,10 @@ pub struct CorsConfig {
     /// credentials 허용 여부
     #[serde(default)]
     pub allow_credentials: bool,
+    
+    /// 타입스테이트 마커
+    #[serde(skip)]
+    _state: PhantomData<S>,
 }
 
 fn default_methods() -> Vec<String> {
@@ -36,7 +43,42 @@ fn default_methods() -> Vec<String> {
         .collect()
 }
 
-impl CorsConfig {
+impl<S: TypeState> Default for CorsConfig<S> {
+    fn default() -> Self {
+        Self {
+            allow_origins: vec![],
+            allow_methods: default_methods(),
+            allow_headers: vec![],
+            expose_headers: vec![],
+            max_age: None,
+            allow_credentials: false,
+            _state: PhantomData,
+        }
+    }
+}
+
+impl CorsConfig<Raw> {
+    /// 새로운 설정 생성
+    pub fn new(
+        allow_origins: Vec<String>,
+        allow_methods: Vec<String>,
+        allow_headers: Vec<String>,
+        expose_headers: Vec<String>,
+        max_age: Option<u32>,
+        allow_credentials: bool
+    ) -> Self {
+        Self {
+            allow_origins,
+            allow_methods,
+            allow_headers,
+            expose_headers,
+            max_age,
+            allow_credentials,
+            _state: PhantomData,
+        }
+    }
+
+    /// Docker 라벨에서 설정을 파싱합니다.
     pub fn from_labels(labels: &HashMap<String, String>) -> Result<Self, serde_json::Error> {
         let mut config = Self::default();
         
@@ -93,9 +135,61 @@ impl CorsConfig {
     }
 }
 
+impl Validatable<CorsConfig<Validated>> for CorsConfig<Raw> {
+    type Error = MiddlewareConfigError;
+
+    fn validate(self) -> Result<CorsConfig<Validated>, Self::Error> {
+        let mut validator = MiddlewareValidator::new();
+        validator.start_collecting();
+        
+        // 1. Origin URL 검증
+        for origin in &self.allow_origins {
+            if origin != "*" {  // 와일드카드는 허용
+                if let Err(_) = url::Url::parse(origin) {
+                    validator.add_error(MiddlewareConfigError::InvalidValue {
+                        field: "allow_origins".to_string(),
+                        message: format!("유효하지 않은 URL 형식: {}", origin),
+                    });
+                }
+            }
+        }
+        
+        // 2. HTTP 메서드 검증
+        let valid_methods = ["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE", "CONNECT"];
+        for method in &self.allow_methods {
+            if !valid_methods.contains(&method.as_str()) {
+                validator.add_error(MiddlewareConfigError::InvalidValue {
+                    field: "allow_methods".to_string(),
+                    message: format!("유효하지 않은 HTTP 메서드: {}", method),
+                });
+            }
+        }
+        
+        // 3. max_age 유효성 검증 (필요하다면)
+        // max_age는 양수이므로 Option<u32>로 이미 양수만 가능하여 별도 검증 불필요
+        
+        // 검증 결과 처리
+        if validator.has_errors() {
+            let errors = validator.into_errors();
+            Err(errors.into_iter().next().unwrap())
+        } else {
+            Ok(CorsConfig {
+                allow_origins: self.allow_origins,
+                allow_methods: self.allow_methods,
+                allow_headers: self.allow_headers,
+                expose_headers: self.expose_headers,
+                max_age: self.max_age,
+                allow_credentials: self.allow_credentials,
+                _state: PhantomData,
+            })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use url::Url;
     
     #[test]
     fn test_cors_config_from_labels_case_insensitive() {
@@ -145,5 +239,79 @@ mod tests {
         assert!(config.expose_headers.is_empty());
         assert_eq!(config.max_age, None);
         assert_eq!(config.allow_credentials, false);
+    }
+    
+    #[test]
+    fn test_cors_config_validation_success() {
+        // 유효한 설정으로 테스트
+        let mut config = CorsConfig::<Raw>::default();
+        config.allow_origins = vec!["https://example.com".to_string()];
+        
+        let validated = config.validate();
+        assert!(validated.is_ok());
+        
+        let validated_config = validated.unwrap();
+        assert_eq!(validated_config.allow_origins, vec!["https://example.com"]);
+    }
+    
+    #[test]
+    fn test_cors_config_validation_empty_origins() {
+        // allow_origins가 비어 있어도 유효함 (모든 요청 거부)
+        let config = CorsConfig::<Raw>::default();
+        
+        let validated = config.validate();
+        assert!(validated.is_ok());
+    }
+    
+    #[test]
+    fn test_cors_config_validation_invalid_origin() {
+        // 잘못된 origin URL 형식
+        let mut config = CorsConfig::<Raw>::default();
+        config.allow_origins = vec!["invalid-url".to_string()];
+        
+        let validated = config.validate();
+        assert!(validated.is_err());
+        
+        if let Err(err) = validated {
+            match err {
+                MiddlewareConfigError::InvalidValue { field, .. } => {
+                    assert_eq!(field, "allow_origins");
+                },
+                _ => panic!("잘못된 오류 타입"),
+            }
+        }
+    }
+    
+    #[test]
+    fn test_cors_config_validation_invalid_method() {
+        // 잘못된 HTTP 메서드
+        let mut config = CorsConfig::<Raw>::default();
+        config.allow_methods = vec!["INVALID-METHOD".to_string()];
+        
+        let validated = config.validate();
+        assert!(validated.is_err());
+        
+        if let Err(err) = validated {
+            match err {
+                MiddlewareConfigError::InvalidValue { field, .. } => {
+                    assert_eq!(field, "allow_methods");
+                },
+                _ => panic!("잘못된 오류 타입"),
+            }
+        }
+    }
+    
+    #[test]
+    fn test_cors_config_from_labels_with_validation() {
+        // 설정 생성 및 검증 통합 테스트
+        let mut labels = HashMap::new();
+        labels.insert("cors.allowOrigins".to_string(), "https://example.com".to_string());
+        
+        let config_raw = CorsConfig::<Raw>::from_labels(&labels).unwrap();
+        let validated = config_raw.validate();
+        
+        assert!(validated.is_ok());
+        let validated_config = validated.unwrap();
+        assert_eq!(validated_config.allow_origins, vec!["https://example.com"]);
     }
 } 
