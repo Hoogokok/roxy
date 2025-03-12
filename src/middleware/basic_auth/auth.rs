@@ -3,6 +3,7 @@ use crate::middleware::MiddlewareError;
 use super::config::{AuthSource, BasicAuthConfig};
 use std::fs;
 use bcrypt;
+use crate::settings::typestate::{TypeState, Validated};
 /// Basic 인증을 위한 인증기 트레이트
 /// 
 /// # 지원하는 해시 알고리즘
@@ -20,7 +21,7 @@ pub struct LabelAuthenticator {
 }
 
 impl LabelAuthenticator {
-    pub fn new(config: &BasicAuthConfig) -> Self {
+    pub fn new<S: TypeState>(config: &BasicAuthConfig<S>) -> Self {
         Self {
             users: config.users.clone(),
         }
@@ -182,7 +183,7 @@ impl Authenticator for DockerSecretsAuthenticator {
 }
 
 /// 인증기 팩토리
-pub fn create_authenticator(config: &BasicAuthConfig) -> Result<Box<dyn Authenticator>, MiddlewareError> {
+pub fn create_authenticator<S: TypeState>(config: &BasicAuthConfig<S>) -> Result<Box<dyn Authenticator>, MiddlewareError> {
     match &config.source {
         AuthSource::Labels => Ok(Box::new(LabelAuthenticator::new(config))),
         AuthSource::HtpasswdFile(path) => {
