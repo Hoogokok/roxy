@@ -139,8 +139,8 @@ impl BasicAuthConfig<Raw> {
         self
     }
 
-    /// Docker 라벨에서 설정을 파싱하여 Raw 상태의 설정을 생성합니다
-    pub fn from_labels(labels: &HashMap<String, String>) -> Result<Self, MiddlewareError> {
+    /// Docker 라벨에서 설정을 파싱하여 Raw 상태의 설정을 생성합니다 (내부용)
+    fn parse_labels_raw(labels: &HashMap<String, String>) -> Result<Self, MiddlewareError> {
         Self::from_labels_with_patterns(labels, &Self::DEFAULT_KEY_PATTERNS)
     }
     
@@ -263,6 +263,19 @@ impl Validatable<BasicAuthConfig<Validated>> for BasicAuthConfig<Raw> {
                 _state: PhantomData,
             })
         }
+    }
+}
+
+impl BasicAuthConfig<Validated> {
+    /// Docker 라벨에서 설정을 파싱하고 곧바로 검증합니다.
+    /// "검증하지 말고 파싱하라" 접근법에 따라 파싱과 검증을 한 단계로 통합합니다.
+    pub fn from_labels(labels: &HashMap<String, String>) -> Result<Self, MiddlewareError> {
+        // 1. 원시 설정 파싱
+        let raw_config = BasicAuthConfig::<Raw>::parse_labels_raw(labels)?;
+        
+        // 2. 파싱된 설정 검증
+        raw_config.validate()
+            .map_err(|e| MiddlewareError::Config { message: e.to_string() })
     }
 }
 
@@ -417,7 +430,7 @@ mod tests {
             "My Realm".to_string(),
         );
 
-        let config = BasicAuthConfig::from_labels(&labels).unwrap();
+        let config = BasicAuthConfig::<Validated>::from_labels(&labels).unwrap();
         
         assert_eq!(config.realm, "My Realm");
         assert_eq!(
@@ -425,10 +438,6 @@ mod tests {
             "$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/"
         );
         assert_eq!(config.source, AuthSource::Labels);
-        
-        // 검증 테스트
-        let validated = config.validate();
-        assert!(validated.is_ok());
     }
 
     #[test]
@@ -443,7 +452,7 @@ mod tests {
             "/etc/nginx/.htpasswd".to_string(),
         );
 
-        let config = BasicAuthConfig::from_labels(&labels).unwrap();
+        let config = BasicAuthConfig::<Validated>::from_labels(&labels).unwrap();
         
         assert_eq!(
             config.source,
@@ -475,7 +484,7 @@ mod tests {
             "/etc/auth/.htpasswd".to_string(),
         );
 
-        let config = BasicAuthConfig::from_labels(&labels).unwrap();
+        let config = BasicAuthConfig::<Validated>::from_labels(&labels).unwrap();
         
         // 대소문자 구분 없이 설정이 올바르게 적용되었는지 확인
         assert_eq!(config.realm, "Admin Area");
@@ -497,7 +506,7 @@ mod tests {
             "admin:$hash1,user:$hash2,guest:$hash3".to_string(),
         );
 
-        let config = BasicAuthConfig::from_labels(&labels).unwrap();
+        let config = BasicAuthConfig::<Validated>::from_labels(&labels).unwrap();
         
         assert_eq!(config.users.len(), 3);
         assert_eq!(config.users.get("admin").unwrap(), "$hash1");
@@ -522,18 +531,19 @@ mod tests {
     
     #[test]
     fn test_basic_auth_config_validation_failure_empty_users() {
-        let config = BasicAuthConfig::<Raw>::new(
-            HashMap::new(),
-            "Test Realm".to_string(),
-            AuthSource::Labels
+        let mut labels = HashMap::new();
+        labels.insert(
+            "rproxy.http.middlewares.my-auth.basicAuth.realm".to_string(),
+            "My Realm".to_string(),
         );
         
-        let validated = config.validate();
-        assert!(validated.is_err());
+        let result = BasicAuthConfig::<Validated>::from_labels(&labels);
+        assert!(result.is_err());
         
-        match validated.err().unwrap() {
-            MiddlewareConfigError::InvalidValue { field, .. } => {
-                assert_eq!(field, "users");
+        let err = result.unwrap_err();
+        match err {
+            MiddlewareError::Config { message } => {
+                assert!(message.contains("users"));
             },
             _ => panic!("예상치 못한 오류 타입"),
         }
@@ -557,24 +567,26 @@ mod tests {
             MiddlewareConfigError::InvalidValue { field, .. } => {
                 assert_eq!(field, "realm");
             },
-            _ => panic!("예상치 못한 오류 타입"),
+            _ => panic!("잘못된 오류 타입"),
         }
     }
     
     #[test]
     fn test_basic_auth_config_validation_htpasswd_path() {
-        let config = BasicAuthConfig::<Raw>::new(
-            HashMap::new(),
-            "Test Realm".to_string(),
-            AuthSource::HtpasswdFile("".to_string())
+        let mut labels = HashMap::new();
+        labels.insert(
+            "rproxy.http.middlewares.my-auth.basicAuth.source".to_string(),
+            "htpasswd".to_string(),
         );
+        // 경로를 제공하지 않음
         
-        let validated = config.validate();
-        assert!(validated.is_err());
+        let result = BasicAuthConfig::<Validated>::from_labels(&labels);
+        assert!(result.is_err());
         
-        match validated.err().unwrap() {
-            MiddlewareConfigError::InvalidValue { field, .. } => {
-                assert_eq!(field, "source.htpasswd_path");
+        let err = result.unwrap_err();
+        match err {
+            MiddlewareError::Config { message } => {
+                assert!(message.contains("htpasswd_path"));
             },
             _ => panic!("예상치 못한 오류 타입"),
         }

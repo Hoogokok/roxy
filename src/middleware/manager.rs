@@ -16,15 +16,10 @@ fn create_middleware(config: &MiddlewareConfig) -> Result<Box<dyn Middleware>, M
     
     match config.middleware_type {
         MiddlewareType::BasicAuth => {
-            let auth_config_raw = BasicAuthConfig::from_labels(&config.settings)?;
-            debug!("생성된 BasicAuth 설정(Raw): {:?}", auth_config_raw);
+            let auth_config = BasicAuthConfig::<Validated>::from_labels(&config.settings)?;
+            debug!("생성된 BasicAuth 설정(Validated): {:?}", auth_config);
             
-            // 설정 검증
-            let auth_config_validated = auth_config_raw.validate()
-                .map_err(|e| MiddlewareError::Config { message: e.to_string() })?;
-            debug!("검증된 BasicAuth 설정: {:?}", auth_config_validated);
-            
-            Ok(Box::new(BasicAuthMiddleware::new(auth_config_validated)?))
+            Ok(Box::new(BasicAuthMiddleware::new(auth_config)?))
         }
         MiddlewareType::Headers => {
             let raw_headers_config = HeadersConfig::from_flat_map(&config.settings)
