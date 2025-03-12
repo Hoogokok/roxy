@@ -6,17 +6,17 @@ use hyper::{header, StatusCode};
 use http_body_util::Full;
 use bytes::Bytes;
 use super::auth::Authenticator;
-use std::collections::HashMap;
+use crate::settings::typestate::{Raw, Validated};
 
 
 /// Basic 인증 미들웨어
 pub struct BasicAuthMiddleware {
-    config: BasicAuthConfig,
+    config: BasicAuthConfig<Validated>,
     authenticator: Box<dyn Authenticator>,
 }
 
 impl BasicAuthMiddleware {
-    pub fn new(config: BasicAuthConfig) -> Result<Self, MiddlewareError> {
+    pub fn new(config: BasicAuthConfig<Validated>) -> Result<Self, MiddlewareError> {
         let authenticator = create_authenticator(&config)?;
         Ok(Self {
             config,
@@ -105,9 +105,9 @@ impl Middleware for BasicAuthMiddleware {
 
 #[cfg(test)]
 mod tests {
-
+    use std::collections::HashMap;
     use crate::middleware::basic_auth::config::AuthSource;
-
+    use crate::settings::typestate::{Raw, Validated, Validatable};
     use super::*;
 
     fn create_test_middleware() -> BasicAuthMiddleware {
@@ -117,13 +117,45 @@ mod tests {
             "$apr1$H6uskkkW$IgXLP6ewTrSuBkTrqE8wj/".to_string()
         );
 
-        let config = BasicAuthConfig::new(
+        let config_raw = BasicAuthConfig::<Raw>::new(
             users,
             "Test Realm".to_string(),
             AuthSource::Labels
         );
+        
+        // Raw 설정을 검증하여 Validated 설정으로 변환
+        let config_validated = config_raw.validate().unwrap();
 
-        BasicAuthMiddleware::new(config).unwrap()
+        BasicAuthMiddleware::new(config_validated).unwrap()
+    }
+    
+    #[test]
+    fn test_middleware_creation_with_raw_config() {
+        // 빈 사용자는 검증 실패해야 함
+        let config_raw = BasicAuthConfig::<Raw>::new(
+            HashMap::new(),
+            "Test Realm".to_string(),
+            AuthSource::Labels
+        );
+        
+        // 빈 사용자로 인해 검증 실패
+        let validated = config_raw.validate();
+        assert!(validated.is_err());
+        
+        // 유효한 설정
+        let mut users = HashMap::new();
+        users.insert("admin".to_string(), "$hash".to_string());
+        
+        let valid_config = BasicAuthConfig::<Raw>::new(
+            users,
+            "Test Realm".to_string(),
+            AuthSource::Labels
+        );
+        
+        // 검증 성공
+        let validated_config = valid_config.validate().unwrap();
+        let middleware = BasicAuthMiddleware::new(validated_config);
+        assert!(middleware.is_ok());
     }
 
     #[tokio::test]
