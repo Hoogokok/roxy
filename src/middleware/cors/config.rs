@@ -201,7 +201,6 @@ impl Validatable<CorsConfig<Validated>> for CorsConfig<Raw> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use url::Url;
     
     #[test]
     fn test_cors_config_from_labels_case_insensitive() {
