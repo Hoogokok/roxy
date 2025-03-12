@@ -59,6 +59,7 @@ impl<S: TypeState> Default for CorsConfig<S> {
 
 impl CorsConfig<Raw> {
     /// 새로운 설정 생성
+    #[allow(dead_code)]
     pub fn new(
         allow_origins: Vec<String>,
         allow_methods: Vec<String>,
