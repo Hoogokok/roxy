@@ -4,8 +4,8 @@ use std::collections::HashMap;
 use tracing::{debug, error};
 use std::str::FromStr;
 use std::marker::PhantomData;
-use crate::middleware::utils::get_value_case_insensitive;
 use crate::middleware::typestate::{MiddlewareConfigError, MiddlewareValidator};
+use crate::middleware::MiddlewareError;
 use crate::settings::typestate::{Raw, TypeState, Validatable, Validated, ValidationErrorCollector};
 
 /// 헤더 수정 작업 설정
@@ -82,6 +82,7 @@ impl<S: TypeState> HeaderModification<S> {
 
 impl HeaderModification<Raw> {
     /// 새로운 HeaderModification 인스턴스 생성
+    #[allow(dead_code)]
     pub fn new(
         add: HashMap<String, String>,
         remove: Vec<String>,
@@ -187,6 +188,7 @@ impl<S: TypeState> Default for HeadersConfig<S> {
 
 impl HeadersConfig<Raw> {
     /// 새로운 HeadersConfig 인스턴스 생성
+    #[allow(dead_code)]
     pub fn new(
         request: HeaderModification<Raw>,
         response: HeaderModification<Raw>
@@ -297,9 +299,6 @@ impl Validatable<HeadersConfig<Validated>> for HeadersConfig<Raw> {
     }
 }
 
-/// 레거시 코드와의 호환성을 위한 타입 별칭
-pub type HeadersConfigLegacy = HeadersConfig<Validated>;
-pub type HeaderModificationLegacy = HeaderModification<Validated>;
 
 /// 헤더 설정 키를 분석하여 (섹션, 액션, 헤더이름) 튜플을 반환합니다.
 /// 예: "headers.request.add.X-Key" -> ("request", "add", "X-Key")
@@ -346,6 +345,30 @@ fn validate_header_name(name: &str) -> Result<String, &'static str> {
     // 헤더 이름을 정규화하여 반환 (HTTP 헤더는 대소문자를 구분하지 않음)
     // 표준 헤더의 경우 일반적인 형식으로 변환 (Content-Type, User-Agent 등)
     Ok(name.to_string()) // 현재는 원래 형식 유지, 필요시 정규화 로직 추가
+}
+
+impl HeadersConfig<Validated> {
+    /// Docker 라벨에서 설정을 파싱하고 곧바로 검증합니다.
+    pub fn from_labels(labels: &HashMap<String, String>) -> Result<Self, MiddlewareError> {
+        // 1. 유효성 검사: 특수한 오류 케이스를 미리 체크
+        // 예: headers.request.add 또는 headers.response.add 패턴에서 빈 헤더 이름
+        for (key, _) in labels {
+            if key.contains("headers.request.add.") && key.ends_with('.') ||
+               key.contains("headers.response.add.") && key.ends_with('.') {
+                return Err(MiddlewareError::Config { 
+                    message: "헤더 이름은 비어있을 수 없습니다".to_string()
+                });
+            }
+        }
+        
+        // 2. 원시 설정 파싱
+        let raw_config = HeadersConfig::<Raw>::from_flat_map(labels)
+            .map_err(|e| MiddlewareError::Config { message: e.to_string() })?;
+        
+        // 3. 파싱된 설정 검증
+        raw_config.validate()
+            .map_err(|e| MiddlewareError::Config { message: e.to_string() })
+    }
 }
 
 #[cfg(test)]
@@ -487,5 +510,37 @@ mod tests {
         // 검증된 설정 확인
         assert_eq!(validated_config.request.add.get("X-Test"), Some(&"test".to_string()));
         assert_eq!(validated_config.response.set.get("Server"), Some(&"TestServer".to_string()));
+    }
+    
+    #[test]
+    fn test_headers_config_from_labels() {
+        // Docker 라벨 형식으로 설정 테스트
+        let mut labels = HashMap::new();
+        labels.insert("headers.request.add.X-Request-ID".to_string(), "123".to_string());
+        labels.insert("headers.response.set.Server".to_string(), "MyServer".to_string());
+        
+        let config = HeadersConfig::<Validated>::from_labels(&labels).unwrap();
+        
+        // 설정이 올바르게 파싱되었는지 확인
+        assert_eq!(config.request.add.get("X-Request-ID"), Some(&"123".to_string()));
+        assert_eq!(config.response.set.get("Server"), Some(&"MyServer".to_string()));
+    }
+    
+    #[test]
+    fn test_headers_config_from_labels_validation_failure() {
+        // 유효하지 않은 설정으로 테스트 (빈 헤더 이름)
+        let mut labels = HashMap::new();
+        labels.insert("headers.request.add.".to_string(), "test".to_string()); // 빈 헤더 이름
+        
+        let result = HeadersConfig::<Validated>::from_labels(&labels);
+        assert!(result.is_err());
+        
+        let err = result.unwrap_err();
+        match err {
+            MiddlewareError::Config { message } => {
+                assert!(message.contains("비어있을 수 없습니다"));
+            },
+            _ => panic!("예상치 못한 오류 타입"),
+        }
     }
 } 
