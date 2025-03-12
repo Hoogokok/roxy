@@ -1,11 +1,14 @@
-use tracing::debug;
-use crate::middleware::basic_auth::{BasicAuthConfig, BasicAuthMiddleware};
-use crate::middleware::cors::{CorsConfig, CorsMiddleware};
-use crate::middleware::headers::{HeadersConfig, HeadersMiddleware};
-use crate::middleware::rate_limit::{RateLimitConfig, RateLimitMiddleware, store::memory::MemoryStore};
-use super::{Middleware, MiddlewareChain, MiddlewareConfig, MiddlewareError, Request, Response};
-use super::config::MiddlewareType;
+use crate::middleware::{
+    Middleware, MiddlewareError, MiddlewareChain, Request, Response, MiddlewareConfig,
+    rate_limit::{RateLimitConfig, RateLimitMiddleware, store::memory::MemoryStore},
+    basic_auth::{BasicAuthConfig, BasicAuthMiddleware},
+    headers::{HeadersConfig, HeadersMiddleware},
+    cors::{CorsConfig, CorsMiddleware},
+};
+use crate::middleware::config::MiddlewareType;
+use crate::settings::typestate::Validatable;
 use std::collections::HashMap;
+use tracing::{debug, error, info};
 
 /// 미들웨어 설정으로부터 미들웨어 인스턴스를 생성합니다.
 fn create_middleware(config: &MiddlewareConfig) -> Result<Box<dyn Middleware>, MiddlewareError> {
@@ -13,23 +16,37 @@ fn create_middleware(config: &MiddlewareConfig) -> Result<Box<dyn Middleware>, M
     
     match config.middleware_type {
         MiddlewareType::BasicAuth => {
-            let auth_config = BasicAuthConfig::from_labels(&config.settings)?;
-            Ok(Box::new(BasicAuthMiddleware::new(auth_config)?))
+            let auth_config_raw = BasicAuthConfig::from_labels(&config.settings)?;
+            debug!("생성된 BasicAuth 설정(Raw): {:?}", auth_config_raw);
+            
+            // 설정 검증
+            let auth_config_validated = auth_config_raw.validate()
+                .map_err(|e| MiddlewareError::Config { message: e.to_string() })?;
+            debug!("검증된 BasicAuth 설정: {:?}", auth_config_validated);
+            
+            Ok(Box::new(BasicAuthMiddleware::new(auth_config_validated)?))
         }
         MiddlewareType::Headers => {
-            let headers_config = HeadersConfig::from_flat_map(&config.settings)
+            let raw_headers_config = HeadersConfig::from_flat_map(&config.settings)
                 .map_err(|e| MiddlewareError::InvalidFormat(e.to_string()))?;
-            debug!("생성된 헤더 설정: {:?}", headers_config);
+            debug!("생성된 헤더 설정(Raw): {:?}", raw_headers_config);
             
-            Ok(Box::new(HeadersMiddleware::new(headers_config)))
+            // 설정 검증
+            let validated_headers_config = raw_headers_config.validate()
+                .map_err(|e| MiddlewareError::Config { message: e.to_string() })?;
+            debug!("검증된 헤더 설정: {:?}", validated_headers_config);
+            
+            Ok(Box::new(HeadersMiddleware::new(validated_headers_config)))
         }
         MiddlewareType::Cors => {
             let cors_config = CorsConfig::from_labels(&config.settings)?;
+            // 타입스테이트는 아직 CORS 미들웨어에서 사용하지 않으므로 변환하지 않음
             Ok(Box::new(CorsMiddleware::new(cors_config)))
         }
         MiddlewareType::RateLimit => {
             let rate_limit_config = RateLimitConfig::from_labels(&config.settings)
                 .map_err(|e| MiddlewareError::Config { message: e })?;
+            // 타입스테이트는 아직 RateLimit 미들웨어에서 사용하지 않으므로 변환하지 않음
             let store = MemoryStore::new();
             Ok(Box::new(RateLimitMiddleware::new(rate_limit_config, store)))
         }
