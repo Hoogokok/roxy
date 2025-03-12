@@ -63,6 +63,56 @@ impl Default for AuthSource {
     }
 }
 
+/// BasicAuthConfig를 구성하기 위한 빌더 구조체
+pub struct BasicAuthConfigBuilder {
+    users: HashMap<String, String>,
+    realm: String,
+    source: AuthSource,
+}
+
+impl BasicAuthConfigBuilder {
+    /// 새로운 빌더 인스턴스 생성
+    pub fn new() -> Self {
+        Self {
+            users: HashMap::new(),
+            realm: default_realm(), // 기본 realm 사용
+            source: AuthSource::Labels,
+        }
+    }
+
+    /// 인증 영역(realm) 설정
+    pub fn realm(mut self, realm: &str) -> Self {
+        self.realm = realm.to_string();
+        self
+    }
+
+    /// 사용자 추가
+    pub fn add_user(mut self, username: &str, password_hash: &str) -> Self {
+        self.users.insert(username.to_string(), password_hash.to_string());
+        self
+    }
+
+    /// 인증 소스 설정
+    pub fn source(mut self, source: AuthSource) -> Self {
+        self.source = source;
+        self
+    }
+
+    /// 빌더 완료 및 검증된 설정 반환
+    pub fn build(self) -> Result<BasicAuthConfig<Validated>, MiddlewareConfigError> {
+        // Raw 설정 생성 후 검증
+        let raw_config = BasicAuthConfig::<Raw> {
+            users: self.users,
+            realm: self.realm,
+            source: self.source,
+            _state: PhantomData,
+        };
+        
+        // validate 메서드를 통해 Raw -> Validated 변환
+        raw_config.validate()
+    }
+}
+
 /// Basic 인증 설정
 #[derive(Debug, Clone, Deserialize)]
 pub struct BasicAuthConfig<S: TypeState = Raw> {
@@ -113,6 +163,7 @@ impl BasicAuthConfig<Raw> {
     ];
 
     /// 새로운 BasicAuthConfig 인스턴스 생성
+    #[allow(dead_code)]
     pub fn new(users: HashMap<String, String>, realm: String, source: AuthSource) -> Self {
         Self {
             users,
@@ -122,21 +173,32 @@ impl BasicAuthConfig<Raw> {
         }
     }
 
-    /// 사용자를 추가합니다
-    pub fn add_user(&mut self, username: &str, password_hash: &str) {
-        self.users.insert(username.to_string(), password_hash.to_string());
+    /// 새로운 빌더 인스턴스 생성
+    pub fn builder() -> BasicAuthConfigBuilder {
+        BasicAuthConfigBuilder::new()
     }
 
-    /// 인증 영역(realm)을 설정합니다
+    /// 사용자를 추가합니다 (체인 메서드)
+    pub fn add_user(mut self, username: &str, password_hash: &str) -> Self {
+        self.users.insert(username.to_string(), password_hash.to_string());
+        self
+    }
+
+    /// 인증 영역(realm)을 설정합니다 (체인 메서드)
     pub fn with_realm(mut self, realm: &str) -> Self {
         self.realm = realm.to_string();
         self
     }
 
-    /// 인증 소스를 설정합니다
+    /// 인증 소스를 설정합니다 (체인 메서드)
     pub fn with_source(mut self, source: AuthSource) -> Self {
         self.source = source;
         self
+    }
+
+    /// 현재 설정을 검증하고 Validated 상태로 변환합니다 (체인 종료 메서드)
+    pub fn into_validated(self) -> Result<BasicAuthConfig<Validated>, MiddlewareConfigError> {
+        self.validate()
     }
 
     /// Docker 라벨에서 설정을 파싱하여 Raw 상태의 설정을 생성합니다 (내부용)
@@ -589,6 +651,68 @@ mod tests {
                 assert!(message.contains("htpasswd_path"));
             },
             _ => panic!("예상치 못한 오류 타입"),
+        }
+    }
+
+    // 새로운 테스트 케이스들
+    #[test]
+    fn test_builder_pattern() {
+        // 빌더 패턴을 이용한 설정 생성 테스트
+        let config = BasicAuthConfig::<Raw>::builder()
+            .realm("Admin Area")
+            .add_user("admin", "$hash1")
+            .add_user("user", "$hash2")
+            .source(AuthSource::Labels)
+            .build()
+            .unwrap();
+        
+        // 검증된 상태의 설정이 생성되어야 함
+        assert_eq!(config.realm, "Admin Area");
+        assert_eq!(config.users.len(), 2);
+        assert_eq!(config.users.get("admin").unwrap(), "$hash1");
+        assert_eq!(config.users.get("user").unwrap(), "$hash2");
+        assert_eq!(config.source, AuthSource::Labels);
+    }
+    
+    #[test]
+    fn test_chain_termination() {
+        // 체인 메서드와 명시적 종료 메서드 테스트
+        let mut users = HashMap::new();
+        users.insert("admin".to_string(), "$hash1".to_string());
+        
+        let config = BasicAuthConfig::<Raw>::new(
+                users,
+                "Default Realm".to_string(),
+                AuthSource::Labels
+            )
+            .with_realm("Custom Realm")
+            .with_source(AuthSource::HtpasswdFile("/path/to/.htpasswd".to_string()))
+            .add_user("guest", "$hash2")
+            .into_validated()
+            .unwrap();
+        
+        // 검증된 상태로 전환되었는지 확인
+        assert_eq!(config.realm, "Custom Realm");
+        assert_eq!(config.users.len(), 2);
+        assert_eq!(config.source, AuthSource::HtpasswdFile("/path/to/.htpasswd".to_string()));
+    }
+    
+    #[test]
+    fn test_builder_validation_failure() {
+        // 유효하지 않은 설정으로 빌더 패턴 테스트 (실패 케이스)
+        let result = BasicAuthConfig::<Raw>::builder()
+            .realm("") // 빈 realm (유효하지 않음)
+            .add_user("admin", "$hash1")
+            .build();
+        
+        // 검증 실패해야 함
+        assert!(result.is_err());
+        // 적절한 오류 메시지 확인
+        match result.unwrap_err() {
+            MiddlewareConfigError::InvalidValue { field, .. } => {
+                assert_eq!(field, "realm");
+            },
+            _ => panic!("예상하지 못한 오류 타입"),
         }
     }
 }
