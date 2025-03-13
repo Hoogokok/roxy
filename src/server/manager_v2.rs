@@ -58,6 +58,40 @@ where
         }
     }
     
+    // 서버 생성 공통 로직
+    #[instrument(skip(settings), level = "debug", err)]
+    pub async fn create_server(settings: Settings<HttpsState>) -> Result<Self> {
+        let docker_manager = DockerManager::with_defaults(settings.docker.clone()).await?;
+        
+        // 초기 상태 체크 설정
+        if let Err(e) = docker_manager.setup_initial_health_checks().await {
+            error!(error = %e, "초기 상태 체크 설정 실패");
+        }
+        
+        // 설정 소스 병합 (환경 변수, JSON, Docker 라벨)
+        let mut settings = settings;
+        if let Ok(labels) = docker_manager.get_container_labels().await {
+            // 모든 설정 소스 병합
+            settings.merge_all_config_sources(&labels).await?;
+        } else {
+            // Docker 라벨을 사용할 수 없는 경우 환경 변수에서만 JSON 설정 로드
+            settings.load_json_from_env().await?;
+        }
+        
+        let routing_table = Arc::new(RwLock::new(RoutingTable::new()));
+        
+        // 초기 라우트 설정
+        let initial_routes = docker_manager.get_container_routes().await?;
+        {
+            let mut table = routing_table.write().await;
+            table.sync_docker_routes(initial_routes);
+        }
+        
+        let middleware_manager = MiddlewareManager::new(&settings.middleware, &settings.router_middlewares);
+        
+        Ok(Self::new(settings, docker_manager, routing_table, middleware_manager))
+    }
+    
     // 감시자 초기화
     async fn initialize_watcher(config: &WatcherConfig) -> Result<ConfigWatcher> {
         let mut watcher = ConfigWatcher::new();
@@ -91,8 +125,7 @@ where
                 },
                 ConfigEvent::Deleted(_) => {
                     has_remove_event = true;
-                },
-                _ => {}
+                }
             }
         }
         
@@ -119,35 +152,8 @@ impl ServerManager<HttpsDisabled> {
     // HTTP 서버 생성
     #[instrument(skip(settings), level = "debug", err)]
     pub async fn create_http(settings: Settings<HttpsDisabled>) -> Result<Self> {
-        let docker_manager = DockerManager::with_defaults(settings.docker.clone()).await?;
-        
-        // 초기 상태 체크 설정
-        if let Err(e) = docker_manager.setup_initial_health_checks().await {
-            error!(error = %e, "초기 상태 체크 설정 실패");
-        }
-        
-        // 설정 소스 병합 (환경 변수, JSON, Docker 라벨)
-        let mut settings = settings;
-        if let Ok(labels) = docker_manager.get_container_labels().await {
-            // 모든 설정 소스 병합
-            settings.merge_all_config_sources(&labels).await?;
-        } else {
-            // Docker 라벨을 사용할 수 없는 경우 환경 변수에서만 JSON 설정 로드
-            settings.load_json_from_env().await?;
-        }
-        
-        let routing_table = Arc::new(RwLock::new(RoutingTable::new()));
-        
-        // 초기 라우트 설정
-        let initial_routes = docker_manager.get_container_routes().await?;
-        {
-            let mut table = routing_table.write().await;
-            table.sync_docker_routes(initial_routes);
-        }
-        
-        let middleware_manager = MiddlewareManager::new(&settings.middleware, &settings.router_middlewares);
-        
-        Ok(Self::new(settings, docker_manager, routing_table, middleware_manager))
+        info!("HTTP 모드로 서버 매니저 생성");
+        Self::create_server(settings).await
     }
     
     // HTTP 서버 실행
@@ -242,17 +248,14 @@ impl ServerManager<HttpsDisabled> {
                 let notify_tx = tx.clone();
                 
                 // 설정 파일 처리 로직 구현
-                let updated = match process_config_files(
-                    file_paths, 
-                    shared_config.clone(), 
+                let updated = process_config_files(
+                    file_paths,
+                    shared_config.clone(),
                     shared_middleware_manager.clone()
-                ).await {
-                    Ok(updated) => updated,
-                    Err(e) => {
-                        error!("설정 파일 처리 중 오류 발생: {}", e);
-                        false
-                    }
-                };
+                ).await.unwrap_or_else(|e| {
+                    error!("설정 파일 처리 중 오류 발생: {}", e);
+                    false
+                });
                 
                 if updated {
                     if let Err(e) = Self::send_config_update_notification(&notify_tx, true).await {
@@ -279,7 +282,7 @@ impl ServerManager<HttpsEnabled> {
         }
         
         // 설정 소스 병합 (환경 변수, JSON, Docker 라벨)
-        let mut settings = settings;
+        let mut settings: Settings<HttpsEnabled> = settings;
         if let Ok(labels) = docker_manager.get_container_labels().await {
             // 모든 설정 소스 병합
             settings.merge_all_config_sources(&labels).await?;
@@ -301,7 +304,7 @@ impl ServerManager<HttpsEnabled> {
         
         Ok(Self::new(settings, docker_manager, routing_table, middleware_manager))
     }
-    
+
     // HTTPS 서버 실행
     #[instrument(skip(self), level = "info", err)]
     pub async fn start_https(&mut self) -> Result<()> {
@@ -394,17 +397,14 @@ impl ServerManager<HttpsEnabled> {
                 let notify_tx = tx.clone();
                 
                 // 설정 파일 처리 로직 구현
-                let updated = match process_config_files(
-                    file_paths, 
-                    shared_config.clone(), 
+                let updated = process_config_files(
+                    file_paths,
+                    shared_config.clone(),
                     shared_middleware_manager.clone()
-                ).await {
-                    Ok(updated) => updated,
-                    Err(e) => {
-                        error!("설정 파일 처리 중 오류 발생: {}", e);
-                        false
-                    }
-                };
+                ).await.unwrap_or_else(|e| {
+                    error!("설정 파일 처리 중 오류 발생: {}", e);
+                    false
+                });
                 
                 if updated {
                     if let Err(e) = Self::send_config_update_notification(&notify_tx, true).await {
@@ -588,17 +588,17 @@ where
             error!(config_id = %config_id, "미들웨어 설정 유효성 검증 실패");
             return Ok(false);
         }
-        
+
         info!(
             config_id = %config_id, 
             middleware_updated = %middleware_updated,
             router_updated = %router_updated,
             "설정 업데이트 성공"
         );
-        return Ok(true);
+        Ok(true)
     } else {
         debug!(config_id = %config_id, "설정 변경 없음");
-        return Ok(false);
+        Ok(false)
     }
 }
 
