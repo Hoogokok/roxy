@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::marker::PhantomData;
 use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
 use crate::settings::types::ValidMiddlewareId;
-use crate::settings::typestate::{TypeState, Raw, Validated};
+use crate::settings::typestate::{TypeState, Validated};
 use crate::settings::tls::TlsSettings;
 use crate::settings::logging::LogSettings;
 use crate::settings::docker::DockerSettings;
@@ -53,6 +53,7 @@ impl Default for Settings<Validated, HttpsDisabled> {
 
 /// HTTPS를 지원하는 설정
 impl Settings<Validated, HttpsEnabled> {
+    #[cfg(test)]
     pub fn create() -> Self {
         Self {
             server: ServerSettings::default(),
