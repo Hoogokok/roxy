@@ -1,7 +1,8 @@
 use std::collections::HashMap;
+use std::marker::PhantomData;
 use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
 use crate::settings::types::ValidMiddlewareId;
-use crate::settings::typestate::{Validated};
+use crate::settings::typestate::{TypeState, Raw, Validated};
 use crate::settings::tls::TlsSettings;
 use crate::settings::logging::LogSettings;
 use crate::settings::docker::DockerSettings;
@@ -13,27 +14,30 @@ pub type Result<T> = std::result::Result<T, SettingsError>;
 
 /// 애플리케이션 설정
 #[derive(Debug, Clone)]
-pub struct Settings<HttpsState = HttpsDisabled> {
+pub struct Settings<State: TypeState = Validated, HttpsState = HttpsDisabled> {
     // 타입 매개변수로 인한 역직렬화 문제 방지를 위해 server 필드는 직접 처리
-    pub server: ServerSettings<Validated, HttpsState>,
+    pub server: ServerSettings<State, HttpsState>,
     
     // 로깅 설정
-    pub logging: LogSettings<Validated>,
+    pub logging: LogSettings<State>,
     
     // TLS 설정
-    pub tls: TlsSettings<Validated>,
+    pub tls: TlsSettings<State>,
 
-    pub docker: DockerSettings<Validated>,
+    pub docker: DockerSettings<State>,
     
     /// 미들웨어 설정
     pub middleware: HashMap<String, MiddlewareConfig>,
     
     /// 라우터-미들웨어 매핑
     pub router_middlewares: HashMap<String, Vec<ValidMiddlewareId>>,
+    
+    // 상태 마커
+    pub _marker: PhantomData<State>,
 }
 
 /// HTTP만 지원하는 기본 설정
-impl Default for Settings<HttpsDisabled> {
+impl Default for Settings<Validated, HttpsDisabled> {
     fn default() -> Self {
         Self {
             server: ServerSettings::default(),
@@ -42,12 +46,13 @@ impl Default for Settings<HttpsDisabled> {
             docker: DockerSettings::default(),
             middleware: HashMap::new(),
             router_middlewares: HashMap::new(),
+            _marker: PhantomData,
         }
     }
 }
 
 /// HTTPS를 지원하는 설정
-impl Settings<HttpsEnabled> {
+impl Settings<Validated, HttpsEnabled> {
     pub fn create() -> Self {
         Self {
             server: ServerSettings::default(),
@@ -56,65 +61,12 @@ impl Settings<HttpsEnabled> {
             docker: DockerSettings::default(),
             middleware: HashMap::new(),
             router_middlewares: HashMap::new(),
+            _marker: PhantomData,
         }
     }
 }
 
-impl<HttpsState> Settings<HttpsState> {
-    /// 설정 유효성 검증
-    pub async fn validate(&self) -> Result<()> {
-        // 미들웨어 설정 검증
-        for (name, middleware) in &self.middleware {
-            if middleware.enabled {
-                match middleware.middleware_type {
-                    MiddlewareType::BasicAuth => {
-                        if !middleware.settings.contains_key("users") {
-                            return Err(SettingsError::EnvVarMissing {
-                                var_name: format!("{}.users", name),
-                            });
-                        }
-                    }
-                    MiddlewareType::Headers => {
-                        // Headers 설정 검증은 필요한 경우 추가
-                    }
-                    MiddlewareType::Cors => {
-                        // CORS 설정 검증
-                        if !middleware.settings.contains_key("cors.allowOrigins") {
-                            return Err(SettingsError::EnvVarMissing {
-                                var_name: format!("{}.cors.allowOrigins", name),
-                            });
-                        }
-                    }
-                    MiddlewareType::RateLimit => {
-                        // 레이트 리밋 설정 검증
-                        if !middleware.settings.contains_key("ratelimit.average") {
-                            return Err(SettingsError::EnvVarMissing {
-                                var_name: format!("{}.ratelimit.average", name),
-                            });
-                        }
-                        if !middleware.settings.contains_key("ratelimit.burst") {
-                            return Err(SettingsError::EnvVarMissing {
-                                var_name: format!("{}.ratelimit.burst", name),
-                            });
-                        }
-                    }
-                }
-            }
-        }
-        
-        // 라우터-미들웨어 매핑 검증
-        for (router, middlewares) in &self.router_middlewares {
-            for middleware_id in middlewares {
-                if !self.middleware.contains_key(&middleware_id.to_string()) {
-                    return Err(SettingsError::InvalidConfig(
-                        format!("Router '{}' references non-existent middleware '{}'", router, middleware_id)
-                    ));
-                }
-            }
-        }
-        
-        Ok(())
-    }
+impl<State: TypeState, HttpsState> Settings<State, HttpsState> {
     
     /// 미들웨어 추가
     pub fn add_middleware(&mut self, name: String, config: MiddlewareConfig) -> Result<()> {
@@ -199,28 +151,31 @@ mod tests {
     
     #[test]
     fn test_settings_default() {
-        let settings = Settings::<HttpsDisabled>::default();
+        let settings = Settings::<Validated, HttpsDisabled>::default();
         assert_eq!(settings.middleware.len(), 0);
         assert_eq!(settings.router_middlewares.len(), 0);
     }
     
     #[test]
     fn test_settings_https_enabled() {
-        let settings = Settings::<HttpsEnabled>::create();
+        let settings = Settings::<Validated, HttpsEnabled>::create();
         assert_eq!(settings.middleware.len(), 0);
         assert_eq!(settings.router_middlewares.len(), 0);
     }
     
     #[tokio::test]
     async fn test_validate_empty_settings() {
-        let settings = Settings::<HttpsDisabled>::default();
-        let result = settings.validate().await;
+        let settings = Settings::<Validated, HttpsDisabled>::default();
+        let result = Settings::<Validated, HttpsDisabled>::validate_middleware_relations(
+            &settings.middleware, 
+            &settings.router_middlewares
+        );
         assert!(result.is_ok());
     }
     
     #[test]
     fn test_add_middleware() {
-        let mut settings = Settings::<HttpsDisabled>::default();
+        let mut settings = Settings::<Validated, HttpsDisabled>::default();
         let middleware = MiddlewareConfig {
             middleware_type: MiddlewareType::BasicAuth,
             enabled: true,
@@ -283,7 +238,7 @@ mod tests {
         );
         
         // 유효한 관계 테스트
-        let result = Settings::<HttpsDisabled>::validate_middleware_relations(&middleware, &router_middlewares);
+        let result = Settings::<Validated, HttpsDisabled>::validate_middleware_relations(&middleware, &router_middlewares);
         assert!(result.is_ok());
         
         // 존재하지 않는 미들웨어 참조
@@ -293,7 +248,7 @@ mod tests {
             vec![ValidMiddlewareId::new("non-existent").unwrap()]
         );
         
-        let result = Settings::<HttpsDisabled>::validate_middleware_relations(&middleware, &bad_router_middlewares);
+        let result = Settings::<Validated, HttpsDisabled>::validate_middleware_relations(&middleware, &bad_router_middlewares);
         assert!(result.is_err());
     }
 } 
