@@ -85,6 +85,9 @@ impl Eq for PathMatcher {}
 
 impl Hash for PathMatcher {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        // kind와 pattern만 해시에 포함시킵니다.
+        // regex 필드는 pattern으로부터 파생된 값이므로 해시에서 제외합니다.
+        // 이는 내부 가변성을 가진 Regex 타입으로 인한 "mutable key type" 경고를 방지합니다.
         self.kind.hash(state);
         self.pattern.hash(state);
     }
