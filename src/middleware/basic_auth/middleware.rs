@@ -6,7 +6,7 @@ use hyper::{header, StatusCode};
 use http_body_util::Full;
 use bytes::Bytes;
 use super::auth::Authenticator;
-use crate::settings::typestate::{Raw, Validated};
+use crate::settings::typestate::Validated;
 
 
 /// Basic 인증 미들웨어

@@ -3,7 +3,7 @@ use crate::middleware::MiddlewareError;
 use super::config::{AuthSource, BasicAuthConfig};
 use std::fs;
 use bcrypt;
-use crate::settings::typestate::{TypeState, Validated};
+use crate::settings::typestate::TypeState;
 /// Basic 인증을 위한 인증기 트레이트
 /// 
 /// # 지원하는 해시 알고리즘
