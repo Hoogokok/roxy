@@ -4,13 +4,14 @@ use tracing::debug;
 use crate::settings::core::{Settings, Result};
 use crate::settings::raw::RawSettings;
 use crate::settings::server::{Either, HttpsDisabled, HttpsEnabled, parse_env_var};
+use crate::settings::typestate::Validated;
 
 /// 설정 로더 모듈
 /// 
 /// 이 모듈은 다양한 소스(환경 변수, TOML 파일 등)에서 설정을 로드하는 기능을 담당합니다.
-impl<HttpsState> Settings<HttpsState> {
+impl<HttpsState> Settings<Validated, HttpsState> {
     /// 환경변수 및 설정 파일에서 설정을 로드합니다.
-    pub async fn load() -> Result<Either<Settings<HttpsDisabled>, Settings<HttpsEnabled>>> {
+    pub async fn load() -> Result<Either<Settings<Validated, HttpsDisabled>, Settings<Validated, HttpsEnabled>>> {
         // 환경 변수에서 HTTPS 활성화 여부 확인
         let https_enabled = parse_env_var::<bool, _>("PROXY_HTTPS_ENABLED", || false)?;
         
@@ -27,7 +28,7 @@ impl<HttpsState> Settings<HttpsState> {
         }
     }
 
-    pub async fn from_toml_file<P: AsRef<Path>>(path: P) -> Result<Either<Settings<HttpsDisabled>, Settings<HttpsEnabled>>> {
+    pub async fn from_toml_file<P: AsRef<Path>>(path: P) -> Result<Either<Settings<Validated, HttpsDisabled>, Settings<Validated, HttpsEnabled>>> {
         // RawSettings의 from_toml_file 헬퍼 함수 사용
         RawSettings::<HttpsEnabled>::from_toml_file(path).await
     }
@@ -46,7 +47,7 @@ mod tests {
         env::set_var("PROXY_HTTP_PORT", "8080");
         env::set_var("PROXY_HTTPS_ENABLED", "false");
         
-        let result = Settings::<HttpsDisabled>::load().await;
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
         assert!(result.is_ok());
         
         match result.unwrap() {
