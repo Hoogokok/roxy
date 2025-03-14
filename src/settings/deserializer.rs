@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use serde::{Deserialize, Deserializer};
+use serde::Deserialize;
 use serde::de::Error;
 
 use crate::settings::core::Settings;
