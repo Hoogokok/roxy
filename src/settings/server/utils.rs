@@ -1,11 +1,10 @@
-use std::env;
 use serde::{Deserialize, Serialize};
 
 use crate::settings::error::SettingsError;
 use crate::settings::server::settings::{ServerSettings, default_http_port, default_https_port};
 use crate::settings::server::types::{HttpsEnabled, HttpsDisabled};
 use crate::settings::types::ValidPort;
-use crate::settings::typestate::{Raw, Validated};
+use crate::settings::typestate::Validated;
 
 /// 좌측 또는 우측 값을 가질 수 있는 열거형 (Either 타입)
 pub enum Either<L, R> {
@@ -14,7 +13,7 @@ pub enum Either<L, R> {
 }
 
 /// HTTP/HTTPS 서버 설정 로드를 위한 통합 기능
-pub async fn from_env_unified() -> Result<
+pub async fn c() -> Result<
     Either<ServerSettings<Validated, HttpsDisabled>, 
            ServerSettings<Validated, HttpsEnabled>>,
     SettingsError
