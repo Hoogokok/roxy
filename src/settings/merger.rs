@@ -7,12 +7,13 @@ use crate::settings::core::{Settings, Result};
 use crate::settings::json::JsonConfig;
 use crate::settings::error::SettingsError;
 use crate::settings::types::ValidMiddlewareId;
-use crate::middleware::config::MiddlewareConfig;
+use crate::settings::typestate::TypeState;
+
 
 /// 설정 병합 모듈
 /// 
 /// 이 모듈은 다양한 소스의 설정을 병합하는 기능을 담당합니다.
-impl<HttpsState> Settings<HttpsState> {
+impl<State: TypeState, HttpsState> Settings<State, HttpsState> {
     /// Docker 라벨에서 설정 병합
     pub fn merge_docker_labels(&mut self, labels: &HashMap<String, String>) -> Result<()> {
         debug!("Docker 라벨에서 설정 병합");
@@ -203,7 +204,8 @@ impl<HttpsState> Settings<HttpsState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::middleware::config::MiddlewareType;
+    use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
+    use crate::settings::typestate::Validated;
     
     #[test]
     fn test_extract_router_middleware() {
@@ -236,7 +238,7 @@ mod tests {
     
     #[test]
     fn test_merge_with_json_config() {
-        let mut settings = Settings::<crate::settings::server::HttpsDisabled>::default();
+        let mut settings = Settings::<Validated, crate::settings::server::HttpsDisabled>::default();
         
         // 테스트용 JSON 설정 생성
         let mut config = JsonConfig::default();
