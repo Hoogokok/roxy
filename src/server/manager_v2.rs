@@ -572,8 +572,6 @@ where
 {
     let mut config_lock = shared_config.write().await;
     
-    // 설정 백업
-    let config_backup = config_lock.clone();
     
     // 미들웨어 설정 업데이트
     let middleware_updated = update_middleware_settings(&mut config_lock, &json_config, &config_id);
@@ -583,13 +581,6 @@ where
     
     // 설정 유효성 검증
     if middleware_updated || router_updated {
-        if !validate_middleware_manager(&mut config_lock, &config_backup, middleware_updated) {
-            // 유효성 검증 실패 시 설정 복원
-            *config_lock = config_backup;
-            error!(config_id = %config_id, "미들웨어 설정 유효성 검증 실패");
-            return Ok(false);
-        }
-
         info!(
             config_id = %config_id, 
             middleware_updated = %middleware_updated,
@@ -713,24 +704,3 @@ where
     Ok(())
 }
 
-// 미들웨어 매니저 유효성 검증
-fn validate_middleware_manager<HttpsState: TypeState>(
-    config_lock: &mut Settings<Validated, HttpsState>,
-    config_backup: &Settings<Validated, HttpsState>,
-    config_updated: bool
-) -> bool {
-    // 설정 유효성 검증
-    if config_updated {
-        // validate_middlewares 메서드 대신 모든 미들웨어 ID가 유효한지 확인
-        for middlewares in config_lock.router_middlewares.values() {
-            for middleware_id in middlewares {
-                if !config_lock.middleware.contains_key(&middleware_id.to_string()) {
-                    error!(id = %middleware_id, "미들웨어 ID가 존재하지 않습니다");
-                    return false;
-                }
-            }
-        }
-    }
-    
-    true
-}
