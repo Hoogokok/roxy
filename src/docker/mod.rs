@@ -514,15 +514,44 @@ impl DockerManager {
         // 여러 컨테이너가 있으면 로드밸런서 활성화
         if infos.len() > 1 {
             debug!("로드밸런서 활성화: 컨테이너 수={}", infos.len());
-            service.enable_load_balancer(LoadBalancerStrategy::RoundRobin {
-                current_index: AtomicUsize::new(0)
-            });
+            
+            // *** 변경점 1: DockerSettings에서 로드밸런서 설정 사용 ***
+            let strategy = if self.config.has_load_balancer() && self.config.load_balancer_strategy() == "weighted" {
+                // *** 변경점 2: 가중치 기반 전략 지원 추가 ***
+                let weight = self.config.load_balancer_weight().unwrap_or(1) as usize;
+                let total_weight = infos.len() * weight;
+                
+                debug!("가중치 기반 로드밸런싱 활성화: 가중치={}, 총 가중치={}", weight, total_weight);
+                
+                LoadBalancerStrategy::Weighted {
+                    current_index: AtomicUsize::new(0),
+                    total_weight,
+                }
+            } else {
+                debug!("라운드 로빈 로드밸런싱 활성화");
+                
+                LoadBalancerStrategy::RoundRobin {
+                    current_index: AtomicUsize::new(0),
+                }
+            };
+            
+            service.enable_load_balancer(strategy);
             
             // 추가 컨테이너들의 주소 등록
             for info in &infos[1..] {
                 let addr = self.extractor.parse_socket_addr(&info.ip, info.port)?;
-                debug!("백엔드 주소 추가: {}", addr);
-                service.add_address(addr, 1)?;
+                
+                // *** 변경점 3: 설정에 따른 가중치 적용 ***
+                let weight = if self.config.has_load_balancer() && self.config.load_balancer_strategy() == "weighted" {
+                    let weight = self.config.load_balancer_weight().unwrap_or(1) as usize;
+                    debug!("백엔드 주소 추가: {}, 가중치: {}", addr, weight);
+                    weight
+                } else {
+                    debug!("백엔드 주소 추가: {}, 기본 가중치: 1", addr);
+                    1
+                };
+                
+                service.add_address(addr, weight)?;
             }
         }
 
