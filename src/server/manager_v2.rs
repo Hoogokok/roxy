@@ -8,7 +8,7 @@ use crate::middleware::{MiddlewareConfig, MiddlewareManager};
 use crate::routing_v2::RoutingTable;
 use crate::settings::{Either, HttpsDisabled, HttpsEnabled, Settings};
 use crate::settings::watcher::{ConfigEvent, ConfigWatcher, WatcherConfig};
-use crate::settings::typestate::TypeState;
+use crate::settings::typestate::{TypeState, Validated};
 use super::docker::DockerEventHandler;
 use super::error::Error;
 use super::handler::RequestHandler;
@@ -27,12 +27,12 @@ pub struct ServerManager<HttpsState = HttpsDisabled>
 where
     HttpsState: TypeState,
 {
-    pub config: Settings<HttpsState>,
+    pub config: Settings<Validated, HttpsState>,
     pub docker_manager: DockerManager,
     pub routing_table: Arc<RwLock<RoutingTable>>,
     middleware_manager: MiddlewareManager,
     config_watcher: Option<ConfigWatcher>,
-    shared_config: Option<Arc<RwLock<Settings<HttpsState>>>>,
+    shared_config: Option<Arc<RwLock<Settings<Validated, HttpsState>>>>,
     shared_middleware_manager: Option<Arc<RwLock<MiddlewareManager>>>,
 }
 
@@ -43,7 +43,7 @@ where
 {
     // 공통 생성자
     pub fn new(
-        config: Settings<HttpsState>,
+        config: Settings<Validated, HttpsState>,
         docker_manager: DockerManager,
         routing_table: Arc<RwLock<RoutingTable>>,
         middleware_manager: MiddlewareManager,
@@ -61,7 +61,7 @@ where
     
     // 서버 생성 공통 로직
     #[instrument(skip(settings), level = "debug", err)]
-    pub async fn create_server(settings: Settings<HttpsState>) -> Result<Self> {
+    pub async fn create_server(settings: Settings<Validated, HttpsState>) -> Result<Self> {
         let docker_manager = DockerManager::with_defaults(settings.docker.clone()).await?;
         
         // 초기 상태 체크 설정
@@ -152,7 +152,7 @@ where
 impl ServerManager<HttpsDisabled> {
     // HTTP 서버 생성
     #[instrument(skip(settings), level = "debug", err)]
-    pub async fn create_http(settings: Settings<HttpsDisabled>) -> Result<Self> {
+    pub async fn create_http(settings: Settings<Validated, HttpsDisabled>) -> Result<Self> {
         info!("HTTP 모드로 서버 매니저 생성");
         Self::create_server(settings).await
     }
@@ -274,7 +274,7 @@ impl ServerManager<HttpsDisabled> {
 impl ServerManager<HttpsEnabled> {
     // HTTPS 서버 생성
     #[instrument(skip(settings), level = "debug", err)]
-    pub async fn create_https(settings: Settings<HttpsEnabled>) -> Result<Self> {
+    pub async fn create_https(settings: Settings<Validated, HttpsEnabled>) -> Result<Self> {
         let docker_manager = DockerManager::with_defaults(settings.docker.clone()).await?;
         
         // 초기 상태 체크 설정
@@ -283,7 +283,7 @@ impl ServerManager<HttpsEnabled> {
         }
         
         // 설정 소스 병합 (환경 변수, JSON, Docker 라벨)
-        let mut settings: Settings<HttpsEnabled> = settings;
+        let mut settings: Settings<Validated, HttpsEnabled> = settings;
         if let Ok(labels) = docker_manager.get_container_labels().await {
             // 모든 설정 소스 병합
             settings.merge_all_config_sources(&labels).await?;
@@ -332,7 +332,7 @@ impl ServerManager<HttpsEnabled> {
         });
 
         // HTTPS 리스너 생성
-        let listener = ServerListener::new(&self.config).await?;
+        let listener = ServerListener::<HttpsEnabled>::new(&self.config).await?;
         
         // RequestHandler 생성
         let handler = Arc::new(RequestHandler::new(
@@ -467,7 +467,7 @@ impl ServerInterface for ServerManagerEnum {
 impl ServerManager {
     // Either에서 적절한 ServerManager 생성
     #[instrument(skip(either), level = "debug", err)]
-    pub async fn from_either(either: Either<Settings<HttpsDisabled>, Settings<HttpsEnabled>>) -> Result<ServerManagerEnum> {
+    pub async fn from_either(either: Either<Settings<Validated, HttpsDisabled>, Settings<Validated, HttpsEnabled>>) -> Result<ServerManagerEnum> {
         match either {
            Either::Left(http_settings) => {
                 info!("HTTP 모드로 서버 매니저 생성");
@@ -486,7 +486,7 @@ impl ServerManager {
 // 설정 파일 처리
 async fn process_config_files<HttpsState>(
     paths: Vec<PathBuf>,
-    shared_config: Arc<RwLock<Settings<HttpsState>>>,
+    shared_config: Arc<RwLock<Settings<Validated, HttpsState>>>,
     shared_middleware_manager: Arc<RwLock<MiddlewareManager>>
 ) -> Result<bool> 
 where
@@ -530,7 +530,7 @@ fn collect_json_files(paths: &[PathBuf]) -> Vec<PathBuf> {
 // JSON 설정 파일 처리
 async fn process_json_configs<HttpsState>(
     config_files: Vec<PathBuf>,
-    shared_config: &Arc<RwLock<Settings<HttpsState>>>
+    shared_config: &Arc<RwLock<Settings<Validated, HttpsState>>>
 ) -> Result<bool> 
 where
     HttpsState: TypeState + Clone + Send + Sync + 'static,
@@ -565,7 +565,7 @@ where
 async fn process_single_config<HttpsState>(
     json_config: crate::settings::JsonConfig,
     config_id: String,
-    shared_config: &Arc<RwLock<Settings<HttpsState>>>
+    shared_config: &Arc<RwLock<Settings<Validated, HttpsState>>>
 ) -> Result<bool> 
 where
     HttpsState: TypeState + Clone + Send + Sync + 'static,
@@ -628,7 +628,7 @@ async fn load_and_validate_json_config(path: &Path) -> Result<crate::settings::J
 
 // 미들웨어 설정 업데이트
 fn update_middleware_settings<HttpsState: TypeState>(
-    config_lock: &mut Settings<HttpsState>,
+    config_lock: &mut Settings<Validated, HttpsState>,
     json_config: &crate::settings::JsonConfig,
     config_id: &str
 ) -> bool {
@@ -653,7 +653,7 @@ fn update_middleware_settings<HttpsState: TypeState>(
 
 // 라우터-미들웨어 매핑 업데이트
 fn update_router_middleware_mappings<HttpsState: TypeState>(
-    config_lock: &mut Settings<HttpsState>,
+    config_lock: &mut Settings<Validated, HttpsState>,
     json_config: &crate::settings::JsonConfig,
     config_id: &str
 ) -> bool {
@@ -690,7 +690,7 @@ fn update_router_middleware_mappings<HttpsState: TypeState>(
 
 // 미들웨어 매니저 업데이트
 async fn update_middleware_manager<HttpsState>(
-    shared_config: &Arc<RwLock<Settings<HttpsState>>>,
+    shared_config: &Arc<RwLock<Settings<Validated, HttpsState>>>,
     shared_middleware_manager: &Arc<RwLock<MiddlewareManager>>
 ) -> Result<()>
 where
@@ -715,8 +715,8 @@ where
 
 // 미들웨어 매니저 유효성 검증
 fn validate_middleware_manager<HttpsState: TypeState>(
-    config_lock: &mut Settings<HttpsState>,
-    config_backup: &Settings<HttpsState>,
+    config_lock: &mut Settings<Validated, HttpsState>,
+    config_backup: &Settings<Validated, HttpsState>,
     config_updated: bool
 ) -> bool {
     // 설정 유효성 검증
