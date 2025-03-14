@@ -98,9 +98,6 @@ impl<HttpsState> Settings<HttpsState> {
                             });
                         }
                     }
-                    _ => {
-                        // 다른 미들웨어 타입 처리
-                    }
                 }
             }
         }
@@ -136,6 +133,62 @@ impl<HttpsState> Settings<HttpsState> {
         }
         
         self.middleware.insert(name, config);
+        Ok(())
+    }
+
+    /// 미들웨어와 라우터-미들웨어 관계 검증 (정적 메서드)
+    pub fn validate_middleware_relations(middleware: &HashMap<String, MiddlewareConfig>, 
+                                      router_middlewares: &HashMap<String, Vec<ValidMiddlewareId>>) -> Result<()> {
+        // 미들웨어 타입별 필수 설정 확인
+        for (name, middleware) in middleware {
+            if middleware.enabled {
+                match middleware.middleware_type {
+                    MiddlewareType::BasicAuth => {
+                        if !middleware.settings.contains_key("users") {
+                            return Err(SettingsError::EnvVarMissing {
+                                var_name: format!("{}.users", name),
+                            });
+                        }
+                    }
+                    MiddlewareType::Headers => {
+                        // Headers 설정 검증은 필요한 경우 추가
+                    }
+                    MiddlewareType::Cors => {
+                        // CORS 설정 검증
+                        if !middleware.settings.contains_key("cors.allowOrigins") {
+                            return Err(SettingsError::EnvVarMissing {
+                                var_name: format!("{}.cors.allowOrigins", name),
+                            });
+                        }
+                    }
+                    MiddlewareType::RateLimit => {
+                        // 레이트 리밋 설정 검증
+                        if !middleware.settings.contains_key("ratelimit.average") {
+                            return Err(SettingsError::EnvVarMissing {
+                                var_name: format!("{}.ratelimit.average", name),
+                            });
+                        }
+                        if !middleware.settings.contains_key("ratelimit.burst") {
+                            return Err(SettingsError::EnvVarMissing {
+                                var_name: format!("{}.ratelimit.burst", name),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 라우터-미들웨어 매핑 검증
+        for (router, middlewares) in router_middlewares {
+            for middleware_id in middlewares {
+                if !middleware.contains_key(&middleware_id.to_string()) {
+                    return Err(SettingsError::InvalidConfig(
+                        format!("Router '{}' references non-existent middleware '{}'", router, middleware_id)
+                    ));
+                }
+            }
+        }
+        
         Ok(())
     }
 }
@@ -202,5 +255,45 @@ mod tests {
         let result = settings.add_middleware_with_override("test".to_string(), middleware2, true);
         assert!(result.is_ok());
         assert_eq!(settings.middleware["test"].middleware_type, MiddlewareType::Cors);
+    }
+
+    #[tokio::test]
+    async fn test_validate_middleware_relations() {
+        // 미들웨어와 라우터-미들웨어 맵 준비
+        let mut middleware = HashMap::new();
+        let mut router_middlewares = HashMap::new();
+        
+        // 미들웨어 설정
+        let basic_auth = MiddlewareConfig {
+            middleware_type: MiddlewareType::BasicAuth,
+            enabled: true,
+            order: 0,
+            settings: {
+                let mut s = HashMap::new();
+                s.insert("users".to_string(), "user:pass".to_string());
+                s
+            },
+        };
+        middleware.insert("auth".to_string(), basic_auth);
+        
+        // 라우터-미들웨어 매핑 (존재하는 미들웨어)
+        router_middlewares.insert(
+            "router1".to_string(), 
+            vec![ValidMiddlewareId::new("auth").unwrap()]
+        );
+        
+        // 유효한 관계 테스트
+        let result = Settings::<HttpsDisabled>::validate_middleware_relations(&middleware, &router_middlewares);
+        assert!(result.is_ok());
+        
+        // 존재하지 않는 미들웨어 참조
+        let mut bad_router_middlewares = HashMap::new();
+        bad_router_middlewares.insert(
+            "router2".to_string(), 
+            vec![ValidMiddlewareId::new("non-existent").unwrap()]
+        );
+        
+        let result = Settings::<HttpsDisabled>::validate_middleware_relations(&middleware, &bad_router_middlewares);
+        assert!(result.is_err());
     }
 } 
