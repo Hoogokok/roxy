@@ -1,5 +1,5 @@
 use reverse_proxy_traefik::{
-    settings::{Settings, HttpsDisabled, HttpsEnabled},
+    settings::{Settings, HttpsDisabled, HttpsEnabled, typestate::Validated},
     server::manager_v2::ServerManager,
     docker::{DockerClient, DockerError, DockerManager, container::DefaultExtractor},
     routing_v2::RoutingTable,
@@ -101,7 +101,7 @@ mod tests {
         setup().await;
         
         // HTTP 설정 로드
-        let settings_either = Settings::<HttpsDisabled>::load().await.unwrap();
+        let settings_either = Settings::<Validated, HttpsDisabled>::load().await.unwrap();
         let settings = match settings_either {
             reverse_proxy_traefik::settings::Either::Left(settings) => settings,
             reverse_proxy_traefik::settings::Either::Right(_) => panic!("Expected HTTP settings")
@@ -157,7 +157,7 @@ mod tests {
         std::env::set_var("PROXY_TLS_KEY", "/path/to/key.pem");
         
         // HTTPS 설정 로드
-        let settings_either = Settings::<HttpsDisabled>::load().await.unwrap();
+        let settings_either = Settings::<Validated, HttpsDisabled>::load().await.unwrap();
         
         // HTTPS 설정 추출
         let settings = match settings_either {
@@ -243,7 +243,7 @@ mod tests {
         let mock_client = MockDockerClient::with_containers(vec![container]);
         
         // Settings 로드
-        let settings_either = Settings::<HttpsDisabled>::load().await.unwrap();
+        let settings_either = Settings::<Validated, HttpsDisabled>::load().await.unwrap();
         let mut settings = match settings_either {
             reverse_proxy_traefik::settings::Either::Left(settings) => settings,
             reverse_proxy_traefik::settings::Either::Right(_) => panic!("Expected HTTP settings")
