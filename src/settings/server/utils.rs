@@ -2,10 +2,8 @@ use std::env;
 use serde::{Deserialize, Serialize};
 
 use crate::settings::error::SettingsError;
-use crate::settings::server::builder::parse_env_var;
 use crate::settings::server::settings::{ServerSettings, default_http_port, default_https_port};
 use crate::settings::server::types::{HttpsEnabled, HttpsDisabled};
-use crate::settings::tls::TlsSettings;
 use crate::settings::types::ValidPort;
 use crate::settings::typestate::{Raw, Validated};
 
