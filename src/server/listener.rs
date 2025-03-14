@@ -1,25 +1,28 @@
 use std::sync::Arc;
+use std::marker::PhantomData;
 use tokio::net::TcpListener;
 use hyper_util::rt::TokioIo;
 use crate::server::error::Error;
-use crate::settings::{Settings, HttpsEnabled};
-use crate::settings::typestate::TypeState;
+use crate::settings::{Settings, HttpsEnabled, HttpsDisabled};
+use crate::settings::typestate::{TypeState, Validated};
 use crate::tls::TlsConfig;
 use tracing::{debug, error, info};
 use super::handler::RequestHandler;
 use super::Result;
 
-pub struct ServerListener {
+pub struct ServerListener<HttpsState = HttpsDisabled> {
     http_listener: TcpListener,
     https_config: Option<TlsConfig>,
+    _marker: PhantomData<HttpsState>,
 }
 
-impl ServerListener {
-    pub async fn new<HttpsState: TypeState + Clone + Send + Sync + 'static>(
-        settings: &Settings<HttpsState>
-    ) -> Result<Self> {
+impl<HttpsState> ServerListener<HttpsState> 
+where 
+    HttpsState: TypeState + Clone + Send + Sync + 'static 
+{
+    pub async fn new(config: &Settings<Validated, HttpsState>) -> Result<Self> {
         // HTTP 리스너 초기화
-        let http_addr = format!("0.0.0.0:{}", settings.server.http_port());
+        let http_addr = format!("0.0.0.0:{}", config.server.http_port());
         debug!("HTTP 리스너 바인딩 시작: {}", http_addr);
         let http_listener = TcpListener::bind(&http_addr)
             .await
@@ -32,11 +35,11 @@ impl ServerListener {
         // HTTPS 설정 초기화
         let https_config = if std::any::TypeId::of::<HttpsState>() == std::any::TypeId::of::<HttpsEnabled>() {
             debug!("HTTPS 설정 초기화 시작");
-            let cert_path_opt = settings.server.tls_cert_path();
+            let cert_path_opt = config.server.tls_cert_path();
             let cert_path = cert_path_opt.as_deref()
                 .expect("HTTPS 활성화되었지만 인증서 경로가 없음");
             
-            let key_path_opt = settings.server.tls_key_path();
+            let key_path_opt = config.server.tls_key_path();
             let key_path = key_path_opt.as_deref()
                 .expect("HTTPS 활성화되었지만 키 경로가 없음");
             
@@ -67,6 +70,7 @@ impl ServerListener {
         Ok(Self {
             http_listener,
             https_config,
+            _marker: PhantomData,
         })
     }
 
