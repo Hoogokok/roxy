@@ -71,8 +71,14 @@ impl RawSettings<HttpsDisabled> {
         let validated_logging = self.logging.validated()?;
         let validated_docker = self.docker.validated()?;
         
-        // 검증된 설정으로 Settings 생성
-        let settings = Settings {
+        // 컴포넌트 간 관계 검증 (Settings 객체 생성 전에 수행)
+        Settings::<Validated, HttpsDisabled>::validate_middleware_relations(
+            &self.middleware, 
+            &self.router_middlewares
+        )?;
+        
+        // 모든 검증이 완료된 후 Settings 객체 생성하여 반환
+        Ok(Settings {
             server: validated_server,
             logging: validated_logging,
             tls: validated_tls,
@@ -80,12 +86,7 @@ impl RawSettings<HttpsDisabled> {
             middleware: self.middleware,
             router_middlewares: self.router_middlewares,
             _marker: PhantomData,
-        };
-        
-        // 컴포넌트 간 관계 검증 (기존 settings.validate() 대신)
-        Settings::<Validated, HttpsDisabled>::validate_middleware_relations(&settings.middleware, &settings.router_middlewares)?;
-        
-        Ok(settings)
+        })
     }
 }
 
@@ -147,8 +148,14 @@ impl RawSettings<HttpsEnabled> {
         let validated_logging = self.logging.validated()?;
         let validated_docker = self.docker.validated()?;
         
-        // 검증된 설정으로 Settings 생성
-        let settings = Settings {
+        // 컴포넌트 간 관계 검증 (Settings 객체 생성 전에 수행)
+        Settings::<Validated, HttpsEnabled>::validate_middleware_relations(
+            &self.middleware, 
+            &self.router_middlewares
+        )?;
+        
+        // 모든 검증이 완료된 후 Settings 객체 생성하여 반환
+        Ok(Settings {
             server: validated_server,
             logging: validated_logging,
             tls: validated_tls,
@@ -156,11 +163,7 @@ impl RawSettings<HttpsEnabled> {
             middleware: self.middleware,
             router_middlewares: self.router_middlewares,
             _marker: PhantomData,
-        };
-        
-        // 추가 검증이 필요한 경우
-        Settings::<Validated, HttpsEnabled>::validate_middleware_relations(&settings.middleware, &settings.router_middlewares)?;        
-        Ok(settings)
+        })
     }
     
     /// 비동기 버전의 Raw 상태에서 Validated 상태로 변환
@@ -175,8 +178,14 @@ impl RawSettings<HttpsEnabled> {
         let validated_logging = self.logging.validated()?;
         let validated_docker = self.docker.validated()?;
         
-        // 검증된 설정으로 Settings 생성
-        let settings = Settings {
+        // 컴포넌트 간 관계 검증 (Settings 객체 생성 전에 수행)
+        Settings::<Validated, HttpsEnabled>::validate_middleware_relations(
+            &self.middleware, 
+            &self.router_middlewares
+        )?;
+        
+        // 모든 검증이 완료된 후 Settings 객체 생성하여 반환
+        Ok(Settings {
             server: validated_server,
             logging: validated_logging,
             tls: validated_tls,
@@ -184,11 +193,7 @@ impl RawSettings<HttpsEnabled> {
             middleware: self.middleware,
             router_middlewares: self.router_middlewares,
             _marker: PhantomData,
-        };
-        
-        // 추가 검증이 필요한 경우
-        Settings::<Validated, HttpsEnabled>::validate_middleware_relations(&settings.middleware, &settings.router_middlewares)?;        
-        Ok(settings)
+        })
     }
     
     /// TOML 파일에서 설정 로드 및 검증 헬퍼 함수
