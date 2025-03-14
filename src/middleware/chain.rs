@@ -55,7 +55,7 @@ impl MiddlewareChain {
             None
         } else {
             Some(self.middlewares.iter()
-                .map(|m| std::any::type_name::<dyn Middleware>())
+                .map(|_| std::any::type_name::<dyn Middleware>())
                 .collect())
         }
     }
