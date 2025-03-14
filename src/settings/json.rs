@@ -2,14 +2,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use tracing::{debug, info};
 
 use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
 use super::error::SettingsError;
 use super::parser::ConfigParser;
 use super::types::{ValidMiddlewareId, ValidRule, ValidServiceId, Version};
 use super::{Result, ValidatedConfig};
-use super::converter::{labels_to_json, json_to_labels};
+use super::converter::labels_to_json;
 
 /// JSON 설정 파일을 위한 구조체
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -198,96 +197,6 @@ impl JsonConfig {
         Ok(config)
     }
     
-    /// 키 형식 정규화
-    /// 
-    /// Docker 라벨 스타일과 일관된 형식으로 설정 키를 변환합니다.
-    /// 예: `basic_auth` → `basicAuth`, `allow_origins` → `allowOrigins` 등
-    pub fn normalize_keys(&mut self) {
-        // 미들웨어 이름 정규화
-        let middleware_keys: Vec<String> = self.middlewares.keys().cloned().collect();
-        for key in middleware_keys {
-            if key.contains('_') {
-                let new_key = Self::to_camel_case(&key);
-                if let Some(value) = self.middlewares.remove(&key) {
-                    self.middlewares.insert(new_key, value);
-                }
-            }
-        }
-        
-        // 미들웨어 설정 키 정규화
-        for middleware in self.middlewares.values_mut() {
-            let setting_keys: Vec<String> = middleware.settings.keys().cloned().collect();
-            for key in setting_keys {
-                if key.contains('_') {
-                    if let Some(value) = middleware.settings.remove(&key) {
-                        let new_key = Self::to_camel_case(&key);
-                        middleware.settings.insert(new_key, value);
-                    }
-                }
-            }
-        }
-        
-        // 라우터 이름 정규화
-        let router_keys: Vec<String> = self.routers.keys().cloned().collect();
-        for key in router_keys {
-            if key.contains('_') {
-                let new_key = Self::to_camel_case(&key);
-                if let Some(value) = self.routers.remove(&key) {
-                    self.routers.insert(new_key, value);
-                }
-            }
-        }
-        
-        // 서비스 이름 정규화
-        let service_keys: Vec<String> = self.services.keys().cloned().collect();
-        for key in service_keys {
-            if key.contains('_') {
-                let new_key = Self::to_camel_case(&key);
-                if let Some(value) = self.services.remove(&key) {
-                    self.services.insert(new_key, value);
-                }
-            }
-        }
-        
-        // 라우터-미들웨어 맵핑 정규화
-        let mapping_keys: Vec<String> = self.router_middlewares.keys().cloned().collect();
-        for key in mapping_keys {
-            if key.contains('_') {
-                let new_key = Self::to_camel_case(&key);
-                if let Some(value) = self.router_middlewares.remove(&key) {
-                    self.router_middlewares.insert(new_key, value);
-                }
-            }
-        }
-    }
-    
-    /// 언더스코어 형식의 문자열을 camelCase로 변환
-    fn to_camel_case(s: &str) -> String {
-        let mut result = String::new();
-        let mut capitalize_next = false;
-        
-        for (i, c) in s.chars().enumerate() {
-            if c == '_' {
-                capitalize_next = true;
-            } else if capitalize_next {
-                result.push(c.to_ascii_uppercase());
-                capitalize_next = false;
-            } else if i == 0 {
-                result.push(c.to_ascii_lowercase());
-            } else {
-                result.push(c);
-            }
-        }
-        
-        result
-    }
-    
-    /// JSON 설정을 Docker 라벨로 변환
-    pub fn to_docker_labels(&self, prefix: &str) -> HashMap<String, String> {
-        let json_value = serde_json::to_value(self.clone()).unwrap_or_default();
-        json_to_labels(&json_value, prefix)
-    }
-    
     /// Docker 라벨에서 JSON 설정 생성
     pub fn from_docker_labels(labels: &HashMap<String, String>, prefix: &str) -> Self {
         let json = labels_to_json(labels, prefix);
@@ -442,64 +351,6 @@ impl JsonConfig {
                 }
             }
         }
-    }
-
-    /// Docker 라벨을 현재 JsonConfig와 병합
-    ///
-    /// 이 메서드는 Docker 라벨에서 설정을 추출하여 현재 JsonConfig 인스턴스에 병합합니다.
-    /// prefix는 Docker 라벨의 접두사를 지정합니다. (예: "rproxy.")
-    pub fn merge_with_labels(&mut self, labels: &HashMap<String, String>, prefix: &str) -> Result<()> {
-        // 라벨에서 JSON 설정으로 변환
-        let json_from_labels = labels_to_json(labels, prefix);
-        
-        debug!("Docker 라벨에서 JSON 설정 추출: {:?}", json_from_labels);
-        
-        // JSON에서 JsonConfig로 변환
-        if let Ok(config_from_labels) = serde_json::from_value::<JsonConfig>(json_from_labels) {
-            // 미들웨어 병합
-            for (name, config) in config_from_labels.middlewares {
-                if !self.middlewares.contains_key(&name) {
-                    debug!("라벨에서 미들웨어 추가: {}", name);
-                    self.middlewares.insert(name, config);
-                }
-            }
-            
-            // 라우터 병합
-            for (name, config) in config_from_labels.routers {
-                if !self.routers.contains_key(&name) {
-                    debug!("라벨에서 라우터 추가: {}", name);
-                    self.routers.insert(name, config);
-                }
-            }
-            
-            // 서비스 병합
-            for (name, config) in config_from_labels.services {
-                if !self.services.contains_key(&name) {
-                    debug!("라벨에서 서비스 추가: {}", name);
-                    self.services.insert(name, config);
-                }
-            }
-            
-            // 라우터-미들웨어 매핑 병합
-            for (name, middlewares) in config_from_labels.router_middlewares {
-                if !self.router_middlewares.contains_key(&name) {
-                    debug!("라벨에서 라우터-미들웨어 매핑 추가: {}", name);
-                    self.router_middlewares.insert(name, middlewares);
-                }
-            }
-            
-            // 헬스체크 병합
-            if self.health.is_none() && config_from_labels.health.is_some() {
-                debug!("라벨에서 헬스체크 설정 추가");
-                self.health = config_from_labels.health;
-            }
-        } else {
-            debug!("라벨에서 설정 변환 실패, 개별 항목 처리 시도");
-            
-            // 라벨에서 개별 항목 처리 (상세 구현은 필요에 따라 추가)
-        }
-        
-        Ok(())
     }
 
     /// ValidatedConfig에서 JsonConfig 인스턴스 생성
@@ -810,95 +661,6 @@ mod tests {
         // 유효한 설정이므로 오류가 없어야 함
         let result = config.validate();
         assert!(result.is_ok(), "유효성 검사 실패: {:?}", result);
-    }
-
-    #[test]
-    fn test_normalize_keys() {
-        let mut config = JsonConfig::default();
-        
-        // 언더스코어 형식의 미들웨어 설정
-        let mut settings = HashMap::new();
-        settings.insert("allow_origins".to_string(), "*".to_string());
-        
-        config.middlewares.insert("test_cors".to_string(), MiddlewareConfig {
-            middleware_type: MiddlewareType::Cors,
-            enabled: true,
-            order: 0,
-            settings,
-        });
-        
-        // 키 정규화 수행
-        config.normalize_keys();
-        
-        // 결과 확인: 미들웨어 이름이 camelCase로 변환되어야 함
-        assert!(config.middlewares.contains_key("testCors"));
-        
-        // 설정 키도 camelCase로 변환되어야 함
-        if let Some(middleware) = config.middlewares.get("testCors") {
-            assert!(middleware.settings.contains_key("allowOrigins"));
-            assert_eq!(middleware.settings.get("allowOrigins"), Some(&"*".to_string()));
-        } else {
-            panic!("testCors middleware not found");
-        }
-    }
-
-    #[test]
-    fn test_to_docker_labels() {
-        let mut config = JsonConfig::default();
-        
-        // 미들웨어 설정 추가
-        let mut settings = HashMap::new();
-        settings.insert("cors.allowOrigins".to_string(), "*".to_string());
-        
-        config.middlewares.insert("cors".to_string(), MiddlewareConfig {
-            middleware_type: MiddlewareType::Cors,
-            enabled: true,
-            order: 0,
-            settings,
-        });
-        
-        // 서비스 설정 추가 - 변경됨 (server → servers 배열)
-        config.services.insert("api-service".to_string(), ServiceConfig {
-            loadbalancer: LoadBalancerConfig {
-                servers: vec![
-                    ServerConfig {
-                        url: crate::settings::types::ValidUrl::new("http://localhost:8080").unwrap(),
-                        weight: 1,
-                    }
-                ]
-            }
-        });
-        
-        // 라우터 설정 추가
-        config.routers.insert("api".to_string(), RouterConfig {
-            rule: crate::settings::types::ValidRule::new("Host(`api.example.com`)").unwrap(),
-            middlewares: Some(vec![crate::settings::types::ValidMiddlewareId::new("cors").unwrap()]),
-            service: crate::settings::types::ValidServiceId::new("api-service").unwrap(),
-        });
-        
-        // Docker 라벨로 변환
-        let labels = config.to_docker_labels("rproxy.http.");
-        
-        // 디버깅을 위해 라벨 출력
-        for (key, value) in &labels {
-            println!("라벨: {} = {}", key, value);
-        }
-        
-        // 결과 확인
-        assert_eq!(labels.get("rproxy.http.middlewares.cors.type"), Some(&"cors".to_string()));
-        assert_eq!(labels.get("rproxy.http.middlewares.cors.enabled"), Some(&"true".to_string()));
-        assert_eq!(labels.get("rproxy.http.middlewares.cors.order"), Some(&"0".to_string()));
-        
-        // 라우터 설정 확인
-        assert_eq!(labels.get("rproxy.http.routers.api.rule"), Some(&"Host(`api.example.com`)".to_string()));
-        assert_eq!(labels.get("rproxy.http.routers.api.middlewares"), Some(&"cors".to_string()));
-        assert_eq!(labels.get("rproxy.http.routers.api.service"), Some(&"api-service".to_string()));
-        
-        // 서비스 URL 확인 (서버 배열 형식으로 변경)
-        assert_eq!(labels.get("rproxy.http.services.api-service.loadbalancer.servers.0.url"), 
-                  Some(&"http://localhost:8080".to_string()));
-        assert_eq!(labels.get("rproxy.http.services.api-service.loadbalancer.servers.0.weight"), 
-                  Some(&"1".to_string()));
     }
 
     #[test]
