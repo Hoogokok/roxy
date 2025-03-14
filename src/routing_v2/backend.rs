@@ -196,4 +196,35 @@ impl LoadBalancer {
             }
         }
     }
+    
+    /// 현재 로드밸런서가 가중치 기반인지 확인합니다.
+    pub fn is_weighted(&self) -> bool {
+        matches!(self.strategy, LoadBalancerStrategy::Weighted { .. })
+    }
+    
+    /// 가중치 기반 로드밸런서의 총 가중치를 반환합니다.
+    /// 라운드로빈 전략인 경우 None을 반환합니다.
+    pub fn get_total_weight(&self) -> Option<usize> {
+        match &self.strategy {
+            LoadBalancerStrategy::Weighted { total_weight, .. } => Some(*total_weight),
+            _ => None
+        }
+    }
+    
+    /// 가중치 기반 로드밸런서의 총 가중치를 설정합니다.
+    /// 라운드로빈 전략인 경우 오류를 반환합니다.
+    pub fn set_total_weight(&mut self, weight: usize) -> Result<(), BackendError> {
+        match &mut self.strategy {
+            LoadBalancerStrategy::Weighted { total_weight, .. } => {
+                *total_weight = weight;
+                Ok(())
+            },
+            _ => Err(BackendError::InvalidOperation("가중치는 가중치 기반 로드밸런서에만 설정할 수 있습니다.".into()))
+        }
+    }
+    
+    /// 현재 로드밸런서 전략을 반환합니다.
+    pub fn get_strategy(&self) -> &LoadBalancerStrategy {
+        &self.strategy
+    }
 } 
