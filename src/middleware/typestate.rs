@@ -1,5 +1,4 @@
 use std::fmt;
-use std::time::Duration;
 
 use crate::settings::typestate::ValidationErrorCollector;
 
@@ -95,6 +94,7 @@ mod tests {
     use super::*;
     use crate::{middleware::rate_limit::{store::RateLimitStore, RateLimitConfig, RateLimitMiddleware}, settings::typestate::{Raw, TypeState, Validatable, Validated}};
     use std::marker::PhantomData;
+    use std::time::Duration;
 
     #[test]
     fn test_middleware_validator_collects_errors() {
