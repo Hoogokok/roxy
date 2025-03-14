@@ -16,6 +16,7 @@ use super::listener::ServerListener;
 use super::Result;
 
 // 공통 인터페이스 정의
+#[allow(async_fn_in_trait)]
 pub trait ServerInterface: Send + Sync {
     async fn start(&mut self) -> Result<()>;
     async fn start_config_watcher(&mut self) -> Result<(mpsc::Receiver<()>, tokio::task::JoinHandle<()>)>;
@@ -119,7 +120,7 @@ where
         for event in events {
             match event {
                 ConfigEvent::Created(path) | ConfigEvent::Modified(path) => {
-                    if path.extension().map_or(false, |ext| ext == "json") {
+                    if path.extension().is_some_and(|ext| ext == "json") {
                         file_paths.push(path);
                     }
                 },
@@ -520,7 +521,7 @@ fn collect_json_files(paths: &[PathBuf]) -> Vec<PathBuf> {
     paths.iter()
         .filter(|path| {
             path.extension()
-                .map_or(false, |ext| ext == "json")
+                .is_some_and(|ext| ext == "json")
         })
         .cloned()
         .collect()
@@ -721,7 +722,7 @@ fn validate_middleware_manager<HttpsState: TypeState>(
     // 설정 유효성 검증
     if config_updated {
         // validate_middlewares 메서드 대신 모든 미들웨어 ID가 유효한지 확인
-        for (_, middlewares) in &config_lock.router_middlewares {
+        for middlewares in config_lock.router_middlewares.values() {
             for middleware_id in middlewares {
                 if !config_lock.middleware.contains_key(&middleware_id.to_string()) {
                     error!(id = %middleware_id, "미들웨어 ID가 존재하지 않습니다");
