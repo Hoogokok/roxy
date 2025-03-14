@@ -98,8 +98,8 @@ impl RawSettings<HttpsDisabled> {
             router_middlewares: self.router_middlewares,
         };
         
-        // 추가 검증이 필요한 경우
-        settings.validate().await?;
+        // 컴포넌트 간 관계 검증 (기존 settings.validate() 대신)
+        Settings::<HttpsDisabled>::validate_middleware_relations(&settings.middleware, &settings.router_middlewares)?;
         
         Ok(settings)
     }
