@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::marker::PhantomData;
 use serde::Deserialize;
 
 use crate::middleware::config::MiddlewareConfig;
@@ -12,30 +13,10 @@ use crate::settings::{SettingsError, Settings, Either, Result, parse_env_var};
 
 use super::types::ValidPort;
 use super::typestate::Raw;
-use crate::settings::typestate::{ContextValidatable, AsyncContextValidatable};
+use crate::settings::typestate::{ContextValidatable, AsyncContextValidatable, Validated};
 
-/// 검증되지 않은 원시 설정을 나타내는 구조체
-#[derive(Deserialize)]
-pub struct RawSettings<HttpsState = HttpsDisabled> {
-    #[serde(skip_deserializing)]
-    #[serde(default = "default_server_settings")]
-    pub server: ServerSettings<Raw, HttpsState>,
-    
-    #[serde(default)]
-    pub logging: LogSettings<Raw>,
-    
-    #[serde(default)]
-    pub tls: TlsSettings<Raw>,
-    
-    #[serde(default)]
-    pub docker: DockerSettings<Raw>,
-    
-    #[serde(default)]
-    pub middleware: HashMap<String, MiddlewareConfig>,
-    
-    #[serde(default)]
-    pub router_middlewares: HashMap<String, Vec<ValidMiddlewareId>>,
-}
+/// 검증되지 않은 원시 설정을 나타내는 타입 별칭
+pub type RawSettings<HttpsState = HttpsDisabled> = Settings<Raw, HttpsState>;
 
 impl<HttpsState> RawSettings<HttpsState> {
     /// 기본 RawSettings 인스턴스 생성
@@ -54,6 +35,7 @@ impl<HttpsState> RawSettings<HttpsState> {
             docker,
             middleware,
             router_middlewares,
+            _marker: PhantomData,
         }
     }
 }
@@ -77,31 +59,34 @@ impl RawSettings<HttpsDisabled> {
             docker,
             middleware: HashMap::new(),
             router_middlewares: HashMap::new(),
+            _marker: PhantomData,
         })
     }
     
     /// Raw 상태에서 Validated 상태로 변환
-    pub async fn validate(self) -> Result<Settings<HttpsDisabled>> {
+    pub async fn validate(self) -> Result<Settings<Validated, HttpsDisabled>> {
         // 각 컴포넌트 검증
         let validated_server = self.server.validated()?;
         let validated_tls = self.tls.validated().await?;
         let validated_logging = self.logging.validated()?;
         let validated_docker = self.docker.validated()?;
         
-        // 검증된 설정으로 Settings 생성
-        let settings = Settings {
+        // 컴포넌트 간 관계 검증 (Settings 객체 생성 전에 수행)
+        Settings::<Validated, HttpsDisabled>::validate_middleware_relations(
+            &self.middleware, 
+            &self.router_middlewares
+        )?;
+        
+        // 모든 검증이 완료된 후 Settings 객체 생성하여 반환
+        Ok(Settings {
             server: validated_server,
             logging: validated_logging,
             tls: validated_tls,
             docker: validated_docker,
             middleware: self.middleware,
             router_middlewares: self.router_middlewares,
-        };
-        
-        // 추가 검증이 필요한 경우
-        settings.validate().await?;
-        
-        Ok(settings)
+            _marker: PhantomData,
+        })
     }
 }
 
@@ -147,11 +132,12 @@ impl RawSettings<HttpsEnabled> {
             docker,
             middleware: HashMap::new(),
             router_middlewares: HashMap::new(),
+            _marker: PhantomData,
         })
     }
     
     /// Raw 상태에서 Validated 상태로 변환
-    pub async fn validate(self) -> Result<Settings<HttpsEnabled>> {
+    pub async fn validate(self) -> Result<Settings<Validated, HttpsEnabled>> {
         // TLS 설정 먼저 검증 - 이후 컨텍스트로 사용
         let validated_tls = self.tls.validated().await?;
         
@@ -162,24 +148,26 @@ impl RawSettings<HttpsEnabled> {
         let validated_logging = self.logging.validated()?;
         let validated_docker = self.docker.validated()?;
         
-        // 검증된 설정으로 Settings 생성
-        let settings = Settings {
+        // 컴포넌트 간 관계 검증 (Settings 객체 생성 전에 수행)
+        Settings::<Validated, HttpsEnabled>::validate_middleware_relations(
+            &self.middleware, 
+            &self.router_middlewares
+        )?;
+        
+        // 모든 검증이 완료된 후 Settings 객체 생성하여 반환
+        Ok(Settings {
             server: validated_server,
             logging: validated_logging,
             tls: validated_tls,
             docker: validated_docker,
             middleware: self.middleware,
             router_middlewares: self.router_middlewares,
-        };
-        
-        // 추가 검증이 필요한 경우
-        settings.validate().await?;
-        
-        Ok(settings)
+            _marker: PhantomData,
+        })
     }
     
     /// 비동기 버전의 Raw 상태에서 Validated 상태로 변환
-    pub async fn validate_async(self) -> Result<Settings<HttpsEnabled>> {
+    pub async fn validate_async(self) -> Result<Settings<Validated, HttpsEnabled>> {
         // TLS 설정 먼저 검증 - 이후 컨텍스트로 사용
         let validated_tls = self.tls.validated().await?;
         
@@ -190,24 +178,26 @@ impl RawSettings<HttpsEnabled> {
         let validated_logging = self.logging.validated()?;
         let validated_docker = self.docker.validated()?;
         
-        // 검증된 설정으로 Settings 생성
-        let settings = Settings {
+        // 컴포넌트 간 관계 검증 (Settings 객체 생성 전에 수행)
+        Settings::<Validated, HttpsEnabled>::validate_middleware_relations(
+            &self.middleware, 
+            &self.router_middlewares
+        )?;
+        
+        // 모든 검증이 완료된 후 Settings 객체 생성하여 반환
+        Ok(Settings {
             server: validated_server,
             logging: validated_logging,
             tls: validated_tls,
             docker: validated_docker,
             middleware: self.middleware,
             router_middlewares: self.router_middlewares,
-        };
-        
-        // 추가 검증이 필요한 경우
-        settings.validate().await?;
-        
-        Ok(settings)
+            _marker: PhantomData,
+        })
     }
     
     /// TOML 파일에서 설정 로드 및 검증 헬퍼 함수
-    pub async fn from_toml_file<P: AsRef<Path>>(path: P) -> Result<Either<Settings<HttpsDisabled>, Settings<HttpsEnabled>>> {
+    pub async fn from_toml_file<P: AsRef<Path>>(path: P) -> Result<Either<Settings<Validated, HttpsDisabled>, Settings<Validated, HttpsEnabled>>> {
         // 파일 내용 읽기
         let content = std::fs::read_to_string(path.as_ref())?;
         
@@ -249,9 +239,10 @@ impl RawSettings<HttpsEnabled> {
                 docker: helper.docker.validated()?,
                 middleware: helper.middleware,
                 router_middlewares: helper.router_middlewares,
+                _marker: PhantomData,
             };
             
-            settings.validate().await?;
+            Settings::<Validated, HttpsEnabled>::validate_middleware_relations(&settings.middleware, &settings.router_middlewares)?;
             Ok(Either::Right(settings))
         } else {
             // HTTP 서버 설정 생성
@@ -266,9 +257,10 @@ impl RawSettings<HttpsEnabled> {
                 docker: helper.docker.validated()?,
                 middleware: helper.middleware,
                 router_middlewares: helper.router_middlewares,
+                _marker: PhantomData,
             };
             
-            settings.validate().await?;
+            Settings::<Validated, HttpsDisabled>::validate_middleware_relations(&settings.middleware, &settings.router_middlewares)?;
             Ok(Either::Left(settings))
         }
     }

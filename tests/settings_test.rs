@@ -1,5 +1,5 @@
 use reverse_proxy_traefik::{
-    settings::{Settings, Either, HttpsDisabled, HttpsEnabled},
+    settings::{Settings, Either, HttpsDisabled, HttpsEnabled, typestate::Validated},
 };
 use std::sync::Once;
 use std::fs;
@@ -52,25 +52,25 @@ mod tests {
 
         // 1. 잘못된 포트 번호
         std::env::set_var("PROXY_HTTP_PORT", "99999");
-        let result = Settings::<HttpsDisabled>::load().await;
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
         assert!(result.is_err());
         teardown();
         
         // 2. 잘못된 로그 레벨
         std::env::set_var("PROXY_LOG_LEVEL", "invalid_level");
-        let result = Settings::<HttpsDisabled>::load().await;
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
         assert!(result.is_err());
         teardown();
         
         // 3. 잘못된 Docker 네트워크 이름
         std::env::set_var("PROXY_DOCKER_NETWORK", "invalid@network");
-        let result = Settings::<HttpsDisabled>::load().await;
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
         assert!(result.is_err());
         teardown();
         
         // 4. 잘못된 라벨 접두사
         std::env::set_var("PROXY_LABEL_PREFIX", "invalid-prefix");
-        let result = Settings::<HttpsDisabled>::load().await;
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
         assert!(result.is_err());
         teardown();
     }
@@ -80,7 +80,7 @@ mod tests {
     async fn test_settings_defaults() {
         setup();
         
-        let settings_either = Settings::<HttpsDisabled>::load().await.unwrap();
+        let settings_either = Settings::<Validated, HttpsDisabled>::load().await.unwrap();
         let settings = match settings_either {
             Either::Left(settings) => settings,
             Either::Right(_) => panic!("Expected HTTP settings")
@@ -121,7 +121,7 @@ mod tests {
         print!("TOML 파일 내용: {}", file_content);
         
         // from_toml_file 메서드 사용
-        let settings_either = Settings::<HttpsDisabled>::from_toml_file(&file_path).await.unwrap();
+        let settings_either = Settings::<Validated, HttpsDisabled>::from_toml_file(&file_path).await.unwrap();
         
         // HTTPS 설정 가져오기 (Either::Right 기대)
         let settings = match settings_either {
@@ -157,7 +157,7 @@ mod tests {
         std::env::set_var("PROXY_LABEL_PREFIX", "custom.");
 
         // 설정 로드 및 검증
-        let settings_either = Settings::<HttpsDisabled>::load().await.unwrap();
+        let settings_either = Settings::<Validated, HttpsDisabled>::load().await.unwrap();
         
         // 설정값 검증
         match settings_either {
@@ -185,7 +185,7 @@ mod tests {
         std::env::set_var("PROXY_HTTPS_PORT", "443");
         std::env::set_var("PROXY_TLS_CERT", "/path/to/cert.pem");
         std::env::set_var("PROXY_TLS_KEY", "/path/to/key.pem");
-        let result = Settings::<HttpsDisabled>::load().await;
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
         assert!(result.is_err(), "포트 충돌이 감지되어야 함");
         if let Err(e) = result {
             assert!(e.to_string().contains("HTTP와 HTTPS 포트는 달라야 합니다"));
@@ -194,19 +194,19 @@ mod tests {
         // 2. 포트 번호 0 케이스
         teardown();
         std::env::set_var("PROXY_HTTP_PORT", "0");
-        let result = Settings::<HttpsDisabled>::load().await;
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
         assert!(result.is_err(), "포트 0은 허용되지 않아야 함");
 
         // 3. 빈 네트워크 이름 케이스
         teardown();
         std::env::set_var("PROXY_DOCKER_NETWORK", "");
-        let result = Settings::<HttpsDisabled>::load().await;
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
         assert!(result.is_err(), "빈 네트워크 이름은 허용되지 않아야 함");
 
         // 4. 매우 긴 라벨 접두사 케이스
         teardown();
         std::env::set_var("PROXY_LABEL_PREFIX", "a".repeat(1000) + ".");
-        let result = Settings::<HttpsDisabled>::load().await;
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
         assert!(result.is_err(), "너무 긴 라벨 접두사는 허용되지 않아야 함");
 
         teardown();

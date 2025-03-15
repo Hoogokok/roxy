@@ -1,10 +1,11 @@
 use std::collections::HashMap;
-use serde::{Deserialize, Deserializer};
+use std::marker::PhantomData;
+use serde::Deserialize;
 use serde::de::Error;
 
 use crate::settings::core::Settings;
 use crate::settings::server::HttpsDisabled;
-use crate::settings::typestate::Raw;
+use crate::settings::typestate::{Raw, Validated};
 use crate::settings::logging::LogSettings;
 use crate::settings::tls::TlsSettings;
 use crate::settings::docker::DockerSettings;
@@ -12,7 +13,7 @@ use crate::middleware::config::MiddlewareConfig;
 use crate::settings::types::ValidMiddlewareId;
 
 /// Settings 역직렬화 구현
-impl<'de> Deserialize<'de> for Settings<HttpsDisabled> {
+impl<'de> Deserialize<'de> for Settings<Validated, HttpsDisabled> {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -52,12 +53,13 @@ impl<'de> Deserialize<'de> for Settings<HttpsDisabled> {
             .map_err(D::Error::custom)?;
             
         Ok(Settings {
-            server: Default::default(), // ServerSettings는 별도로 처리
+            server: crate::settings::server::ServerSettings::<Validated, HttpsDisabled>::default(),
             logging: validated_logging,
             tls: validated_tls,
             docker: validated_docker,
             middleware: settings_helper.middleware,
             router_middlewares: settings_helper.router_middlewares,
+            _marker: PhantomData,
         })
     }
 }
@@ -86,7 +88,7 @@ mod tests {
             }
         });
         
-        let settings: Result<Settings<HttpsDisabled>, _> = serde_json::from_value(json_value);
+        let settings: Result<Settings<Validated, HttpsDisabled>, _> = serde_json::from_value(json_value);
         assert!(settings.is_ok());
         
         let settings = settings.unwrap();

@@ -514,21 +514,105 @@ impl DockerManager {
         // 여러 컨테이너가 있으면 로드밸런서 활성화
         if infos.len() > 1 {
             debug!("로드밸런서 활성화: 컨테이너 수={}", infos.len());
-            service.enable_load_balancer(LoadBalancerStrategy::RoundRobin {
-                current_index: AtomicUsize::new(0)
-            });
             
-            // 추가 컨테이너들의 주소 등록
+            // 1. 첫 번째 컨테이너의 개별 로드밸런서 설정 확인
+            // 2. 없으면 글로벌 설정 확인
+            // 3. 그것도 없으면 기본 라운드로빈 사용
+            let strategy = match &first.load_balancer {
+                // 컨테이너별 설정이 있으면 사용
+                Some(lb_strategy) => {
+                    debug!("첫 번째 컨테이너의 로드밸런서 설정 사용");
+                    lb_strategy.clone()
+                },
+                // 컨테이너별 설정이 없으면 글로벌 설정 확인
+                None => {
+                    if self.config.has_load_balancer() {
+                        debug!("글로벌 로드밸런서 설정 사용: {}", self.config.load_balancer_strategy());
+                        
+                        if self.config.load_balancer_strategy() == "weighted" {
+                            let weight = self.config.load_balancer_weight().unwrap_or(1) as usize;
+                            
+                            LoadBalancerStrategy::Weighted {
+                                current_index: AtomicUsize::new(0),
+                                total_weight: weight, // 초기값은 첫 번째 컨테이너 가중치
+                            }
+                        } else {
+                            LoadBalancerStrategy::RoundRobin {
+                                current_index: AtomicUsize::new(0),
+                            }
+                        }
+                    } else {
+                        // 기본 라운드로빈 전략
+                        debug!("로드밸런서 설정 없음, 기본 라운드로빈 사용");
+                        LoadBalancerStrategy::RoundRobin {
+                            current_index: AtomicUsize::new(0),
+                        }
+                    }
+                }
+            };
+            
+            service.enable_load_balancer(strategy);
+            
+            // 추가 백엔드 추가
+            let mut calculated_total_weight = match &service.load_balancer {
+                Some(lb) => lb.get_total_weight().unwrap_or(0),
+                None => 0
+            };
+            
             for info in &infos[1..] {
                 let addr = self.extractor.parse_socket_addr(&info.ip, info.port)?;
-                debug!("백엔드 주소 추가: {}", addr);
-                service.add_address(addr, 1)?;
+                
+                // 각 컨테이너별 가중치 결정
+                let weight = match &info.load_balancer {
+                    // 컨테이너별 설정이 있으면 사용
+                    Some(LoadBalancerStrategy::Weighted { total_weight, .. }) => {
+                        debug!(
+                            container_ip = %info.ip,
+                            weight = %total_weight,
+                            "컨테이너별 가중치 적용"
+                        );
+                        *total_weight
+                    },
+                    // 없으면 글로벌 설정 사용
+                    _ => {
+                        let global_weight = self.config.load_balancer_weight().unwrap_or(1) as usize;
+                        debug!(
+                            container_ip = %info.ip,
+                            weight = %global_weight,
+                            "글로벌 가중치 적용"
+                        );
+                        global_weight
+                    }
+                };
+                
+                // 백엔드 추가
+                service.add_address(addr, weight)?;
+                
+                // 가중치 기반인 경우 총 가중치 누적
+                if let Some(ref lb) = service.load_balancer {
+                    if lb.is_weighted() {
+                        calculated_total_weight += weight;
+                    }
+                }
+            }
+            
+            // 가중치 기반인 경우 총 가중치 업데이트
+            if let Some(ref mut lb) = service.load_balancer {
+                if lb.is_weighted() {
+                    debug!("로드밸런서 총 가중치 업데이트: {}", calculated_total_weight);
+                    if let Err(e) = lb.set_total_weight(calculated_total_weight) {
+                        warn!("로드밸런서 가중치 업데이트 실패: {}", e);
+                    }
+                }
             }
         }
-
-        let path_matcher = first.path_matcher.clone()
-            .unwrap_or_else(|| PathMatcher::from_str("/").unwrap());
-        debug!("최종 경로 매처: {:?}", path_matcher);
+        
+        // 미들웨어 처리
+        if let Some(middlewares) = &first.middlewares {
+            service.set_middlewares(middlewares.clone());
+        }
+        
+        let path_matcher = first.path_matcher.clone().unwrap_or_else(|| PathMatcher::from_str("/").unwrap());
         
         Ok((first.host.clone(), path_matcher, service))
     }

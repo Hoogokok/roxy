@@ -3,15 +3,16 @@ use super::config::HeadersConfig;
 use async_trait::async_trait;
 use hyper::header::{HeaderName, HeaderValue};
 use tracing::{debug, instrument};
+use crate::settings::typestate::Validated;
 
 /// 헤더 수정 미들웨어
 #[derive(Debug)]
 pub struct HeadersMiddleware {
-    config: HeadersConfig,
+    config: HeadersConfig<Validated>,
 }
 
 impl HeadersMiddleware {
-    pub fn new(config: HeadersConfig) -> Self {
+    pub fn new(config: HeadersConfig<Validated>) -> Self {
         Self {
             config,
         }

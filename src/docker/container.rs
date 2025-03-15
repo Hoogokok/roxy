@@ -265,36 +265,50 @@ impl  DefaultExtractor {
     }
 
     fn extract_info(&self, container: &ContainerSummary) -> Result<ContainerInfo, DockerError> {
+        let _id = &container.id.as_ref().ok_or_else(|| DockerError::ContainerConfigError {
+            container_id: "unknown".to_string(),
+            reason: "컨테이너 ID 없음".to_string(),
+            context: None,
+        })?;
+        
+        // 라벨 확인
         let labels = &container.labels;
         
-        // 먼저 로드밸런서 활성화 여부 확인
-        let load_balancer_enabled = self.is_load_balancer_enabled(labels);
-        
+        // 호스트 정보 추출
         let host = self.extract_host(labels)?;
-        let port = self.extract_port(labels);
-        let router_name = self.extract_router_name(labels);
-        let middlewares = router_name
-            .as_ref()
-            .and_then(|name| self.extract_middlewares(labels, name));
         
+        // IP 주소 추출
         let ip = self.extract_container_ip(container)?;
-
-        // 로드밸런서가 활성화된 경우에만 설정 추출
-        let load_balancer = if load_balancer_enabled {
-            router_name.as_ref()
-                .and_then(|name| self.extract_load_balancer(labels, name))
+        
+        // 경로 매칭 패턴 추출
+        let path_matcher = self.extract_path_matcher(labels);
+        
+        // 포트 추출
+        let port = self.extract_port(labels);
+        
+        // 미들웨어 목록 추출
+        let router_name = self.extract_router_name(labels);
+        let middlewares = if let Some(ref r_name) = router_name {
+            self.extract_middlewares(labels, r_name)
         } else {
             None
         };
-
+        
+        // 헬스 체크 설정 추출
+        let health_check = self.extract_health_check(labels);
+        
+        // 로드밸런서 설정 추출
+        let service_name = router_name.clone().unwrap_or_else(|| host.clone());
+        let load_balancer = self.extract_load_balancer(labels, &service_name);
+        
         Ok(ContainerInfo {
             host,
             ip,
             port,
-            path_matcher: self.extract_path_matcher(labels),
+            path_matcher,
             middlewares,
             router_name,
-            health_check: self.extract_health_check(labels),
+            health_check,
             load_balancer,
         })
     }

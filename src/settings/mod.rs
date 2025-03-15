@@ -17,6 +17,7 @@ pub mod core;
 mod loader;
 mod merger;
 mod deserializer;
+mod load_balancer;
 
 // 주요 타입과 함수를 내보냅니다
 pub use server::{ServerSettings, parse_env_var, Either, HttpsDisabled, HttpsEnabled};

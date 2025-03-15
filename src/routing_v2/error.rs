@@ -58,6 +58,7 @@ pub enum BackendError {
     NoAddresses,
     IndexOutOfBounds { index: usize, len: usize },
     LoadBalancerNotEnabled,
+    InvalidOperation(String),
 }
 
 impl std::fmt::Display for BackendError {
@@ -68,6 +69,7 @@ impl std::fmt::Display for BackendError {
                 write!(f, "백엔드 주소 인덱스 범위 초과: index={}, len={}", index, len),
             BackendError::LoadBalancerNotEnabled =>
                 write!(f, "로드밸런서가 활성화되지 않음"),
+            BackendError::InvalidOperation(reason) => write!(f, "잘못된 작업: {}", reason),
         }
     }
 }

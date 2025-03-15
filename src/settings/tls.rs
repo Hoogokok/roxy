@@ -56,21 +56,8 @@ impl<'de> Deserialize<'de> for TlsSettings<Raw> {
 
 // Raw 상태에서의 메서드
 impl TlsSettings<Raw> {
-    pub fn new(
-        enabled: bool,
-        port: u16,
-        cert_path: Option<PathBuf>,
-        key_path: Option<PathBuf>,
-    ) -> Self {
-        Self {
-            enabled,
-            port,
-            cert_path,
-            key_path,
-            _marker: PhantomData,
-        }
-    }
-    
+
+    /// 환경 변수로부터 TLS 설정을 로드
     pub fn from_env() -> Result<Self, SettingsError> {
         Ok(Self {
             enabled: parse_env_var("PROXY_TLS_ENABLED", || false)?,
@@ -163,7 +150,7 @@ impl AsyncValidatable<TlsSettings<Validated>> for TlsSettings<Raw> {
             }
             
             // 포트 범위 검증
-            if self.port < 1 || self.port > 65535 {
+            if self.port < 1 {
                 let err = SettingsError::InvalidValue {
                     field: "port".to_string(),
                     context: "TLS 설정".to_string(),

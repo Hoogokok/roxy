@@ -58,7 +58,7 @@ impl serde::Serialize for ValidServiceId {
 
 struct ValidServiceIdVisitor;
 
-impl<'de> serde::de::Visitor<'de> for ValidServiceIdVisitor {
+impl serde::de::Visitor<'_> for ValidServiceIdVisitor {
     type Value = ValidServiceId;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -129,7 +129,7 @@ impl serde::Serialize for ValidMiddlewareId {
 
 struct ValidMiddlewareIdVisitor;
 
-impl<'de> serde::de::Visitor<'de> for ValidMiddlewareIdVisitor {
+impl serde::de::Visitor<'_> for ValidMiddlewareIdVisitor {
     type Value = ValidMiddlewareId;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -200,7 +200,7 @@ impl serde::Serialize for ValidRouterId {
 
 struct ValidRouterIdVisitor;
 
-impl<'de> serde::de::Visitor<'de> for ValidRouterIdVisitor {
+impl serde::de::Visitor<'_> for ValidRouterIdVisitor {
     type Value = ValidRouterId;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -339,7 +339,7 @@ impl serde::Serialize for ValidRule {
 
 struct ValidRuleVisitor;
 
-impl<'de> serde::de::Visitor<'de> for ValidRuleVisitor {
+impl serde::de::Visitor<'_> for ValidRuleVisitor {
     type Value = ValidRule;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -379,7 +379,7 @@ impl serde::Serialize for Version {
 // String에서 Version으로 변환하는 방문자 구현
 struct VersionVisitor;
 
-impl<'de> serde::de::Visitor<'de> for VersionVisitor {
+impl serde::de::Visitor<'_> for VersionVisitor {
     type Value = Version;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -419,7 +419,7 @@ impl Version {
         }
         
         let parts: Vec<&str> = version.split('.').collect();
-        if parts.len() < 1 || parts.len() > 3 {
+        if parts.is_empty() || parts.len() > 3 {
             return None; // Must have 1-3 parts
         }
         
@@ -504,7 +504,7 @@ impl serde::Serialize for ValidUrl {
 // String에서 ValidUrl로 변환하는 방문자 구현
 struct ValidUrlVisitor;
 
-impl<'de> serde::de::Visitor<'de> for ValidUrlVisitor {
+impl serde::de::Visitor<'_> for ValidUrlVisitor {
     type Value = ValidUrl;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -640,7 +640,7 @@ impl serde::Serialize for ValidPort {
 
 struct ValidPortVisitor;
 
-impl<'de> serde::de::Visitor<'de> for ValidPortVisitor {
+impl serde::de::Visitor<'_> for ValidPortVisitor {
     type Value = ValidPort;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {

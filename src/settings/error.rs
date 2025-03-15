@@ -190,6 +190,15 @@ impl SettingsValidator {
             file: file.into(),
         }
     }
+
+    /// 검증 결과를 안전하게 처리하는 메서드
+    pub fn into_result<T>(self, value: T) -> Result<T, Vec<SettingsError>> {
+        if self.has_errors() {
+            Err(self.errors)
+        } else {
+            Ok(value)
+        }
+    }
 }
 
 impl ValidationErrorCollector for SettingsValidator {
@@ -212,16 +221,10 @@ impl ValidationErrorCollector for SettingsValidator {
     }
     
     fn handle_errors<T>(&self) -> Result<T, Vec<Self::Error>> {
-        if self.has_errors() {
-            // 오류들을 복제해서 반환
-            let errors = self.errors.iter()
-                .map(|e| e.clone_error())
-                .collect();
-            
-            Err(errors)
-        } else {
-            panic!("오류가 없는데 handle_errors를 호출했습니다")
-        }
+        // 패닉 제거하고 항상 오류 반환
+        Err(self.errors.iter()
+            .map(|e| e.clone_error())
+            .collect())
     }
 }
 
@@ -350,9 +353,22 @@ mod tests {
         
         assert!(validator.has_errors());
         
-        // handle_errors 사용
+        // 수정된 테스트
         let result: Result<(), Vec<SettingsError>> = validator.handle_errors();
         assert!(result.is_err());
         assert_eq!(result.unwrap_err().len(), 2);
+        
+        // 새로운 메서드 테스트
+        let mut validator2 = SettingsValidator::new();
+        validator2.start_collecting();
+        validator2.add_field_error("test", "테스트 오류");
+        
+        let result = validator2.into_result(42);
+        assert!(result.is_err());
+        
+        let validator3 = SettingsValidator::new();
+        let result = validator3.into_result("성공");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "성공");
     }
 } 
