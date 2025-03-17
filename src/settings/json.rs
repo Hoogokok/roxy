@@ -335,7 +335,7 @@ impl JsonConfig {
             .unwrap_or_else(|| "unknown".to_string());
             
         // ConfigParser로 파싱 시도 - 성공하면 모든 유효성 검사 통과
-        match crate::settings::parser::ConfigParser::parse(&json_str) {
+        match ConfigParser::parse(&json_str) {
             Ok(_) => {
                 // 검증 성공 시 타임스탬프 업데이트
                 self.last_validated = Some(SystemTime::now());
