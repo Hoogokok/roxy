@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "reverse_proxy_traefik"
 path = "src/main.rs"
 
+[[bench]]
+name = "container_config_benchmarks"
+harness = false
+
 [dependencies]
 tokio = { version = "1", features = ["net", "macros", "rt-multi-thread", "fs"] }
 hyper = { version = "1.6.0", features = ["server", "http1", "client"] }
@@ -43,6 +47,7 @@ tempfile = "3.2"
 serial_test = "2.0"
 reqwest = { version = "0.11", features = ["json"] }
 http-body = "1.0"
+criterion = { version = "0.5", features = ["async_tokio"] }
 
 [profile.test]
 opt-level = 3
