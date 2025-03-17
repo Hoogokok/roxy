@@ -6,10 +6,10 @@ mod container_config_manager_tests {
     use crate::Settings;
     use tempfile;
     use std::path::PathBuf;
-    use crate::settings::error::SettingsError;
-    use tokio::sync::mpsc;
     use std::time::Duration;
-    use dashmap::DashMap;
+    use std::sync::Arc;
+    use tokio::task;
+    use futures_util::future::join_all;
 
     #[tokio::test]
     async fn test_new_container_config_manager() {
@@ -279,5 +279,164 @@ mod container_config_manager_tests {
             // 오류 유형과 관계없이 컨테이너 ID가 설정에 추가되지 않아야 함
             assert!(!manager.container_configs.contains_key("test-container"));
         }
+    }
+
+    #[tokio::test]
+    async fn test_get_all_container_configs() {
+        let (manager, _rx) = ContainerConfigManager::new();
+        
+        // 다수의 설정 등록
+        for i in 1..=10 {
+            let mock_config = JsonConfig::default();
+            manager.container_configs.insert(format!("container{}", i), mock_config);
+        }
+        
+        // 모든 설정 일괄 조회
+        let configs = manager.get_all_container_configs();
+        
+        // 결과 검증
+        assert_eq!(configs.len(), 10);
+        
+        // 모든 컨테이너 ID가 포함되어 있는지 확인
+        let container_ids: Vec<String> = configs.iter()
+            .map(|(id, _)| id.clone())
+            .collect();
+            
+        for i in 1..=10 {
+            assert!(container_ids.contains(&format!("container{}", i)));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_merge_configs_batch() {
+        let (manager, _rx) = ContainerConfigManager::new();
+        
+        // 다수의 설정 등록
+        for i in 1..=5 {
+            let mock_config = JsonConfig::default();
+            manager.container_configs.insert(format!("container{}", i), mock_config);
+        }
+        
+        // 테스트용 도커 라벨
+        let mut labels = HashMap::new();
+        labels.insert("rproxy.host".to_string(), "example.com".to_string());
+        
+        // 컨테이너 ID 배열 생성
+        let container_ids: Vec<&str> = vec!["container1", "container2", "container3", "container4", "container5"];
+        
+        // 설정 일괄 병합
+        let merged_configs = manager.merge_configs_batch(&container_ids, &labels);
+        
+        // 결과 검증
+        assert_eq!(merged_configs.len(), 5);
+        
+        // 모든 컨테이너 ID에 대한 설정이 포함되어 있는지 확인
+        for id in container_ids {
+            assert!(merged_configs.contains_key(id));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_channel_buffer_performance() {
+        let (manager, mut rx) = ContainerConfigManager::new();
+        
+        // 임시 디렉토리 및 유효한 JSON 파일 생성
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+        let json_content = r#"{"server": {"http_port": 8080}}"#;
+        std::fs::write(&config_path, json_content).unwrap();
+        
+        // 여러 설정을 빠르게 연속으로 로드
+        for i in 1..=50 {
+            let result = manager.load_container_config(format!("fast-container-{}", i), &config_path).await;
+            assert!(result.is_ok());
+        }
+        
+        // 알림이 정상적으로 수신되었는지 확인
+        let mut received_count = 0;
+        while let Ok(_) = rx.try_recv() {
+            received_count += 1;
+        }
+        
+        // 모든 알림이 수신되었는지 확인
+        assert_eq!(received_count, 50, "모든 알림이 수신되어야 함");
+    }
+
+    #[tokio::test]
+    async fn test_high_concurrency_performance() {
+        let (manager, _rx) = ContainerConfigManager::new();
+        let manager = Arc::new(manager);
+        
+        // 임시 디렉토리 및 유효한 JSON 파일 생성
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("config.json");
+        let json_content = r#"{"server": {"http_port": 8080}}"#;
+        std::fs::write(&config_path, json_content).unwrap();
+        
+        // 높은 동시성으로 작업 테스트
+        const CONCURRENCY: usize = 100;
+        
+        // 다수의 작업 생성
+        let mut tasks = Vec::with_capacity(CONCURRENCY);
+        for i in 0..CONCURRENCY {
+            let manager_clone = manager.clone();
+            let config_path = config_path.clone();
+            
+            // 동시에 설정 로드 및 병합 작업 실행
+            let task = task::spawn(async move {
+                let container_id = format!("concurrent-container-{}", i);
+                
+                // 설정 로드
+                manager_clone.load_container_config(container_id.clone(), &config_path).await.unwrap();
+                
+                // 설정 병합 (읽기 작업)
+                let labels = HashMap::new();
+                let _settings = manager_clone.merge_config(&container_id, &labels);
+                
+                // 작업이 성공적으로 완료됨
+                true
+            });
+            
+            tasks.push(task);
+        }
+        
+        // 모든 작업이 완료될 때까지 대기
+        let results = join_all(tasks).await;
+        
+        // 모든 작업이 성공했는지 확인
+        assert_eq!(results.len(), CONCURRENCY);
+        for result in results {
+            assert!(result.unwrap(), "모든 동시 작업이 성공해야 함");
+        }
+        
+        // 모든 설정이 정상적으로 로드되었는지 확인
+        assert_eq!(manager.container_configs.len(), CONCURRENCY);
+    }
+
+    #[tokio::test]
+    async fn test_large_config_performance() {
+        let (manager, _rx) = ContainerConfigManager::new();
+        
+        // 대량의 Docker 라벨 생성
+        let mut large_labels = HashMap::new();
+        for i in 0..1000 {
+            large_labels.insert(format!("rproxy.test.label.{}", i), format!("value-{}", i));
+        }
+        
+        // JSON 설정 생성
+        let mock_config = JsonConfig::default();
+        manager.container_configs.insert("large-container".to_string(), mock_config);
+        
+        // 실행 시간 측정
+        let start = std::time::Instant::now();
+        let _settings = manager.merge_config("large-container", &large_labels);
+        let duration = start.elapsed();
+        
+        // 결과 출력
+        println!("대량 설정(1000개 라벨) 병합 소요 시간: {:?}", duration);
+        
+        // 성능 테스트이므로 특정 시간 제한은 두지 않고, 
+        // 실행이 완료되는지만 확인 (필요시 벤치마크에서 상세 측정)
+        assert!(true);
     }
 }
