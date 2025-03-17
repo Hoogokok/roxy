@@ -17,6 +17,8 @@ pub struct ContainerInfo {
     /// 헬스 체크 설정
     pub health_check: Option<ContainerHealthCheck>,
     pub load_balancer: Option<LoadBalancerStrategy>,
+    /// 컨테이너별 JSON 설정 파일 경로
+    pub json_config_path: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -301,6 +303,9 @@ impl  DefaultExtractor {
         let service_name = router_name.clone().unwrap_or_else(|| host.clone());
         let load_balancer = self.extract_load_balancer(labels, &service_name);
         
+        // JSON 설정 경로 추출
+        let json_config_path = self.extract_json_config_path(labels);
+        
         Ok(ContainerInfo {
             host,
             ip,
@@ -310,6 +315,7 @@ impl  DefaultExtractor {
             router_name,
             health_check,
             load_balancer,
+            json_config_path,
         })
     }
 
@@ -342,6 +348,13 @@ impl  DefaultExtractor {
             reason: format!("네트워크 {}에서 IP 주소를 찾을 수 없음", self.network_name),
             context: None,
         })
+    }
+
+    // JSON 설정 경로 추출 메서드 추가
+    fn extract_json_config_path(&self, labels: &Option<std::collections::HashMap<String, String>>) -> Option<String> {
+        labels.as_ref()
+            .and_then(|l| l.get(&format!("{}config.json", self.label_prefix)))
+            .cloned()
     }
 
     pub fn new(network_name: String, label_prefix: String) -> Self {
