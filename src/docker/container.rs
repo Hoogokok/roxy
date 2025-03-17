@@ -1,9 +1,10 @@
 use bollard::models::ContainerSummary;
-use crate::{docker::DockerError, routing_v2::{BackendService, LoadBalancerStrategy, PathMatcher}};
+use crate::{docker::DockerError, routing_v2::{BackendService, LoadBalancerStrategy, PathMatcher}, settings::{types::ConfigPath, typestate::{Raw, Validatable, Validated}}};
 use std::net::SocketAddr;
 use crate::settings::docker::HealthCheckType;
 use std::sync::atomic::AtomicUsize;
 use tracing::debug;
+use std::collections::HashMap;
 
 // 불변 데이터 구조
 #[derive(Debug, Clone)]
@@ -18,7 +19,7 @@ pub struct ContainerInfo {
     pub health_check: Option<ContainerHealthCheck>,
     pub load_balancer: Option<LoadBalancerStrategy>,
     /// 컨테이너별 JSON 설정 파일 경로
-    pub json_config_path: Option<String>,
+    pub json_config_path: Option<ConfigPath<Validated>>,
 }
 
 #[derive(Debug, Clone)]
@@ -266,6 +267,12 @@ impl  DefaultExtractor {
         })
     }
 
+    fn extract_json_config_path(&self, labels: &Option<HashMap<String, String>>) -> Option<ConfigPath<Raw>> {
+        labels.as_ref()
+            .and_then(|l| l.get(&format!("{}config.json", self.label_prefix)))
+            .map(|path| ConfigPath::new(path.clone()))
+    }
+
     fn extract_info(&self, container: &ContainerSummary) -> Result<ContainerInfo, DockerError> {
         let _id = &container.id.as_ref().ok_or_else(|| DockerError::ContainerConfigError {
             container_id: "unknown".to_string(),
@@ -304,7 +311,19 @@ impl  DefaultExtractor {
         let load_balancer = self.extract_load_balancer(labels, &service_name);
         
         // JSON 설정 경로 추출
-        let json_config_path = self.extract_json_config_path(labels);
+        let raw_json_config_path = self.extract_json_config_path(labels);
+        
+        let json_config_path = match raw_json_config_path {
+            Some(raw_path) => match raw_path.validate() {
+                Ok(validated) => Some(validated),
+                Err(e) => return Err(DockerError::ContainerConfigError {
+                    container_id: "unknown".to_string(),
+                    reason: "설정 경로 검증 실패".to_string(),
+                    context: Some(e.to_string()),
+                }),
+            },
+            None => None,
+        };
         
         Ok(ContainerInfo {
             host,
@@ -348,13 +367,6 @@ impl  DefaultExtractor {
             reason: format!("네트워크 {}에서 IP 주소를 찾을 수 없음", self.network_name),
             context: None,
         })
-    }
-
-    // JSON 설정 경로 추출 메서드 추가
-    fn extract_json_config_path(&self, labels: &Option<std::collections::HashMap<String, String>>) -> Option<String> {
-        labels.as_ref()
-            .and_then(|l| l.get(&format!("{}config.json", self.label_prefix)))
-            .cloned()
     }
 
     pub fn new(network_name: String, label_prefix: String) -> Self {
