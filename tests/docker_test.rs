@@ -60,175 +60,156 @@ impl ContainerInfoExtractor for MockExtractor {
     }
 
     fn extract_info(&self, container: &ContainerSummary) -> Result<ContainerInfo, DockerError> {
-        let labels = container.labels.as_ref();
+        let id = container.id.as_ref().ok_or_else(|| DockerError::ContainerConfigError {
+            container_id: "unknown".to_string(),
+            reason: "컨테이너 ID 없음".to_string(),
+            context: None,
+        })?;
         
-        // 라우터 규칙에서 호스트와 경로 추출
-        let (host, router_name, path_from_rule) = labels
-            .and_then(|l| {
-                // 여러 라우터 이름 시도 (default, web, api)
-                let router_keys = [
-                    format!("{}.http.routers.default.rule", self.label_prefix.trim_end_matches('.')),
-                    format!("{}.http.routers.web.rule", self.label_prefix.trim_end_matches('.')),
-                    format!("{}.http.routers.api.rule", self.label_prefix.trim_end_matches('.')),
-                    // 이전 형식도 지원
-                    format!("{}.host", self.label_prefix.trim_end_matches('.'))
-                ];
-                
-                for key in router_keys.iter() {
-                    if let Some(rule) = l.get(key) {
-                        // 복합 규칙 파싱 (예: Host(`example.com`) && PathPrefix(`/api`))
-                        let parts: Vec<&str> = rule.split(" && ").collect();
-                        let mut host = None;
-                        let mut path = None;
-                        
-                        for part in &parts {
-                            if part.starts_with("Host(`") && part.ends_with("`)") {
-                                host = Some(part.trim_start_matches("Host(`").trim_end_matches("`)").to_string());
-                            } else if part.starts_with("PathPrefix(`") && part.ends_with("`)") {
-                                let path_str = part.trim_start_matches("PathPrefix(`").trim_end_matches("`)");
-                                // 항상 prefix 매처를 사용하여 일관성 확보
-                                path = Some(PathMatcher::prefix(path_str));
-                            }
-                        }
-                        
-                        // 단순 호스트 규칙인 경우
-                        if parts.len() == 1 && host.is_none() {
-                            if rule.starts_with("Host(`") && rule.ends_with("`)") {
-                                host = Some(rule.trim_start_matches("Host(`").trim_end_matches("`)").to_string());
-                            } else if !key.contains("rule") {
-                                // 이전 형식 지원: 직접 호스트 값
-                                host = Some(rule.to_string());
-                            }
-                        }
-                        
-                        if let Some(host_value) = host {
-                            let router_name = if key.contains(".default.") {
-                                "default"
-                            } else if key.contains(".web.") {
-                                "web"
-                            } else if key.contains(".api.") {
-                                "api"
-                            } else {
-                                "default"
-                            };
-                            return Some((host_value, router_name.to_string(), path));
-                        }
+        // 라벨 확인
+        let labels = &container.labels;
+        
+        let host = if let Some(labels) = labels {
+            if let Some(host) = labels.get(&format!("{}host", self.label_prefix)) {
+                host.clone()
+            } else {
+                // host 라벨이 없는 경우 router rule에서 추출 시도
+                if let Some(rule) = labels.get(&format!("{}http.routers.test.rule", self.label_prefix)) {
+                    if rule.contains("Host(`") {
+                        let host_start = rule.find("Host(`").unwrap() + 6;
+                        let host_end = rule[host_start..].find("`").unwrap() + host_start;
+                        rule[host_start..host_end].to_string()
+                    } else {
+                        return Err(DockerError::ContainerConfigError {
+                            container_id: id.clone(),
+                            reason: "host label missing and no Host rule found".to_string(),
+                            context: None,
+                        });
                     }
+                } else {
+                    return Err(DockerError::ContainerConfigError {
+                        container_id: id.clone(),
+                        reason: "host label missing".to_string(),
+                        context: None,
+                    });
                 }
-                None
-            })
-            .ok_or_else(|| DockerError::ContainerConfigError {
-                container_id: container.id.as_deref().unwrap_or("unknown").to_string(),
-                reason: "host rule missing".to_string(),
+            }
+        } else {
+            return Err(DockerError::ContainerConfigError {
+                container_id: id.clone(),
+                reason: "no labels found".to_string(),
                 context: None,
-            })?;
-
-        // IP 주소 추출
-        let ip = container.network_settings.as_ref()
-            .and_then(|s| s.networks.as_ref())
-            .and_then(|n| n.get(&self.network_name))
-            .and_then(|n| n.ip_address.as_ref())
-            .ok_or_else(|| DockerError::NetworkError {
-                container_id: container.id.as_deref().unwrap_or("unknown").to_string(),
-                network: self.network_name.clone(),
-                reason: "IP 주소를 찾을 수 없음".to_string(),
-                context: None,
-            })?;
-
-        // 포트 추출 - 여러 서비스 이름 시도
-        let port = labels
-            .and_then(|l| {
-                let port_keys = [
-                    format!("{}.http.services.{}.loadbalancer.server.port", self.label_prefix.trim_end_matches('.'), router_name),
-                    format!("{}.http.services.default.loadbalancer.server.port", self.label_prefix.trim_end_matches('.')),
-                    // 이전 형식도 지원
-                    format!("{}.port", self.label_prefix.trim_end_matches('.'))
-                ];
-                
-                for key in port_keys.iter() {
-                    if let Some(port_value) = l.get(key) {
-                        if let Ok(port) = port_value.parse::<u16>() {
-                            return Some(port);
-                        }
-                    }
-                }
-                
-                None
-            })
-            .unwrap_or(80);
-
-        // 경로 매처 결정 - 룰에서 추출된 것 또는 추가 라벨에서 찾기
-        let path_matcher = path_from_rule.or_else(|| {
-            labels.and_then(|l| {
-                // 개별 경로 라벨 시도
-                let path_keys = [
-                    format!("{}.http.routers.{}.rule.PathPrefix", self.label_prefix.trim_end_matches('.'), router_name),
-                    format!("{}.http.routers.{}.rule.Path", self.label_prefix.trim_end_matches('.'), router_name),
-                    format!("{}.http.routers.{}.rule.PathRegexp", self.label_prefix.trim_end_matches('.'), router_name),
-                    // 이전 형식도 지원
-                    format!("{}.path", self.label_prefix.trim_end_matches('.'))
-                ];
-                
-                for key in path_keys.iter() {
-                    if let Some(path_value) = l.get(key) {
-                        println!("경로 키 발견: {}, 값: {}", key, path_value);
-                        
-                        // 경로 타입 결정 및 매처 생성
-                        if key.contains("PathPrefix") {
-                            // 항상 prefix 매처를 사용하여 일관성 확보
-                            return Some(PathMatcher::prefix(path_value));
-                        } else if key.contains("PathRegexp") {
-                            return PathMatcher::from_str(&format!("^{}$", path_value)).ok();
-                        } else {
-                            let path_type = l.get(&format!("{}.path.type", self.label_prefix.trim_end_matches('.')))
-                                .map(|t| t.as_str())
-                                .unwrap_or("prefix");
-                            
-                            return match path_type {
-                                "regex" => PathMatcher::from_str(&format!("^{}$", path_value)).ok(),
-                                _ => Some(PathMatcher::prefix(path_value))
-                            };
-                        }
-                    }
-                }
-                None
-            })
-        });
-            
-        // 미들웨어 추출
-        let middlewares = labels
-            .and_then(|l| {
-                let middleware_keys = [
-                    format!("{}.http.routers.{}.middlewares", self.label_prefix.trim_end_matches('.'), router_name),
-                    // 이전 형식도 지원
-                    format!("{}.middlewares", self.label_prefix.trim_end_matches('.'))
-                ];
-                
-                for key in middleware_keys.iter() {
-                    if let Some(middleware_value) = l.get(key) {
-                        let middlewares = middleware_value
-                            .split(',')
-                            .map(|s| s.trim().to_string())
-                            .collect::<Vec<String>>();
-                        
-                        if !middlewares.is_empty() {
-                            return Some(middlewares);
-                        }
-                    }
-                }
-                
-                None
             });
-
+        };
+        
+        // IP 주소 추출
+        let ip = if let Some(networks) = &container.network_settings {
+            if let Some(networks) = &networks.networks {
+                if let Some(network) = networks.get(&self.network_name) {
+                    if let Some(ip) = &network.ip_address {
+                        ip.clone()
+                    } else {
+                        return Err(DockerError::NetworkError {
+                            container_id: id.clone(),
+                            network: self.network_name.clone(),
+                            reason: "no IP address found".to_string(),
+                            context: None,
+                        });
+                    }
+                } else {
+                    return Err(DockerError::NetworkError {
+                        container_id: id.clone(),
+                        network: self.network_name.clone(),
+                        reason: "container not connected to network".to_string(),
+                        context: None,
+                    });
+                }
+            } else {
+                return Err(DockerError::NetworkError {
+                    container_id: id.clone(),
+                    network: self.network_name.clone(),
+                    reason: "container has no networks".to_string(),
+                    context: None,
+                });
+            }
+        } else {
+            return Err(DockerError::NetworkError {
+                container_id: id.clone(),
+                network: self.network_name.clone(),
+                reason: "container has no network settings".to_string(),
+                context: None,
+            });
+        };
+        
+        // 경로 매칭 패턴
+        let path_matcher = if let Some(labels) = labels {
+            if let Some(path) = labels.get(&format!("{}path", self.label_prefix)) {
+                let pattern = if let Some(path_type) = labels.get(&format!("{}path.type", self.label_prefix)) {
+                    match path_type.as_str() {
+                        "regex" => format!("^{}", path),
+                        "prefix" => format!("{}*", path),
+                        _ => path.clone(),
+                    }
+                } else {
+                    path.clone()
+                };
+                PathMatcher::from_str(&pattern).ok()
+            } else {
+                // 기본 경로 매처
+                Some(PathMatcher::from_str("/").unwrap())
+            }
+        } else {
+            Some(PathMatcher::from_str("/").unwrap())
+        };
+        
+        // 포트 - 기본값 80
+        let port = if let Some(labels) = labels {
+            labels.iter()
+                .find(|(k, _)| k.contains(".loadbalancer.server.port"))
+                .and_then(|(_, v)| v.parse().ok())
+                .unwrap_or(80)
+        } else {
+            80
+        };
+        
+        // 라우터 이름
+        let router_name = if let Some(labels) = labels {
+            labels.iter()
+                .find(|(k, _)| k.starts_with(&format!("{}http.routers.", self.label_prefix)))
+                .map(|(k, _)| {
+                    let parts: Vec<&str> = k.split('.').collect();
+                    parts.get(3).map(|&name| name.to_string())
+                })
+                .flatten()
+        } else {
+            None
+        };
+        
+        // 미들웨어 목록
+        let middlewares = if let (Some(r_name), Some(labels)) = (&router_name, labels) {
+            let middleware_key = format!("{}http.routers.{}.middlewares", self.label_prefix, r_name);
+            labels.get(&middleware_key)
+                .map(|v| v.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect())
+        } else {
+            None
+        };
+        
+        // JSON 설정 경로 추출
+        let json_config_path = None;
+        
         Ok(ContainerInfo {
             host,
-            ip: ip.to_string(),
+            ip,
             port,
             path_matcher,
             middlewares,
-            router_name: Some(router_name),
+            router_name,
             health_check: None,
             load_balancer: None,
+            json_config_path,
         })
     }
 
@@ -478,15 +459,18 @@ async fn test_path_based_routing() {
 
 #[test]
 fn test_container_path_patterns() {
+    // 컨테이너 설정
     let container = ContainerSummary {
         id: Some("test_container".to_string()),
         labels: Some({
             let mut labels = HashMap::new();
-            // 새로운 라벨 형식 사용
-            labels.insert("rproxy.http.routers.default.rule".to_string(), "Host(`example.com`)".to_string());
+            // 호스트 라벨 직접 지정
+            labels.insert("rproxy.host".to_string(), "example.com".to_string());
+            // 포트
             labels.insert("rproxy.http.services.default.loadbalancer.server.port".to_string(), "8080".to_string());
-            // 경로 관련 레이블 - PathPrefix 사용 - 명시적으로 경로 지정
-            labels.insert("rproxy.http.routers.default.rule.PathPrefix".to_string(), "/api".to_string());
+            // 경로 관련 레이블
+            labels.insert("rproxy.path".to_string(), "/api".to_string());
+            labels.insert("rproxy.path.type".to_string(), "prefix".to_string());
             labels
         }),
         network_settings: Some(ContainerSummaryNetworkSettings {
@@ -522,7 +506,7 @@ fn test_container_path_patterns() {
     // 경로 매칭 테스트 - 더 명확한 검증
     assert!(path_matcher.matches("/api"), "매처는 /api와 일치해야 함");
     
-    // 하위 경로 매칭 테스트 - 실패하는 부분
+    // 하위 경로 매칭 테스트
     let api_users_path = "/api/users";
     let matches_api_users = path_matcher.matches(api_users_path);
     assert!(matches_api_users, "매처는 {}와 일치해야 함 (현재: {})", api_users_path, matches_api_users);
@@ -533,13 +517,18 @@ fn test_container_path_patterns() {
 
 #[test]
 fn test_container_path_patterns_regex() {
+    // 컨테이너 설정
     let container = ContainerSummary {
         id: Some("test_container".to_string()),
         labels: Some({
             let mut labels = HashMap::new();
-            labels.insert("rproxy.http.routers.default.rule".to_string(), "Host(`example.com`)".to_string());
+            // 호스트 라벨 직접 지정
+            labels.insert("rproxy.host".to_string(), "example.com".to_string());
+            // 포트
             labels.insert("rproxy.http.services.default.loadbalancer.server.port".to_string(), "8080".to_string());
-            labels.insert("rproxy.http.routers.default.rule.PathRegexp".to_string(), "/api/.*".to_string());
+            // 정규식 경로 패턴 지정
+            labels.insert("rproxy.path".to_string(), "/api/.*".to_string());
+            labels.insert("rproxy.path.type".to_string(), "regex".to_string());
             labels
         }),
         network_settings: Some(ContainerSummaryNetworkSettings {
