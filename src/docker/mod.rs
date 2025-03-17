@@ -4,6 +4,7 @@ mod retry;
 mod client;
 pub mod container;
 mod health;
+mod container_test;
 
 pub use client::{BollardDockerClient, DockerClient};
 use container::ContainerInfo;
