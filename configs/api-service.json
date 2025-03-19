@@ -1,0 +1,61 @@
+{
+    "version": "1.0",
+    "middlewares": {
+        "api-cors": {
+            "type": "cors",
+            "settings": {
+                "allow_origins": [
+                    "http://localhost:3000",
+                    "https://example.com"
+                ],
+                "allow_methods": [
+                    "GET",
+                    "POST",
+                    "PUT",
+                    "DELETE",
+                    "OPTIONS"
+                ],
+                "allow_headers": [
+                    "Content-Type",
+                    "Authorization",
+                    "X-Request-ID"
+                ],
+                "allow_credentials": true,
+                "expose_headers": [
+                    "X-Custom-Header"
+                ],
+                "max_age": 3600
+            },
+            "enabled": true
+        }
+    },
+    "services": {
+        "api-service": {
+            "loadbalancer": {
+                "servers": [
+                    {
+                        "name": "api-1",
+                        "port": 80,
+                        "weight": 2
+                    },
+                    {
+                        "name": "api-2",
+                        "port": 80,
+                        "weight": 1
+                    }
+                ]
+            }
+        }
+    },
+    "health": {
+        "enabled": true,
+        "http": {
+            "path": "/api/health",
+            "method": "GET",
+            "expected_status": 200
+        },
+        "interval": 30,
+        "timeout": 5,
+        "max_failures": 3
+    }
+}
