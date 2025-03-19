@@ -16,9 +16,10 @@ pub use retry::{RetryPolicy, with_retry, ContainerRoutesRetry};
 use bollard::container::ListContainersOptions;
 use bollard::models::{ContainerSummary, EventMessage};
 use bollard::system::EventsOptions;
-use futures_util::stream::StreamExt;
+use futures_util::{stream::StreamExt, Stream};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
+use crate::settings::container::ContainerConfigManager;
 use crate::settings::DockerSettings;
 use crate::routing_v2::{BackendService, PathMatcher};
 use tracing::{debug, error, info, warn};
@@ -32,6 +33,7 @@ use tokio::{
 use self::health::{ContainerHealth, HealthCheckerFactory};
 use std::sync::atomic::AtomicUsize;
 use crate::routing_v2::LoadBalancerStrategy;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone)]
 pub struct DockerManager {
@@ -39,6 +41,7 @@ pub struct DockerManager {
     extractor: Box<dyn ContainerInfoExtractor>,
     config: DockerSettings,
     health_checks: Arc<RwLock<HashMap<String, ContainerHealth>>>,
+    container_config_manager: Arc<ContainerConfigManager>,
 }
 
 impl DockerManager {
@@ -48,11 +51,15 @@ impl DockerManager {
         extractor: Box<dyn ContainerInfoExtractor>,
         config: DockerSettings,
     ) -> Self {
+        // 설정 관리자 초기화
+        let (container_config_manager, _config_rx) = ContainerConfigManager::new();
+        
         Self {
             client: Arc::new(client),
             extractor,
             config,
             health_checks: Arc::new(RwLock::new(HashMap::new())),
+            container_config_manager: Arc::new(container_config_manager),
         }
     }
 
@@ -203,6 +210,8 @@ impl DockerManager {
                 context: None,
             })?;
 
+        let (container_config_manager, _) = ContainerConfigManager::new();
+        
         let manager = DockerManager { 
             client: docker.clone(),
             extractor: Box::new(DefaultExtractor::new(
@@ -211,6 +220,7 @@ impl DockerManager {
             )),
             config: config.clone(),
             health_checks,
+            container_config_manager: Arc::new(container_config_manager),
         };
 
         // 이벤트 처리 후 미들웨어 설정도 업데이트
@@ -654,4 +664,227 @@ impl DockerManager {
         info!("초기 컨테이너 헬스체크 설정 완료");
         Ok(())
     }
+
+    /// 모든 컨테이너의 설정 파일 경로 반환
+    pub async fn get_container_config_paths(&self) -> Result<Vec<(String, PathBuf)>, DockerError> {
+        let mut paths = Vec::new();
+        let containers = self.get_labeled_containers().await?;
+        
+        for container in &containers {
+            let id = match &container.id {
+                Some(id) => id.clone(),
+                None => continue,
+            };
+            
+            // 컨테이너 정보 추출
+            if let Ok(info) = self.extractor.extract_info(container) {
+                if let Some(path) = &info.json_config_path {
+                    paths.push((id, PathBuf::from(path.as_str())));
+                }
+            }
+        }
+        
+        Ok(paths)
+    }
+
+    /// 컨테이너별 JSON 설정 파일 로드
+    pub async fn load_container_json_config(&self, container_id: &str, path: &Path) -> Result<(), DockerError> {
+        info!(container_id = %container_id, path = %path.display(), "컨테이너 JSON 설정 로드");
+        
+        // 설정 파일 로드 시도
+        self.container_config_manager
+            .load_container_config(container_id.to_string(), path)
+            .await
+            .map_err(|e| DockerError::ContainerConfigError {
+                container_id: container_id.to_string(),
+                reason: "JSON 설정 로드 실패".to_string(),
+                context: Some(e.to_string()),
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::pin::Pin;
+    use async_trait::async_trait;
+    use tempfile;
+    use crate::settings::types::ConfigPath;
+    use crate::settings::docker::DockerSettings;
+    use crate::settings::typestate::{Raw, Validated, Validatable};
+
+    // DockerClient Mock 구현
+    struct MockDockerClient;
+
+    #[async_trait::async_trait]
+    impl DockerClient for MockDockerClient {
+        fn clone_box(&self) -> Box<dyn DockerClient> {
+            Box::new(Self)
+        }
+
+        async fn list_containers(
+            &self, 
+            _options: Option<ListContainersOptions<String>>
+        ) -> Result<Vec<ContainerSummary>, DockerError> {
+            Ok(vec![])
+        }
+
+        fn events(
+            &self, 
+            _options: Option<EventsOptions<String>>
+        ) -> Pin<Box<dyn Stream<Item = Result<EventMessage, DockerError>> + Send>> {
+            Box::pin(futures_util::stream::empty())
+        }
+    }
+
+    // 테스트용 ContainerInfoExtractor 구현
+    struct MockExtractor;
+
+    impl ContainerInfoExtractor for MockExtractor {
+        fn clone_box(&self) -> Box<dyn ContainerInfoExtractor> {
+            Box::new(Self)
+        }
+
+        fn extract_info(&self, _container: &ContainerSummary) -> Result<ContainerInfo, DockerError> {
+            let raw_path = ConfigPath::<Raw>::new("/path/to/config.json".to_string());
+            let validated_path = raw_path.validate().unwrap();
+            
+            Ok(ContainerInfo {
+                host: "example.com".to_string(),
+                ip: "127.0.0.1".to_string(),
+                port: 8080,
+                path_matcher: None,
+                middlewares: None,
+                router_name: None,
+                health_check: None,
+                load_balancer: None,
+                json_config_path: Some(validated_path),
+            })
+        }
+
+        fn create_backend(&self, _info: &ContainerInfo) -> Result<BackendService, DockerError> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn test_load_container_json_config() {
+        // 임시 디렉토리 및 JSON 파일 생성
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("test-config.json");
+        
+        // 간단한 JSON 파일 내용 작성
+        let json_content = r#"{"version": "1.0", "server": {"http_port": 8080}}"#;
+        std::fs::write(&config_path, json_content).unwrap();
+        
+        // DockerManager 생성
+        let settings = DockerSettings::default();
+        let docker_client = Box::new(MockDockerClient);
+        let extractor = Box::new(MockExtractor);
+        
+        let manager = DockerManager::new(docker_client, extractor, settings).await;
+        
+        // 컨테이너 설정 로드 테스트
+        let result = manager.load_container_json_config("test-container", &config_path).await;
+        
+        // 로드 성공 확인
+        assert!(result.is_ok());
+        
+        // 설정이 실제로 저장되었는지 확인
+        let config = manager.container_config_manager.container_configs.get("test-container");
+        assert!(config.is_some());
+    }
+
+    /* 추후 구현할 테스트들은 주석 처리
+    #[tokio::test]
+    async fn test_merge_container_settings() {
+        // 임시 디렉토리 및 JSON 파일 생성
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config_path = temp_dir.path().join("test-config.json");
+        
+        // JSON 파일 내용 작성 - 특정 포트 설정 포함
+        let json_content = r#"{"version": "1.0", "server": {"http_port": 9090}}"#;
+        std::fs::write(&config_path, json_content).unwrap();
+        
+        // DockerManager 생성
+        let settings = DockerSettings::default();
+        let docker_client = Box::new(MockDockerClient);
+        let extractor = Box::new(MockExtractor);
+        
+        let manager = DockerManager::new(docker_client, extractor, settings).await;
+        
+        // 컨테이너 설정 로드
+        let result = manager.load_container_json_config("test-container", &config_path).await;
+        assert!(result.is_ok());
+        
+        // 도커 라벨 설정 (낮은 우선순위)
+        let mut docker_labels = HashMap::new();
+        docker_labels.insert("rproxy.server.http_port".to_string(), "8080".to_string());
+        
+        // 설정 병합
+        let merged_settings = manager.get_container_merged_settings("test-container", &docker_labels);
+        assert!(merged_settings.is_some());
+        
+        // JSON 설정(9090)이 도커 라벨(8080)보다 우선 적용되었는지 확인
+        let settings = merged_settings.unwrap();
+        assert_eq!(settings.server.http_port(), 9090);
+    }
+
+    // DockerClient Mock 구현 (컨테이너 목록 반환)
+    struct MockDockerClientWithContainers;
+
+    #[async_trait]
+    impl DockerClient for MockDockerClientWithContainers {
+        fn clone_box(&self) -> Box<dyn DockerClient> {
+            Box::new(Self)
+        }
+
+        async fn list_containers(
+            &self, 
+            _options: Option<ListContainersOptions<String>>
+        ) -> Result<Vec<ContainerSummary>, DockerError> {
+            let mut container1 = ContainerSummary::default();
+            container1.id = Some("container1".to_string());
+            
+            let mut container2 = ContainerSummary::default();
+            container2.id = Some("container2".to_string());
+            
+            Ok(vec![container1, container2])
+        }
+
+        fn events(
+            &self, 
+            _options: Option<EventsOptions<String>>
+        ) -> Pin<Box<dyn Stream<Item = Result<EventMessage, DockerError>> + Send>> {
+            Box::pin(futures_util::stream::empty())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_container_config_paths() {
+        // DockerManager 생성
+        let settings = DockerSettings::default();
+        let docker_client = Box::new(MockDockerClientWithContainers);
+        let extractor = Box::new(MockExtractor);
+        
+        let manager = DockerManager::new(docker_client, extractor, settings).await;
+        
+        // 컨테이너 설정 파일 경로 조회
+        let paths = manager.get_container_config_paths().await.unwrap();
+        
+        // 두 개의 컨테이너가 모두 동일한 경로를 반환해야 함 (MockExtractor가 동일한 경로를 반환)
+        assert_eq!(paths.len(), 2);
+        
+        // 컨테이너 ID 확인
+        let container_ids: Vec<&str> = paths.iter().map(|(id, _)| id.as_str()).collect();
+        assert!(container_ids.contains(&"container1"));
+        assert!(container_ids.contains(&"container2"));
+        
+        // 경로 확인
+        for (_, path) in &paths {
+            assert_eq!(path.to_str().unwrap(), "/path/to/config.json");
+        }
+    }
+    */
 }
