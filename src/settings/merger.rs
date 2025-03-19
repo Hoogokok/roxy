@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use std::fs;
 
 use crate::settings::core::{Settings, Result};
@@ -8,6 +8,7 @@ use crate::settings::json::JsonConfig;
 use crate::settings::error::SettingsError;
 use crate::settings::types::ValidMiddlewareId;
 use crate::settings::typestate::TypeState;
+use crate::settings::types::ValidPort;
 
 
 /// 설정 병합 모듈
@@ -193,6 +194,176 @@ impl<State: TypeState, HttpsState> Settings<State, HttpsState> {
             if !middleware_ids.is_empty() {
                 if override_existing || !self.router_middlewares.contains_key(router) {
                     self.router_middlewares.insert(router.clone(), middleware_ids);
+                }
+            }
+        }
+        
+        // JSON 파일에서 추가 설정 적용
+        self.apply_json_file_settings(config, override_existing)?;
+        
+        Ok(())
+    }
+    
+    /// JSON 파일에서 추가 설정 적용
+    fn apply_json_file_settings(&mut self, config: &JsonConfig, override_existing: bool) -> Result<()> {
+        // 소스 파일이 없으면 건너뜀
+        let path = match &config.source_path {
+            Some(path) if path.exists() => path,
+            _ => return Ok(()),
+        };
+        
+        // JSON 파일 내용 읽기
+        let file_content = std::fs::read_to_string(path)
+            .map_err(|e| SettingsError::FileError { 
+                path: path.to_string_lossy().to_string(),
+                error: e 
+            })?;
+        
+        // JSON 파싱
+        let json: serde_json::Value = serde_json::from_str(&file_content)
+            .map_err(|e| SettingsError::JsonParseError { source: e })?;
+        
+        // 서버 설정 적용
+        if let Some(server) = json.get("server") {
+            self.apply_server_settings(server, override_existing)?;
+        }
+        
+        // 로깅 설정 적용
+        if let Some(logging) = json.get("logging") {
+            self.apply_logging_settings(logging, override_existing)?;
+        }
+        
+        // 도커 설정 적용
+        if let Some(docker) = json.get("docker") {
+            self.apply_docker_settings(docker, override_existing)?;
+        }
+        
+        Ok(())
+    }
+    
+    /// 서버 설정 적용
+    fn apply_server_settings(&mut self, server: &serde_json::Value, _override_existing: bool) -> Result<()> {
+        debug!("서버 설정 적용: {:?}", server);
+        
+        // HTTP 포트 설정
+        if let Some(http_port) = server.get("http_port") {
+            if let Some(port) = http_port.as_u64() {
+                debug!("HTTP 포트 설정: {}", port);
+                if port > 0 && port <= 65535 {
+                    if let Some(valid_port) = ValidPort::new(port as u16) {
+                        self.server.http_port = valid_port;
+                        debug!("HTTP 포트를 {}로 설정했습니다", port);
+                    } else {
+                        warn!("유효하지 않은 HTTP 포트: {}", port);
+                    }
+                } else {
+                    warn!("범위를 벗어난 HTTP 포트: {}", port);
+                }
+            }
+        }
+        
+        // HTTPS 설정 (HTTPS가 활성화된 경우에만 적용)
+        if let Some(https_enabled) = server.get("https_enabled") {
+            if https_enabled.as_bool() == Some(true) {
+                debug!("HTTPS 설정 처리");
+                
+                // HTTPS 포트 설정
+                if let Some(https_port) = server.get("https_port") {
+                    if let Some(port) = https_port.as_u64() {
+                        // HTTPS 포트 처리 로직은 타입 상태에 따라 다르게 구현해야 함
+                        // 여기서는 기본 로깅만 수행
+                        debug!("HTTPS 포트 설정: {}", port);
+                    }
+                }
+                
+                // TLS 인증서 및 키 경로 설정
+                if let Some(tls_cert) = server.get("tls_cert_path") {
+                    if let Some(cert_path) = tls_cert.as_str() {
+                        debug!("TLS 인증서 경로 설정: {}", cert_path);
+                        // 실제 설정 로직은 타입 상태에 따라 다름
+                    }
+                }
+                
+                if let Some(tls_key) = server.get("tls_key_path") {
+                    if let Some(key_path) = tls_key.as_str() {
+                        debug!("TLS 키 경로 설정: {}", key_path);
+                        // 실제 설정 로직은 타입 상태에 따라 다름
+                    }
+                }
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// 로깅 설정 적용
+    fn apply_logging_settings(&mut self, logging: &serde_json::Value, _override_existing: bool) -> Result<()> {
+        debug!("로깅 설정 적용: {:?}", logging);
+        
+        // 로그 레벨 설정
+        if let Some(level) = logging.get("level") {
+            if let Some(level_str) = level.as_str() {
+                debug!("로그 레벨 설정: {}", level_str);
+                // 실제 로그 레벨 설정 로직
+            }
+        }
+        
+        // 로그 포맷 설정
+        if let Some(format) = logging.get("format") {
+            if let Some(format_str) = format.as_str() {
+                debug!("로그 포맷 설정: {}", format_str);
+                // 실제 로그 포맷 설정 로직
+            }
+        }
+        
+        // 로그 출력 설정
+        if let Some(output) = logging.get("output") {
+            if let Some(output_str) = output.as_str() {
+                debug!("로그 출력 설정: {}", output_str);
+                // 실제 로그 출력 설정 로직
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// 도커 설정 적용
+    fn apply_docker_settings(&mut self, docker: &serde_json::Value, _override_existing: bool) -> Result<()> {
+        debug!("도커 설정 적용: {:?}", docker);
+        
+        // 네트워크 설정
+        if let Some(network) = docker.get("network") {
+            if let Some(network_str) = network.as_str() {
+                debug!("도커 네트워크 설정: {}", network_str);
+                // 실제 네트워크 설정 로직
+            }
+        }
+        
+        // 라벨 접두사 설정
+        if let Some(label_prefix) = docker.get("label_prefix") {
+            if let Some(prefix_str) = label_prefix.as_str() {
+                debug!("도커 라벨 접두사 설정: {}", prefix_str);
+                // 실제 라벨 접두사 설정 로직
+            }
+        }
+        
+        // 헬스체크 설정
+        if let Some(health_check) = docker.get("health_check") {
+            debug!("도커 헬스체크 설정: {:?}", health_check);
+            
+            // 활성화 여부
+            if let Some(enabled) = health_check.get("enabled") {
+                if let Some(enabled_bool) = enabled.as_bool() {
+                    debug!("헬스체크 활성화 설정: {}", enabled_bool);
+                    // 실제 헬스체크 활성화 설정 로직
+                }
+            }
+            
+            // 인터벌 설정
+            if let Some(interval) = health_check.get("interval") {
+                if let Some(interval_num) = interval.as_u64() {
+                    debug!("헬스체크 인터벌 설정: {}초", interval_num);
+                    // 실제 헬스체크 인터벌 설정 로직
                 }
             }
         }
