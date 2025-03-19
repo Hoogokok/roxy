@@ -12,6 +12,7 @@ pub struct ContainerInfo {
     pub host: String,
     pub ip: String,
     pub port: u16,
+    pub container_id: Option<String>,
     pub path_matcher: Option<PathMatcher>,
     pub middlewares: Option<Vec<String>>,
     pub router_name: Option<String>,
@@ -274,7 +275,7 @@ impl  DefaultExtractor {
     }
 
     fn extract_info(&self, container: &ContainerSummary) -> Result<ContainerInfo, DockerError> {
-        let _id = &container.id.as_ref().ok_or_else(|| DockerError::ContainerConfigError {
+        let container_id = container.id.as_ref().ok_or_else(|| DockerError::ContainerConfigError {
             container_id: "unknown".to_string(),
             reason: "컨테이너 ID 없음".to_string(),
             context: None,
@@ -329,6 +330,7 @@ impl  DefaultExtractor {
             host,
             ip,
             port,
+            container_id: Some(container_id.clone()),
             path_matcher,
             middlewares,
             router_name,
