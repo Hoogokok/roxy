@@ -106,6 +106,19 @@ impl BackendService {
             None => Err(BackendError::LoadBalancerNotEnabled),
         }
     }
+
+    /// HTTP 포트 업데이트
+    pub fn update_port(&mut self, port: u16) {
+        // 기본 주소의 포트 업데이트
+        self.address = SocketAddr::new(self.address.ip(), port);
+        
+        // 로드밸런서가 활성화된 경우 모든 주소의 포트 업데이트
+        if let Some(lb) = &mut self.load_balancer {
+            for (addr, _) in &mut lb.addresses {
+                *addr = SocketAddr::new(addr.ip(), port);
+            }
+        }
+    }
 }
 
 /// 로드밸런싱 전략을 정의하는 열거형입니다.
