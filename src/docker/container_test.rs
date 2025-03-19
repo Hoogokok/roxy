@@ -42,6 +42,7 @@ mod tests {
             host: "example.com".to_string(),
             ip: "172.0.0.1".to_string(),
             port: 80,
+            container_id: Some("test-container".to_string()),
             path_matcher: None,
             middlewares: None,
             router_name: None,
