@@ -204,6 +204,7 @@ impl ContainerInfoExtractor for MockExtractor {
             host,
             ip,
             port,
+            container_id: Some(id.clone()),
             path_matcher,
             middlewares,
             router_name,
