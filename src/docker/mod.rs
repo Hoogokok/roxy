@@ -34,6 +34,9 @@ use self::health::{ContainerHealth, HealthCheckerFactory};
 use std::sync::atomic::AtomicUsize;
 use crate::routing_v2::LoadBalancerStrategy;
 use std::path::{Path, PathBuf};
+use crate::settings::types::ConfigPath;
+use crate::settings::JsonConfig;
+use crate::settings::typestate::{Raw, Validated, Validatable};
 
 #[derive(Clone)]
 pub struct DockerManager {
@@ -211,7 +214,7 @@ impl DockerManager {
             })?;
 
         let (container_config_manager, _) = ContainerConfigManager::new();
-        
+
         let manager = DockerManager { 
             client: docker.clone(),
             extractor: Box::new(DefaultExtractor::new(
@@ -692,14 +695,40 @@ impl DockerManager {
         info!(container_id = %container_id, path = %path.display(), "컨테이너 JSON 설정 로드");
         
         // 설정 파일 로드 시도
-        self.container_config_manager
-            .load_container_config(container_id.to_string(), path)
-            .await
+        let json_config = JsonConfig::from_file(path)
             .map_err(|e| DockerError::ContainerConfigError {
                 container_id: container_id.to_string(),
                 reason: "JSON 설정 로드 실패".to_string(),
                 context: Some(e.to_string()),
-            })
+            })?;
+        
+        println!("로드된 JSON 설정: {:?}", json_config);
+        
+        // 컨테이너 ID와 설정 매핑 저장
+        self.container_config_manager.container_configs.insert(container_id.to_string(), json_config);
+        
+        // 로드 후 확인
+        let config_exists = self.container_config_manager.container_configs.contains_key(container_id);
+        println!("컨테이너 설정 저장 확인: {}", config_exists);
+        
+        if let Some(config) = self.container_config_manager.get_container_config(container_id) {
+            println!("저장된 컨테이너 설정: {:?}", config);
+        }
+        
+        Ok(())
+    }
+
+    /// 컨테이너별 JSON 설정과 도커 라벨을 병합하여 최종 설정 반환
+    pub async fn get_container_merged_settings(
+        &self, 
+        container_id: &str, 
+        docker_labels: &HashMap<String, String>
+    ) -> Result<crate::settings::Settings<crate::settings::typestate::Validated>, DockerError> {
+        // ContainerConfigManager의 merge_config 메소드를 활용하여 병합 로직 단순화
+        let settings = self.container_config_manager.merge_config(container_id, docker_labels);
+        
+        // 이미 Validated 상태의 설정이 반환되므로 추가 검증 불필요
+        Ok(settings)
     }
 }
 
@@ -796,7 +825,6 @@ mod tests {
         assert!(config.is_some());
     }
 
-    /* 추후 구현할 테스트들은 주석 처리
     #[tokio::test]
     async fn test_merge_container_settings() {
         // 임시 디렉토리 및 JSON 파일 생성
@@ -818,16 +846,31 @@ mod tests {
         let result = manager.load_container_json_config("test-container", &config_path).await;
         assert!(result.is_ok());
         
+        // DashMap에 제대로 저장되었는지 확인
+        let container_id = "test-container";
+        let config_exists = manager.container_config_manager.container_configs.contains_key(container_id);
+        assert!(config_exists, "컨테이너 설정이 DashMap에 저장되지 않음");
+        
+        // 저장된 설정 내용 확인
+        if let Some(config) = manager.container_config_manager.get_container_config(container_id) {
+            println!("컨테이너 설정 확인: {:?}", config);
+        } else {
+            println!("컨테이너 설정을 찾을 수 없음: {}", container_id);
+        }
+        
         // 도커 라벨 설정 (낮은 우선순위)
         let mut docker_labels = HashMap::new();
         docker_labels.insert("rproxy.server.http_port".to_string(), "8080".to_string());
         
         // 설정 병합
-        let merged_settings = manager.get_container_merged_settings("test-container", &docker_labels);
-        assert!(merged_settings.is_some());
+        let merged_settings = manager.get_container_merged_settings("test-container", &docker_labels).await;
+        assert!(merged_settings.is_ok());
         
         // JSON 설정(9090)이 도커 라벨(8080)보다 우선 적용되었는지 확인
         let settings = merged_settings.unwrap();
+        println!("병합된 설정 HTTP 포트: {}", settings.server.http_port());
+        
+        // 서버 설정의 HTTP 포트 확인
         assert_eq!(settings.server.http_port(), 9090);
     }
 
@@ -886,5 +929,4 @@ mod tests {
             assert_eq!(path.to_str().unwrap(), "/path/to/config.json");
         }
     }
-    */
 }

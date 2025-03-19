@@ -88,19 +88,30 @@ impl ContainerConfigManager {
         // 1. 공유 설정 복제
         let mut settings = self.shared_config.clone();
         
+        info!("병합 시작 - 기본 설정 HTTP 포트: {}", settings.server.http_port());
+        info!("도커 라벨: {:?}", docker_labels);
+        
         // 2. 도커 라벨 설정 적용 (낮은 우선순위)
         if let Err(e) = settings.merge_docker_labels(docker_labels) {
             warn!("도커 라벨 설정 병합 실패: {}", e);
+        } else {
+            info!("도커 라벨 병합 후 HTTP 포트: {}", settings.server.http_port());
         }
         
         // 3. JSON 설정 적용 (높은 우선순위)
         // 최적화: 직접 get() 사용하고 불필요한 복제 최소화
         if let Some(json_config) = self.container_configs.get(container_id) {
+            info!("JSON 설정 적용 - 컨테이너 {}: {:?}", container_id, json_config);
             if let Err(e) = settings.merge_with_json_config(&json_config, true) {
                 warn!("JSON 설정 병합 실패: {}", e);
+            } else {
+                info!("JSON 설정 병합 후 HTTP 포트: {}", settings.server.http_port());
             }
+        } else {
+            info!("컨테이너 {}의 JSON 설정을 찾을 수 없음", container_id);
         }
         
+        info!("최종 병합된 설정 HTTP 포트: {}", settings.server.http_port());
         settings
     }
     
