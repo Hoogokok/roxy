@@ -2,7 +2,8 @@ use std::fs::File;
 use std::io::BufReader;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio_rustls::rustls::{self, Certificate, PrivateKey};
+use tokio_rustls::rustls::{self};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info};
 
@@ -29,22 +30,20 @@ impl TlsConfig {
     fn load_tls_config(cert_path: &str, key_path: &str) -> Result<rustls::ServerConfig, Box<dyn std::error::Error>> {
         let cert_file = File::open(cert_path)?;
         let mut cert_reader = BufReader::new(cert_file);
-        let certs = rustls_pemfile::certs(&mut cert_reader)?
-            .into_iter()
-            .map(Certificate)
+        let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
+            .filter_map(|result| result.ok())
             .collect();
 
         let key_file = File::open(key_path)?;
         let mut key_reader = BufReader::new(key_file);
-        let key = rustls_pemfile::pkcs8_private_keys(&mut key_reader)?
-            .first()
-            .ok_or("개인키를 찾을 수 없음")?
-            .clone();
+        let key = rustls_pemfile::pkcs8_private_keys(&mut key_reader)
+            .filter_map(|result| result.ok())
+            .next()
+            .ok_or("개인키를 찾을 수 없음")?;
 
         let config = rustls::ServerConfig::builder()
-            .with_safe_defaults()
             .with_no_client_auth()
-            .with_single_cert(certs, PrivateKey(key))?;
+            .with_single_cert(certs, PrivateKeyDer::Pkcs8(key))?;
 
         Ok(config)
     }
