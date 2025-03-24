@@ -25,6 +25,8 @@ use std::sync::atomic::AtomicUsize;
 use super::health::{ContainerHealth, HealthCheckerFactory};
 use super::{DockerClient, BollardDockerClient, ContainerInfoExtractor, DefaultExtractor, DockerError};
 use super::{ContainerInfo, DockerEvent, BackendServiceBuilder, RetryPolicy, with_retry, ContainerRoutesRetry};
+use crate::settings::typestate::Validated;
+use crate::settings::types::ValidPort;
 
 #[derive(Clone)]
 pub struct DockerManager {
@@ -99,18 +101,46 @@ impl DockerManager {
         let containers = self.get_labeled_containers().await?;
         info!(count = containers.len(), "컨테이너 목록 조회 성공");
 
+        // 컨테이너를 서비스별로 그룹화
         let services = self.group_containers_by_service(containers).await;
         let mut routes = HashMap::new();
         
+        // 모든 서비스의 컨테이너 ID 수집 및 도커 라벨 조회
+        let docker_labels = self.get_container_labels().await?;
+        
+        // 서비스별로 처리
         for infos in services.values() {
-            if !infos.is_empty() {
-                match self.create_backend_service(infos).await {
-                    Ok((host, path_matcher, service)) => {
-                        routes.insert((host, path_matcher), service);
-                    }
-                    Err(e) => {
-                        warn!("백엔드 서비스 생성 실패: {}", e);
-                    }
+            if infos.is_empty() {
+                continue;
+            }
+            
+            // 이 서비스의 모든 컨테이너 ID 수집
+            let container_ids: Vec<&str> = infos.iter()
+                .filter_map(|info| info.container_id.as_deref())
+                .collect();
+            
+            let merged_settings = if !container_ids.is_empty() {
+                // 일괄 설정 병합 (성능 최적화)
+                let settings = self.container_config_manager.as_ref()
+                    .merge_configs_batch(&container_ids, &docker_labels);
+                
+                debug!(
+                    "서비스 백엔드 생성: {} 컨테이너, 설정 {} 개 병합됨",
+                    container_ids.len(), settings.len()
+                );
+                
+                Some(settings)
+            } else {
+                None
+            };
+            
+            // 백엔드 서비스 생성 시 병합된 설정 전달
+            match self.create_backend_service(infos, merged_settings.as_ref()).await {
+                Ok((host, path_matcher, service)) => {
+                    routes.insert((host, path_matcher), service);
+                }
+                Err(e) => {
+                    warn!("백엔드 서비스 생성 실패: {}", e);
                 }
             }
         }
@@ -446,7 +476,7 @@ impl DockerManager {
                 let mut service = manager.extractor.create_backend(&container_info)?;
                 
                 // 병합된 설정에서 HTTP 포트 적용
-                let http_port = merged_settings.server.http_port();
+                let http_port = merged_settings.server.http_port.value();
                 if http_port != container_info.port {
                     info!(
                         container_id = %container_id, 
@@ -600,11 +630,16 @@ impl DockerManager {
     }
 
     // 그룹화된 컨테이너들을 하나의 백엔드 서비스로 변환
-    pub async fn create_backend_service(&self, infos: &[ContainerInfo]) -> Result<(String, PathMatcher, BackendService), DockerError> {
-        debug!("백엔드 서비스 생성 시작");
+    pub async fn create_backend_service(
+        &self,
+        infos: &[ContainerInfo],
+        merged_configs: Option<&HashMap<String, Settings<Validated>>>
+    ) -> Result<(String, PathMatcher, BackendService), DockerError> {
+        debug!("백엔드 서비스 생성 시작 (병합된 설정 사용: {})",
+            if merged_configs.is_some() { "예" } else { "아니오" });
         
-        // BackendServiceBuilder 호출하여 서비스 구축
-        self.service_builder.build_from_containers(infos).await
+        // 미리 병합된 설정을 BackendServiceBuilder에 전달
+        self.service_builder.build_from_containers(infos, merged_configs).await
     }
 
     /// 모든 컨테이너의 설정 파일 경로 반환
@@ -1239,7 +1274,7 @@ mod tests {
         let settings = manager.get_container_merged_settings(container_id, &HashMap::new())
             .await
             .expect("병합된 설정 조회 실패");
-        assert_eq!(settings.server.http_port(), 9090, "초기 HTTP 포트가 9090이어야 함");
+        assert_eq!(settings.server.http_port.value(), 9090, "초기 HTTP 포트가 9090이어야 함");
         
         // 파일 변경을 위한 대기
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1278,7 +1313,7 @@ mod tests {
             .await
             .expect("병합된 설정 조회 실패");
         
-        assert_eq!(settings.server.http_port(), 8080, "업데이트된 HTTP 포트가 8080이어야 함");
+        assert_eq!(settings.server.http_port.value(), 8080, "업데이트된 HTTP 포트가 8080이어야 함");
     }
 
     #[tokio::test]
@@ -1342,8 +1377,8 @@ mod tests {
             .await
             .expect("병합된 설정 조회 실패");
         
-        // JSON 설정(8888)이 Docker 라벨(7777)보다 우선 적용되어야 함
-        assert_eq!(settings.server.http_port(), 8888, "JSON 설정이 Docker 라벨보다 우선 적용되어야 함");
+        // JSON 설정이 Docker 라벨보다 우선 적용되어야 함
+        assert_eq!(settings.server.http_port.value(), 8888, "JSON 설정이 Docker 라벨보다 우선 적용되어야 함");
     }
 
     #[tokio::test]
@@ -1402,7 +1437,7 @@ mod tests {
         let settings_before = manager.get_container_merged_settings(container_id, &HashMap::new())
             .await
             .expect("병합된 설정 조회 실패");
-        assert_ne!(settings_before.server.http_port(), 9999, "설정 로드 전 HTTP 포트는 9999가 아니어야 함");
+        assert_ne!(settings_before.server.http_port.value(), 9999, "설정 로드 전 HTTP 포트는 9999가 아니어야 함");
         
         // 설정 파일 로드
         let result = manager.load_container_json_config(container_id, &config_file_path, None).await;
@@ -1416,7 +1451,7 @@ mod tests {
         let settings_after = manager.get_container_merged_settings(container_id, &HashMap::new())
             .await
             .expect("병합된 설정 조회 실패");
-        assert_eq!(settings_after.server.http_port(), 9999, "설정 로드 후 HTTP 포트는 9999여야 함");
+        assert_eq!(settings_after.server.http_port.value(), 9999, "설정 로드 후 HTTP 포트는 9999여야 함");
         
         // 무효한 JSON 파일 처리 확인
         let invalid_path = temp_path.join("invalid.json");

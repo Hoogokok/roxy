@@ -8,8 +8,11 @@ use crate::docker::ContainerInfoExtractor;
 use crate::docker::DockerClient;
 use crate::routing_v2::{BackendService, PathMatcher, LoadBalancerStrategy};
 use crate::settings::container::ContainerConfigManager;
+use crate::settings::core::Settings;
+use crate::settings::typestate::Validated;
 use bollard::container::ListContainersOptions;
 use tracing::debug;
+use crate::settings::types::ValidPort;
 
 
 /// 백엔드 서비스 생성을 담당하는 빌더 클래스입니다.
@@ -36,8 +39,15 @@ impl BackendServiceBuilder {
     }
 
     /// 컨테이너 정보 배열에서 백엔드 서비스를 구축합니다.
-    pub async fn build_from_containers(&self, infos: &[ContainerInfo]) -> Result<(String, PathMatcher, BackendService), DockerError> {
-        debug!("백엔드 서비스 생성 시작");
+    /// 
+    /// 미리 병합된 설정을 전달하여 성능을 최적화할 수 있습니다.
+    pub async fn build_from_containers(
+        &self, 
+        infos: &[ContainerInfo],
+        merged_configs: Option<&HashMap<String, Settings<Validated>>>
+    ) -> Result<(String, PathMatcher, BackendService), DockerError> {
+        debug!("백엔드 서비스 생성 시작 (병합된 설정 사용: {})",
+            if merged_configs.is_some() { "예" } else { "아니오" });
         
         // 1. 입력 검증
         self.validate_container_infos(infos)?;
@@ -49,12 +59,12 @@ impl BackendServiceBuilder {
         // 3. 기본 백엔드 서비스 생성
         let mut service = self.extractor.create_backend(first)?;
         
-        // 4. JSON 설정 적용
-        self.apply_json_settings(first, &mut service).await?;
+        // 4. JSON 설정 적용 (미리 병합된 설정 활용)
+        self.apply_json_settings(first, &mut service, merged_configs).await?;
         
-        // 5. 로드밸런서 설정
+        // 5. 로드밸런서 설정 (미리 병합된 설정 전달)
         if infos.len() > 1 {
-            self.configure_load_balancer(infos, &mut service).await?;
+            self.configure_load_balancer(infos, &mut service, merged_configs).await?;
         }
         
         // 6. 미들웨어 설정
@@ -86,20 +96,44 @@ impl BackendServiceBuilder {
     }
     
     /// JSON 설정을 서비스에 적용합니다.
-    async fn apply_json_settings(&self, container: &ContainerInfo, service: &mut BackendService) -> Result<(), DockerError> {
+    async fn apply_json_settings(
+        &self, 
+        container: &ContainerInfo, 
+        service: &mut BackendService,
+        merged_configs: Option<&HashMap<String, Settings<Validated>>>
+    ) -> Result<(), DockerError> {
         if let Some(container_id) = &container.container_id {
+            // 1. 미리 병합된 설정이 있으면 사용
+            if let Some(configs) = merged_configs {
+                if let Some(settings) = configs.get(container_id) {
+                    debug!(
+                        container_id = %container_id,
+                        "미리 병합된 설정 사용"
+                    );
+                    
+                    // HTTP 포트 적용
+                    let http_port = settings.server.http_port.value();
+                    if http_port != container.port {
+                        debug!(
+                            container_id = %container_id,
+                            original_port = %container.port,
+                            new_port = %http_port,
+                            "미리 병합된 설정에서 HTTP 포트 업데이트"
+                        );
+                        service.update_port(http_port);
+                    }
+                    return Ok(());
+                }
+            }
+            
+            // 2. 미리 병합된 설정이 없으면 기존 방식으로 계속 진행
             let labels = self.get_container_labels(container_id).await?;
             
-            // 1. 라벨에서 직접 포트 추출
-            // 라우터 이름 가져오기 (기본값은 'test')
+            // 2.1. 라벨에서 직접 포트 추출
             let router_name = container.router_name.as_deref().unwrap_or("test");
-            
-            // extractor에서 라벨 프리픽스 가져오기
             let label_prefix = self.extractor.get_label_prefix();
-            
-            // 포트 라벨 키 구성
             let port_label_key = format!("{}http.services.{}.loadbalancer.server.port", label_prefix, router_name);
-            println!("라벨 키 생성: {}", port_label_key);
+            debug!("라벨 키 생성: {}", port_label_key);
             
             if let Some(port_str) = labels.get(&port_label_key) {
                 if let Ok(port) = port_str.parse::<u16>() {
@@ -110,11 +144,11 @@ impl BackendServiceBuilder {
                 }
             }
             
-            // 2. JSON 설정과 라벨 병합 (기존 코드)
+            // 2.2. JSON 설정과 라벨 병합 (기존 코드)
             let settings = self.container_config_manager.merge_config(container_id, &labels);
             
             // HTTP 포트 적용
-            let http_port = settings.server.http_port();
+            let http_port = settings.server.http_port.value();
             
             if http_port != container.port {
                 debug!(
@@ -129,7 +163,8 @@ impl BackendServiceBuilder {
                     container_id = %container_id,
                     port = %http_port,
                     "JSON 설정에서 HTTP 포트 유지"
-                );}
+                );
+            }
         }
         Ok(())
     }
@@ -160,7 +195,12 @@ impl BackendServiceBuilder {
     }
     
     /// 로드밸런서를 설정합니다.
-    async fn configure_load_balancer(&self, infos: &[ContainerInfo], service: &mut BackendService) -> Result<(), DockerError> {
+    async fn configure_load_balancer(
+        &self, 
+        infos: &[ContainerInfo], 
+        service: &mut BackendService,
+        merged_configs: Option<&HashMap<String, Settings<Validated>>>
+    ) -> Result<(), DockerError> {
         debug!("로드밸런서 설정: {} 컨테이너", infos.len());
         
         // 로드밸런서 활성화
@@ -178,23 +218,39 @@ impl BackendServiceBuilder {
             // weight는 기본값 1 사용
             service.add_address(addr, 1)?;
             
-            // 추가 컨테이너 JSON 설정 적용
-            self.update_backend_port(info, service).await?;
+            // 추가 컨테이너 JSON 설정 적용 (병합된 설정 전달)
+            self.update_backend_port(info, service, merged_configs).await?;
         }
         
         Ok(())
     }
     
     /// 백엔드 포트를 업데이트합니다.
-    async fn update_backend_port(&self, info: &ContainerInfo, service: &mut BackendService) -> Result<(), DockerError> {
+    async fn update_backend_port(
+        &self, 
+        info: &ContainerInfo, 
+        service: &mut BackendService,
+        merged_configs: Option<&HashMap<String, Settings<Validated>>>
+    ) -> Result<(), DockerError> {
         if let Some(container_id) = &info.container_id {
-            let labels = self.get_container_labels(container_id).await?;
-            
-            // JSON 설정과 Docker 라벨 병합
-            let settings = self.container_config_manager.merge_config(container_id, &labels);
+            // 미리 병합된 설정 있으면 사용
+            let http_port = if let Some(configs) = merged_configs {
+                if let Some(settings) = configs.get(container_id) {
+                    settings.server.http_port.value()
+                } else {
+                    // 병합된 설정에 없으면 기존 방식으로 처리
+                    let labels = self.get_container_labels(container_id).await?;
+                    let settings = self.container_config_manager.merge_config(container_id, &labels);
+                    settings.server.http_port.value()
+                }
+            } else {
+                // 병합된 설정 없으면 기존 방식으로 처리
+                let labels = self.get_container_labels(container_id).await?;
+                let settings = self.container_config_manager.merge_config(container_id, &labels);
+                settings.server.http_port.value()
+            };
             
             // HTTP 포트가 설정되어 있으면 마지막 추가된 주소의 포트 업데이트
-            let http_port = settings.server.http_port();
             if http_port != info.port {
                 debug!("추가 컨테이너 {}의 HTTP 포트 업데이트: {}", container_id, http_port);
                 
@@ -323,7 +379,7 @@ mod tests {
         };
         
         // 테스트 실행
-        let result = builder.build_from_containers(&[container_info]).await;
+        let result = builder.build_from_containers(&[container_info], None).await;
         
         // 검증
         assert!(result.is_ok());
@@ -334,5 +390,143 @@ mod tests {
         // HTTP 포트 검증 - 9090으로 업데이트되었는지 확인
         let addr = service.get_next_address().unwrap();
         assert_eq!(addr.port(), 9090);
+    }
+    
+    #[tokio::test]
+    async fn test_build_from_containers_with_merged_configs() {
+        // 테스트 준비
+        let extractor = Box::new(DefaultExtractor::new(
+            "bridge".to_string(),
+            "rproxy.".to_string(),
+        ));
+        let client = Arc::new(Box::new(MockDockerClient) as Box<dyn DockerClient>);
+        let (container_config_manager, _) = ContainerConfigManager::new();
+        
+        // 테스트용 컨테이너 ID
+        let container_id = "test-container";
+        
+        let builder = BackendServiceBuilder::new(
+            extractor,
+            client,
+            Arc::new(container_config_manager),
+        );
+        
+        // 테스트 데이터 생성
+        let container_info = ContainerInfo {
+            host: "test-host.com".to_string(),
+            ip: "127.0.0.1".to_string(),
+            port: 80,
+            container_id: Some(container_id.to_string()),
+            path_matcher: None,
+            middlewares: None,
+            router_name: Some("test".to_string()),
+            health_check: None,
+            load_balancer: None,
+            json_config_path: None,
+        };
+        
+        // 미리 병합된 설정 준비 - 포트 8888 설정
+        let mut merged_configs = HashMap::new();
+        let mut settings = Settings::default();
+        settings.server.http_port = ValidPort::new(8888).unwrap();
+        merged_configs.insert(container_id.to_string(), settings);
+        
+        // 테스트 실행 (미리 병합된 설정 전달)
+        let result = builder.build_from_containers(&[container_info], Some(&merged_configs)).await;
+        
+        // 검증
+        assert!(result.is_ok());
+        let (host, path_matcher, service) = result.unwrap();
+        assert_eq!(host, "test-host.com");
+        assert_eq!(path_matcher.to_string(), "Exact(/)");
+        
+        // HTTP 포트 검증 - 미리 병합된 설정의 8888 포트가 적용되었는지 확인
+        let addr = service.get_next_address().unwrap();
+        assert_eq!(addr.port(), 8888);
+    }
+    
+    #[tokio::test]
+    async fn test_build_from_containers_with_load_balancer() {
+        // 테스트 준비
+        let extractor = Box::new(DefaultExtractor::new(
+            "bridge".to_string(),
+            "rproxy.".to_string(),
+        ));
+        let client = Arc::new(Box::new(MockDockerClient) as Box<dyn DockerClient>);
+        let (container_config_manager, _) = ContainerConfigManager::new();
+        
+        let builder = BackendServiceBuilder::new(
+            extractor,
+            client,
+            Arc::new(container_config_manager),
+        );
+        
+        // 컨테이너 1
+        let container1 = ContainerInfo {
+            host: "test-host.com".to_string(),
+            ip: "127.0.0.1".to_string(),
+            port: 80,
+            container_id: Some("container1".to_string()),
+            path_matcher: None,
+            middlewares: None,
+            router_name: Some("test".to_string()),
+            health_check: None,
+            load_balancer: Some(LoadBalancerStrategy::RoundRobin {
+                current_index: AtomicUsize::new(0),
+            }),
+            json_config_path: None,
+        };
+        
+        // 컨테이너 2
+        let container2 = ContainerInfo {
+            host: "test-host.com".to_string(),
+            ip: "127.0.0.2".to_string(),
+            port: 80,
+            container_id: Some("container2".to_string()),
+            path_matcher: None,
+            middlewares: None,
+            router_name: Some("test".to_string()),
+            health_check: None,
+            load_balancer: None,
+            json_config_path: None,
+        };
+        
+        // 미리 병합된 설정 준비 - 포트 8888과 9999 설정
+        let mut merged_configs = HashMap::new();
+        
+        // 컨테이너 1의 설정
+        let mut settings1 = Settings::default();
+        settings1.server.http_port = ValidPort::new(8888).unwrap();
+        merged_configs.insert("container1".to_string(), settings1);
+        
+        // 컨테이너 2의 설정
+        let mut settings2 = Settings::default();
+        settings2.server.http_port = ValidPort::new(9999).unwrap();
+        merged_configs.insert("container2".to_string(), settings2);
+        
+        // 테스트 실행 (미리 병합된 설정 전달)
+        let result = builder.build_from_containers(
+            &[container1, container2], 
+            Some(&merged_configs)
+        ).await;
+        
+        // 검증
+        assert!(result.is_ok());
+        let (host, path_matcher, service) = result.unwrap();
+        assert_eq!(host, "test-host.com");
+        assert_eq!(path_matcher.to_string(), "Exact(/)");
+        
+        // 로드밸런서 설정 확인
+        assert!(service.load_balancer.is_some());
+        
+        // 첫 번째 주소 검증 (컨테이너 1, 포트 8888)
+        let addr1 = service.get_next_address().unwrap();
+        assert_eq!(addr1.port(), 8888);
+        assert_eq!(addr1.ip().to_string(), "127.0.0.1");
+        
+        // 두 번째 주소 검증 (컨테이너 2, 포트 9999)
+        let addr2 = service.get_next_address().unwrap();
+        assert_eq!(addr2.port(), 9999);
+        assert_eq!(addr2.ip().to_string(), "127.0.0.2");
     }
 } 
