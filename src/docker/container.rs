@@ -41,6 +41,17 @@ pub trait ContainerInfoExtractor: Send + Sync {
     // 라벨 프리픽스 반환
     fn get_label_prefix(&self) -> &str;
     
+    // 라우터 이름을 라벨에서 추출
+    fn extract_router_name(&self, labels: &std::collections::HashMap<String, String>) -> Option<String> {
+        labels.iter()
+            .find(|(k, _)| k.starts_with(&format!("{}http.routers.", self.get_label_prefix())))
+            .map(|(k, _)| {
+                let parts: Vec<&str> = k.split('.').collect();
+                parts.get(3).map(|&name| name.to_string())
+            })
+            .flatten()
+    }
+    
     // 새로운 메서드 추가 (반환 타입 명시)
     fn parse_socket_addr(&self, ip: &str, port: u16) -> Result<SocketAddr, DockerError> {
         let addr: SocketAddr = format!("{}:{}", ip, port)
@@ -179,17 +190,6 @@ impl  DefaultExtractor {
             })
     }
 
-    fn extract_router_name(&self, labels: &Option<std::collections::HashMap<String, String>>) -> Option<String> {
-        labels.as_ref()
-            .and_then(|l| l.iter()
-                .find(|(k, _)| k.starts_with(&format!("{}http.routers.", self.label_prefix)))
-                .map(|(k, _)| {
-                    let parts: Vec<&str> = k.split('.').collect();
-                    parts.get(3).map(|&name| name.to_string())
-                })
-                .flatten())
-    }
-
     fn extract_middlewares(&self, labels: &Option<std::collections::HashMap<String, String>>, router_name: &str) -> Option<Vec<String>> {
         labels
             .as_ref()
@@ -300,7 +300,12 @@ impl  DefaultExtractor {
         let port = self.extract_port(labels);
         
         // 미들웨어 목록 추출
-        let router_name = self.extract_router_name(labels);
+        let router_name = if let Some(labels_map) = labels {
+            self.extract_router_name(labels_map)
+        } else {
+            None
+        };
+        
         let middlewares = if let Some(ref r_name) = router_name {
             self.extract_middlewares(labels, r_name)
         } else {
@@ -411,5 +416,15 @@ impl ContainerInfoExtractor for DefaultExtractor {
     
     fn get_label_prefix(&self) -> &str {
         &self.label_prefix
+    }
+
+    fn extract_router_name(&self, labels: &std::collections::HashMap<String, String>) -> Option<String> {
+        labels.iter()
+            .find(|(k, _)| k.starts_with(&format!("{}http.routers.", self.label_prefix)))
+            .map(|(k, _)| {
+                let parts: Vec<&str> = k.split('.').collect();
+                parts.get(3).map(|&name| name.to_string())
+            })
+            .flatten()
     }
 } 
