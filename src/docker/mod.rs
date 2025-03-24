@@ -6,7 +6,9 @@ pub mod container;
 mod health;
 mod container_test;
 mod service_builder;
+mod route_builder;
 pub mod manager;
+mod manager_test;
 
 pub use client::{BollardDockerClient, DockerClient};
 pub use container::{ContainerInfo, ContainerInfoExtractor, DefaultExtractor};
@@ -15,3 +17,4 @@ pub use error_types::DockerError;
 pub use retry::{RetryPolicy, with_retry, ContainerRoutesRetry};
 pub use service_builder::BackendServiceBuilder;
 pub use manager::DockerManager;
+pub use route_builder::RouteBuilder;

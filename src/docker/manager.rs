@@ -94,7 +94,7 @@ impl DockerManager {
         with_retry(retry_operation, policy).await
     }
 
-    /// 실제 컨테이너 라우트 조회 - 리팩토링 버전
+    /// 실제 컨테이너 라우트 조회 - 리팩토링 버전 (RouteBuilder 사용)
     pub async fn try_get_container_routes(&self) -> Result<HashMap<(String, PathMatcher), BackendService>, DockerError> {
         info!("컨테이너 라우트 조회 시작");
         
@@ -108,27 +108,13 @@ impl DockerManager {
         // 도커 라벨 조회 (오류 처리 포함)
         let docker_labels = self.get_sanitized_docker_labels().await;
         
-        // 컨테이너 ID 수집 및 설정 병합
-        let merged_configs = self.prepare_merged_configs(&services, &docker_labels).await;
+        // RouteBuilder를 사용하여 라우트 생성
+        let route_builder = crate::docker::RouteBuilder::new(
+            self.service_builder.clone(),
+            self.container_config_manager.clone(),
+        );
         
-        // 라우트 생성
-        let mut routes = HashMap::new();
-        for (service_name, infos) in &services {
-            debug!("서비스 그룹 처리: {}, 컨테이너 {}개", service_name, infos.len());
-            
-            match self.process_service_group(infos, &docker_labels, merged_configs.as_ref()).await {
-                Ok(Some((host, path_matcher, service))) => {
-                    debug!("라우트 추가: {} ({})", host, path_matcher);
-                    routes.insert((host, path_matcher), service);
-                },
-                Ok(None) => {
-                    debug!("서비스 그룹에서 라우트를 생성하지 않음: {}", service_name);
-                },
-                Err(e) => {
-                    warn!("서비스 그룹 처리 실패: {}: {}", service_name, e);
-                }
-            }
-        }
+        let routes = route_builder.build_routes(&services, &docker_labels).await?;
         
         info!("컨테이너 라우트 조회 완료: {}개 라우트", routes.len());
         Ok(routes)
