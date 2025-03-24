@@ -118,111 +118,12 @@ impl DockerManager {
         
         info!("컨테이너 라우트 조회 완료: {}개 라우트", routes.len());
         Ok(routes)
-    }
-
-    /// 컨테이너 정보에서 ID 목록 추출
-    fn collect_container_ids(infos: &[ContainerInfo]) -> Vec<&str> {
-        infos.iter()
-            .filter_map(|info| info.container_id.as_deref())
-            .collect()
-    }
-
-    /// 서비스 그룹 처리 및 백엔드 서비스 생성 (간소화 버전)
-    async fn process_service_group(
-        &self, 
-        infos: &[ContainerInfo], 
-        docker_labels: &HashMap<String, String>,
-        merged_configs: Option<&HashMap<String, Settings<Validated>>>
-    ) -> Result<Option<(String, PathMatcher, BackendService)>, DockerError> {
-        
-        if infos.is_empty() {
-            return Ok(None);
-        }
-        
-        debug!("서비스 그룹 처리 시작: {} 컨테이너", infos.len());
-        
-        // 먼저 컨테이너 ID 목록 수집
-        let container_ids = Self::collect_container_ids(infos);
-        debug!("수집된 컨테이너 ID: {:?}", container_ids);
-        
-        // 1. 병합된 설정이 있으면 먼저 사용
-        if let Some(all_merged_configs) = merged_configs {
-            if !all_merged_configs.is_empty() {
-                // 현재 서비스 그룹에 대한 설정이 있는지 확인
-                let has_valid_config = container_ids.iter()
-                    .any(|id| all_merged_configs.contains_key(*id));
-                
-                if has_valid_config {
-                    debug!("유효한 설정 발견, 백엔드 서비스 생성");
-                    return self.create_backend_service(infos, Some(all_merged_configs)).await
-                        .map(|result| Some(result))
-                        .map_err(|e| {
-                            warn!("백엔드 서비스 생성 실패: {}", e);
-                            e
-                        });
-                }
-            }
-        }
-        
-        // 2. 호스트 라벨에서 설정 확인
-        let label_prefix = self.extractor.get_label_prefix();
-        let host_label_key = format!("{}host", label_prefix);
-        
-        if docker_labels.contains_key(&host_label_key) {
-            debug!("Docker 라벨에서 호스트 정보 발견: {}", host_label_key);
-            return self.create_backend_service(infos, None).await
-                .map(|result| {
-                    debug!("백엔드 서비스 생성 성공 (호스트 라벨 기반)");
-                    Some(result)
-                })
-                .map_err(|e| {
-                    warn!("백엔드 서비스 생성 실패 (호스트 라벨 기반): {}", e);
-                    e
-                });
-        }
-        
-        // 3. 기본 설정으로 시도
-        debug!("라우팅 정보를 찾지 못함, 기본 설정으로 마지막 시도");
-        self.create_backend_service(infos, None).await
-            .map(|result| {
-                debug!("백엔드 서비스 생성 성공 (기본 설정)");
-                Some(result)
-            })
-            .map_err(|e| {
-                warn!("백엔드 서비스 생성 실패 (기본 설정): {}", e);
-                e
-            })
-    }
-
-    /// 병합된 설정을 준비하는 헬퍼 메서드
-    async fn prepare_merged_configs(
-        &self, 
-        services: &HashMap<String, Vec<ContainerInfo>>,
-        docker_labels: &HashMap<String, String>
-    ) -> Option<HashMap<String, Settings<Validated>>> {
-        // 컨테이너 ID 수집 (모든 서비스의 모든 컨테이너)
-        let mut all_container_ids = Vec::new();
-        for infos in services.values() {
-            all_container_ids.extend(Self::collect_container_ids(infos));
-        }
-        
-        // 컨테이너 ID가 있으면 설정 일괄 병합
-        if !all_container_ids.is_empty() {
-            debug!("컨테이너 설정 일괄 병합 시작: {} 컨테이너", all_container_ids.len());
-            let configs = self.container_config_manager.as_ref()
-                .merge_configs_batch(&all_container_ids, docker_labels);
-            debug!("설정 병합 완료: {} 컨테이너에 대한 설정", configs.len());
-            Some(configs)
-        } else {
-            debug!("병합할 컨테이너 ID가 없음");
-            None
-        }
-    }
+    }    
 
     pub async fn get_labeled_containers(&self) -> Result<Vec<ContainerSummary>, DockerError> {
         let options = Some(ListContainersOptions::<String> {
             all: true,
-            filters: HashMap::new(),  // 모든 컨테이너를 조회합니다.
+            filters: HashMap::new(), 
             ..Default::default()
         });
 
@@ -698,19 +599,6 @@ impl DockerManager {
         }
         
         services
-    }
-
-    // 그룹화된 컨테이너들을 하나의 백엔드 서비스로 변환
-    pub async fn create_backend_service(
-        &self,
-        infos: &[ContainerInfo],
-        merged_configs: Option<&HashMap<String, Settings<Validated>>>
-    ) -> Result<(String, PathMatcher, BackendService), DockerError> {
-        debug!("백엔드 서비스 생성 시작 (병합된 설정 사용: {})",
-            if merged_configs.is_some() { "예" } else { "아니오" });
-        
-        // 미리 병합된 설정을 BackendServiceBuilder에 전달
-        self.service_builder.build_from_containers(infos, merged_configs).await
     }
 
     /// 모든 컨테이너의 설정 파일 경로 반환
