@@ -5,6 +5,7 @@ mod client;
 pub mod container;
 mod health;
 mod container_test;
+mod service_builder;
 
 pub use client::{BollardDockerClient, DockerClient};
 use container::ContainerInfo;
@@ -12,6 +13,7 @@ pub use container::{ContainerInfoExtractor, DefaultExtractor};
 pub use events_types::{DockerEvent, HealthStatus};
 pub use error_types::DockerError;
 pub use retry::{RetryPolicy, with_retry, ContainerRoutesRetry};
+pub use service_builder::BackendServiceBuilder;
 
 use bollard::container::ListContainersOptions;
 use bollard::models::{ContainerSummary, EventMessage, EndpointSettings, ContainerSummaryNetworkSettings};
@@ -43,6 +45,7 @@ pub struct DockerManager {
     config: DockerSettings,
     health_checks: Arc<RwLock<HashMap<String, ContainerHealth>>>,
     container_config_manager: Arc<ContainerConfigManager>,
+    service_builder: BackendServiceBuilder,
 }
 
 impl DockerManager {
@@ -54,13 +57,23 @@ impl DockerManager {
     ) -> Self {
         // 설정 관리자 초기화
         let (container_config_manager, _config_rx) = ContainerConfigManager::new();
+        let container_config_manager = Arc::new(container_config_manager);
+        
+        // 서비스 빌더 초기화
+        let client_arc = Arc::new(client);
+        let service_builder = BackendServiceBuilder::new(
+            extractor.clone_box(),
+            client_arc.clone(),
+            container_config_manager.clone(),
+        );
         
         Self {
-            client: Arc::new(client),
+            client: client_arc,
             extractor,
             config,
             health_checks: Arc::new(RwLock::new(HashMap::new())),
-            container_config_manager: Arc::new(container_config_manager),
+            container_config_manager,
+            service_builder,
         }
     }
 
@@ -98,7 +111,7 @@ impl DockerManager {
         
         for infos in services.values() {
             if !infos.is_empty() {
-                match self.create_backend_service(infos) {
+                match self.create_backend_service(infos).await {
                     Ok((host, path_matcher, service)) => {
                         routes.insert((host, path_matcher), service);
                     }
@@ -212,6 +225,7 @@ impl DockerManager {
             })?;
 
         let (container_config_manager, _) = ContainerConfigManager::new();
+        let container_config_manager = Arc::new(container_config_manager);
 
         let manager = DockerManager { 
             client: docker.clone(),
@@ -221,7 +235,15 @@ impl DockerManager {
             )),
             config: config.clone(),
             health_checks,
-            container_config_manager: Arc::new(container_config_manager),
+            container_config_manager: container_config_manager.clone(),
+            service_builder: BackendServiceBuilder::new(
+                Box::new(DefaultExtractor::new(
+                    config.network.clone(),
+                    config.label_prefix.clone(),
+                )),
+                docker.clone(),
+                container_config_manager,
+            ),
         };
 
         // 이벤트 처리 후 미들웨어 설정도 업데이트
@@ -553,153 +575,11 @@ impl DockerManager {
     }
 
     // 그룹화된 컨테이너들을 하나의 백엔드 서비스로 변환
-    fn create_backend_service(&self, infos: &[ContainerInfo]) -> Result<(String, PathMatcher, BackendService), DockerError> {
-        let first = &infos[0];
-        debug!("서비스 생성 시작: host={}, path={:?}", first.host, first.path_matcher);
+    async fn create_backend_service(&self, infos: &[ContainerInfo]) -> Result<(String, PathMatcher, BackendService), DockerError> {
+        debug!("백엔드 서비스 생성 시작");
         
-        let mut service = self.extractor.create_backend(first)?;
-        
-        // 여러 컨테이너가 있으면 로드밸런서 활성화
-        if infos.len() > 1 {
-            debug!("로드밸런서 활성화: 컨테이너 수={}", infos.len());
-            
-            // 1. 첫 번째 컨테이너의 개별 로드밸런서 설정 확인
-            // 2. 없으면 글로벌 설정 확인
-            // 3. 그것도 없으면 기본 라운드로빈 사용
-            let strategy = match &first.load_balancer {
-                // 컨테이너별 설정이 있으면 사용
-                Some(lb_strategy) => {
-                    debug!("첫 번째 컨테이너의 로드밸런서 설정 사용");
-                    lb_strategy.clone()
-                },
-                // 컨테이너별 설정이 없으면 글로벌 설정 확인
-                None => {
-                    if self.config.has_load_balancer() {
-                        debug!("글로벌 로드밸런서 설정 사용: {}", self.config.load_balancer_strategy());
-                        
-                        if self.config.load_balancer_strategy() == "weighted" {
-                            let weight = self.config.load_balancer_weight().unwrap_or(1) as usize;
-                            
-                            LoadBalancerStrategy::Weighted {
-                                current_index: AtomicUsize::new(0),
-                                total_weight: weight, // 초기값은 첫 번째 컨테이너 가중치
-                            }
-                        } else {
-                            LoadBalancerStrategy::RoundRobin {
-                                current_index: AtomicUsize::new(0),
-                            }
-                        }
-                    } else {
-                        // 기본 라운드로빈 전략
-                        debug!("로드밸런서 설정 없음, 기본 라운드로빈 사용");
-                        LoadBalancerStrategy::RoundRobin {
-                            current_index: AtomicUsize::new(0),
-                        }
-                    }
-                }
-            };
-            
-            service.enable_load_balancer(strategy);
-            
-            // 추가 백엔드 추가
-            let mut calculated_total_weight = match &service.load_balancer {
-                Some(lb) => lb.get_total_weight().unwrap_or(0),
-                None => 0
-            };
-            
-            for info in &infos[1..] {
-                let addr = self.extractor.parse_socket_addr(&info.ip, info.port)?;
-                
-                // 각 컨테이너별 가중치 결정
-                let weight = match &info.load_balancer {
-                    // 컨테이너별 설정이 있으면 사용
-                    Some(LoadBalancerStrategy::Weighted { total_weight, .. }) => {
-                        debug!(
-                            container_ip = %info.ip,
-                            weight = %total_weight,
-                            "컨테이너별 가중치 적용"
-                        );
-                        *total_weight
-                    },
-                    // 없으면 글로벌 설정 사용
-                    _ => {
-                        let global_weight = self.config.load_balancer_weight().unwrap_or(1) as usize;
-                        debug!(
-                            container_ip = %info.ip,
-                            weight = %global_weight,
-                            "글로벌 가중치 적용"
-                        );
-                        global_weight
-                    }
-                };
-                
-                // 백엔드 추가
-                service.add_address(addr, weight)?;
-                
-                // 가중치 기반인 경우 총 가중치 누적
-                if let Some(ref lb) = service.load_balancer {
-                    if lb.is_weighted() {
-                        calculated_total_weight += weight;
-                    }
-                }
-            }
-            
-            // 가중치 기반인 경우 총 가중치 업데이트
-            if let Some(ref mut lb) = service.load_balancer {
-                if lb.is_weighted() {
-                    debug!("로드밸런서 총 가중치 업데이트: {}", calculated_total_weight);
-                    if let Err(e) = lb.set_total_weight(calculated_total_weight) {
-                        warn!("로드밸런서 가중치 업데이트 실패: {}", e);
-                    }
-                }
-            }
-        }
-        
-        // 미들웨어 처리
-        if let Some(middlewares) = &first.middlewares {
-            service.set_middlewares(middlewares.clone());
-        }
-        
-        let path_matcher = first.path_matcher.clone().unwrap_or_else(|| PathMatcher::from_str("/").unwrap());
-        
-        Ok((first.host.clone(), path_matcher, service))
-    }
-
-    // 헬스체크 설정을 위한 헬퍼 함수
-    async fn setup_container_health_check(
-        &self,
-        container: &ContainerSummary,
-    ) -> Result<(), DockerError> {
-        let id = container.id.as_ref().ok_or_else(|| DockerError::ContainerConfigError {
-            container_id: "unknown".to_string(),
-            reason: "컨테이너 ID 없음".to_string(),
-            context: None,
-        })?;
-        
-        let info = self.extractor.extract_info(container)?;
-        
-        debug!(
-            container_id = %id,
-            "컨테이너 헬스체크 초기 설정 시도"
-        );
-        
-        self.setup_health_check(id.clone(), &info).await
-    }
-
-    pub async fn setup_initial_health_checks(&self) -> Result<(), DockerError> {
-        info!("초기 컨테이너 헬스체크 설정 시작");
-        
-        let containers = self.get_labeled_containers().await?;
-        for container in containers {
-            if let Err(e) = self.setup_container_health_check(&container).await {
-                debug!(error = %e, "컨테이너 헬스체크 설정 실패");
-                // 개별 컨테이너 오류는 무시하고 계속 진행
-                continue;
-            }
-        }
-        
-        info!("초기 컨테이너 헬스체크 설정 완료");
-        Ok(())
+        // BackendServiceBuilder 호출하여 서비스 구축
+        self.service_builder.build_from_containers(infos).await
     }
 
     /// 모든 컨테이너의 설정 파일 경로 반환
@@ -764,23 +644,56 @@ impl DockerManager {
         // 이미 Validated 상태의 설정이 반환되므로 추가 검증 불필요
         Ok(settings)
     }
+
+    // 헬스체크 설정을 위한 헬퍼 함수
+    async fn setup_container_health_check(
+        &self,
+        container: &ContainerSummary,
+    ) -> Result<(), DockerError> {
+        let id = container.id.as_ref().ok_or_else(|| DockerError::ContainerConfigError {
+            container_id: "unknown".to_string(),
+            reason: "컨테이너 ID 없음".to_string(),
+            context: None,
+        })?;
+        
+        let info = self.extractor.extract_info(container)?;
+        
+        debug!(
+            container_id = %id,
+            "컨테이너 헬스체크 초기 설정 시도"
+        );
+        
+        self.setup_health_check(id.clone(), &info).await
+    }
+
+    pub async fn setup_initial_health_checks(&self) -> Result<(), DockerError> {
+        info!("초기 컨테이너 헬스체크 설정 시작");
+        
+        let containers = self.get_labeled_containers().await?;
+        for container in containers {
+            if let Err(e) = self.setup_container_health_check(&container).await {
+                debug!(error = %e, "컨테이너 헬스체크 설정 실패");
+                // 개별 컨테이너 오류는 무시하고 계속 진행
+                continue;
+            }
+        }
+        
+        info!("초기 컨테이너 헬스체크 설정 완료");
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::container::ContainerConfigManager;
     use crate::settings::docker::DockerSettings;
-    use crate::settings::Settings;
-    use crate::settings::typestate::Validated;
-    use std::collections::HashMap;
     use std::pin::Pin;
     use futures_util::stream::Stream;
     use async_trait::async_trait;
     use tempfile;
     use std::net::SocketAddr;
     use crate::routing_v2::PathMatcher;
-    use bollard::models::{ContainerSummary, Network, NetworkSettings};
+    use bollard::models::ContainerSummary;
 
     // 테스트용 DockerClient 구현
     struct MockDockerClientWithContainers;
@@ -870,6 +783,10 @@ mod tests {
             let addr = format!("{}:{}", info.ip, info.port).parse::<SocketAddr>().unwrap();
             Ok(BackendService::new(addr))
         }
+        
+        fn get_label_prefix(&self) -> &str {
+            "rproxy."
+        }
     }
     
     #[tokio::test]
@@ -904,7 +821,7 @@ mod tests {
             match event {
                 DockerEvent::ContainerUpdated { 
                     container_id: id, 
-                    old_host: old, 
+                    old_host: _old, 
                     new_host: new, 
                     service, 
                     path_matcher 

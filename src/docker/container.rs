@@ -38,6 +38,9 @@ pub trait ContainerInfoExtractor: Send + Sync {
     fn extract_info(&self, container: &ContainerSummary) -> Result<ContainerInfo, DockerError>;
     fn create_backend(&self, info: &ContainerInfo) -> Result<BackendService, DockerError>;
     
+    // 라벨 프리픽스 반환
+    fn get_label_prefix(&self) -> &str;
+    
     // 새로운 메서드 추가 (반환 타입 명시)
     fn parse_socket_addr(&self, ip: &str, port: u16) -> Result<SocketAddr, DockerError> {
         let addr: SocketAddr = format!("{}:{}", ip, port)
@@ -404,5 +407,9 @@ impl ContainerInfoExtractor for DefaultExtractor {
         }
 
         Ok(service)
+    }
+    
+    fn get_label_prefix(&self) -> &str {
+        &self.label_prefix
     }
 } 
