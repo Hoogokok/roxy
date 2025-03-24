@@ -224,6 +224,10 @@ impl ContainerInfoExtractor for MockExtractor {
         
         Ok(service)
     }
+
+    fn get_label_prefix(&self) -> &str {
+        &self.label_prefix
+    }
 }
 
 // Config::new_for_test() 대신 사용할 함수
