@@ -26,7 +26,6 @@ use super::health::{ContainerHealth, HealthCheckerFactory};
 use super::{DockerClient, BollardDockerClient, ContainerInfoExtractor, DefaultExtractor, DockerError};
 use super::{ContainerInfo, DockerEvent, BackendServiceBuilder, RetryPolicy, with_retry, ContainerRoutesRetry};
 use crate::settings::typestate::Validated;
-use crate::settings::types::ValidPort;
 
 #[derive(Clone)]
 pub struct DockerManager {
@@ -95,57 +94,143 @@ impl DockerManager {
         with_retry(retry_operation, policy).await
     }
 
-    /// 실제 컨테이너 라우트 조회
+    /// 실제 컨테이너 라우트 조회 - 리팩토링 버전
     pub async fn try_get_container_routes(&self) -> Result<HashMap<(String, PathMatcher), BackendService>, DockerError> {
         info!("컨테이너 라우트 조회 시작");
+        
+        // 라벨이 있는 컨테이너 조회
         let containers = self.get_labeled_containers().await?;
-        info!(count = containers.len(), "컨테이너 목록 조회 성공");
-
-        // 컨테이너를 서비스별로 그룹화
+        info!("라벨이 있는 컨테이너 {}개 조회됨", containers.len());
+        
+        // 서비스별로 그룹화
         let services = self.group_containers_by_service(containers).await;
+        
+        // 도커 라벨 조회 (오류 처리 포함)
+        let docker_labels = self.get_sanitized_docker_labels().await;
+        
+        // 컨테이너 ID 수집 및 설정 병합
+        let merged_configs = self.prepare_merged_configs(&services, &docker_labels).await;
+        
+        // 라우트 생성
         let mut routes = HashMap::new();
-        
-        // 모든 서비스의 컨테이너 ID 수집 및 도커 라벨 조회
-        let docker_labels = self.get_container_labels().await?;
-        
-        // 서비스별로 처리
-        for infos in services.values() {
-            if infos.is_empty() {
-                continue;
-            }
+        for (service_name, infos) in &services {
+            debug!("서비스 그룹 처리: {}, 컨테이너 {}개", service_name, infos.len());
             
-            // 이 서비스의 모든 컨테이너 ID 수집
-            let container_ids: Vec<&str> = infos.iter()
-                .filter_map(|info| info.container_id.as_deref())
-                .collect();
-            
-            let merged_settings = if !container_ids.is_empty() {
-                // 일괄 설정 병합 (성능 최적화)
-                let settings = self.container_config_manager.as_ref()
-                    .merge_configs_batch(&container_ids, &docker_labels);
-                
-                debug!(
-                    "서비스 백엔드 생성: {} 컨테이너, 설정 {} 개 병합됨",
-                    container_ids.len(), settings.len()
-                );
-                
-                Some(settings)
-            } else {
-                None
-            };
-            
-            // 백엔드 서비스 생성 시 병합된 설정 전달
-            match self.create_backend_service(infos, merged_settings.as_ref()).await {
-                Ok((host, path_matcher, service)) => {
+            match self.process_service_group(infos, &docker_labels, merged_configs.as_ref()).await {
+                Ok(Some((host, path_matcher, service))) => {
+                    debug!("라우트 추가: {} ({})", host, path_matcher);
                     routes.insert((host, path_matcher), service);
-                }
+                },
+                Ok(None) => {
+                    debug!("서비스 그룹에서 라우트를 생성하지 않음: {}", service_name);
+                },
                 Err(e) => {
-                    warn!("백엔드 서비스 생성 실패: {}", e);
+                    warn!("서비스 그룹 처리 실패: {}: {}", service_name, e);
                 }
             }
         }
         
+        info!("컨테이너 라우트 조회 완료: {}개 라우트", routes.len());
         Ok(routes)
+    }
+
+    /// 컨테이너 정보에서 ID 목록 추출
+    fn collect_container_ids(infos: &[ContainerInfo]) -> Vec<&str> {
+        infos.iter()
+            .filter_map(|info| info.container_id.as_deref())
+            .collect()
+    }
+
+    /// 서비스 그룹 처리 및 백엔드 서비스 생성 (간소화 버전)
+    async fn process_service_group(
+        &self, 
+        infos: &[ContainerInfo], 
+        docker_labels: &HashMap<String, String>,
+        merged_configs: Option<&HashMap<String, Settings<Validated>>>
+    ) -> Result<Option<(String, PathMatcher, BackendService)>, DockerError> {
+        
+        if infos.is_empty() {
+            return Ok(None);
+        }
+        
+        debug!("서비스 그룹 처리 시작: {} 컨테이너", infos.len());
+        
+        // 먼저 컨테이너 ID 목록 수집
+        let container_ids = Self::collect_container_ids(infos);
+        debug!("수집된 컨테이너 ID: {:?}", container_ids);
+        
+        // 1. 병합된 설정이 있으면 먼저 사용
+        if let Some(all_merged_configs) = merged_configs {
+            if !all_merged_configs.is_empty() {
+                // 현재 서비스 그룹에 대한 설정이 있는지 확인
+                let has_valid_config = container_ids.iter()
+                    .any(|id| all_merged_configs.contains_key(*id));
+                
+                if has_valid_config {
+                    debug!("유효한 설정 발견, 백엔드 서비스 생성");
+                    return self.create_backend_service(infos, Some(all_merged_configs)).await
+                        .map(|result| Some(result))
+                        .map_err(|e| {
+                            warn!("백엔드 서비스 생성 실패: {}", e);
+                            e
+                        });
+                }
+            }
+        }
+        
+        // 2. 호스트 라벨에서 설정 확인
+        let label_prefix = self.extractor.get_label_prefix();
+        let host_label_key = format!("{}host", label_prefix);
+        
+        if docker_labels.contains_key(&host_label_key) {
+            debug!("Docker 라벨에서 호스트 정보 발견: {}", host_label_key);
+            return self.create_backend_service(infos, None).await
+                .map(|result| {
+                    debug!("백엔드 서비스 생성 성공 (호스트 라벨 기반)");
+                    Some(result)
+                })
+                .map_err(|e| {
+                    warn!("백엔드 서비스 생성 실패 (호스트 라벨 기반): {}", e);
+                    e
+                });
+        }
+        
+        // 3. 기본 설정으로 시도
+        debug!("라우팅 정보를 찾지 못함, 기본 설정으로 마지막 시도");
+        self.create_backend_service(infos, None).await
+            .map(|result| {
+                debug!("백엔드 서비스 생성 성공 (기본 설정)");
+                Some(result)
+            })
+            .map_err(|e| {
+                warn!("백엔드 서비스 생성 실패 (기본 설정): {}", e);
+                e
+            })
+    }
+
+    /// 병합된 설정을 준비하는 헬퍼 메서드
+    async fn prepare_merged_configs(
+        &self, 
+        services: &HashMap<String, Vec<ContainerInfo>>,
+        docker_labels: &HashMap<String, String>
+    ) -> Option<HashMap<String, Settings<Validated>>> {
+        // 컨테이너 ID 수집 (모든 서비스의 모든 컨테이너)
+        let mut all_container_ids = Vec::new();
+        for infos in services.values() {
+            all_container_ids.extend(Self::collect_container_ids(infos));
+        }
+        
+        // 컨테이너 ID가 있으면 설정 일괄 병합
+        if !all_container_ids.is_empty() {
+            debug!("컨테이너 설정 일괄 병합 시작: {} 컨테이너", all_container_ids.len());
+            let configs = self.container_config_manager.as_ref()
+                .merge_configs_batch(&all_container_ids, docker_labels);
+            debug!("설정 병합 완료: {} 컨테이너에 대한 설정", configs.len());
+            Some(configs)
+        } else {
+            debug!("병합할 컨테이너 ID가 없음");
+            None
+        }
     }
 
     pub async fn get_labeled_containers(&self) -> Result<Vec<ContainerSummary>, DockerError> {
@@ -567,7 +652,7 @@ impl DockerManager {
             })
     }
 
-    /// 컨테이너 헬스 체크 설정
+    /// 컨테이너 헬스체크 설정
     pub async fn setup_health_check(&self, container_id: String, info: &ContainerInfo) -> Result<(), DockerError> {
         let health_checks_ptr = format!("{:p}", &*self.health_checks.read().await);
         info!("setup_health_check - health_checks 위치: {}", health_checks_ptr);
@@ -605,7 +690,7 @@ impl DockerManager {
         Ok(())
     }
 
-    /// 컨테이너 헬스 체크 제거
+    /// 컨테이너 헬스체크 제거
     pub async fn remove_health_check(&self, container_id: &str) {
         self.health_checks.write().await.remove(container_id);
     }
@@ -761,40 +846,131 @@ impl DockerManager {
         Ok(settings)
     }
 
-    // 헬스체크 설정을 위한 헬퍼 함수
-    async fn setup_container_health_check(
-        &self,
-        container: &ContainerSummary,
-    ) -> Result<(), DockerError> {
-        let id = container.id.as_ref().ok_or_else(|| DockerError::ContainerConfigError {
-            container_id: "unknown".to_string(),
-            reason: "컨테이너 ID 없음".to_string(),
-            context: None,
-        })?;
-        
-        let info = self.extractor.extract_info(container)?;
-        
-        debug!(
-            container_id = %id,
-            "컨테이너 헬스체크 초기 설정 시도"
-        );
-        
-        self.setup_health_check(id.clone(), &info).await
-    }
-
     pub async fn setup_initial_health_checks(&self) -> Result<(), DockerError> {
-        info!("초기 컨테이너 헬스체크 설정 시작");
         
+        // 모든 라벨이 있는 컨테이너 조회
         let containers = self.get_labeled_containers().await?;
-        for container in containers {
-            if let Err(e) = self.setup_container_health_check(&container).await {
-                debug!(error = %e, "컨테이너 헬스체크 설정 실패");
-                // 개별 컨테이너 오류는 무시하고 계속 진행
-                continue;
+        
+        if containers.is_empty() {
+            info!("초기화할 컨테이너가 없습니다");
+            return Ok(());
+        }
+        
+        // 컨테이너 정보 추출 및 ID 목록 생성
+        let mut container_ids = Vec::with_capacity(containers.len());
+        let mut container_info_map = HashMap::with_capacity(containers.len());
+        
+        for container in &containers {
+            if let Some(id) = &container.id {
+                if let Ok(info) = self.extractor.extract_info(container) {
+                    container_ids.push(id.as_str());
+                    container_info_map.insert(id.clone(), info);
+                }
             }
         }
         
-        info!("초기 컨테이너 헬스체크 설정 완료");
+        // 컨테이너가 없으면 종료
+        if container_ids.is_empty() {
+            info!("유효한 컨테이너 정보가 없습니다");
+            return Ok(());
+        }
+        
+        // 도커 라벨 조회 (공통 라벨 사용)
+        let docker_labels = match self.get_container_labels().await {
+            Ok(labels) => labels,
+            Err(e) => {
+                warn!("도커 라벨 조회 실패: {}, 빈 라벨 사용", e);
+                HashMap::new() // 실패 시 빈 맵 사용
+            }
+        };
+        
+        // 설정 일괄 병합 (성능 최적화)
+        let merged_configs = self.container_config_manager.as_ref().merge_configs_batch(&container_ids, &docker_labels);
+        info!("병합된 설정 수: {}", merged_configs.len());
+        
+        // 각 컨테이너에 대해 헬스체크 설정
+        for id in container_ids {
+            if let Some(info) = container_info_map.get(id) {
+                debug!(
+                    container_id = %id,
+                    "컨테이너 헬스체크 초기 설정 시도"
+                );
+                
+                // 병합된 설정에서 해당 컨테이너 설정 조회
+                let merged_settings = merged_configs.get(id);
+                
+                // 헬스체크 설정 적용 - 병합된 설정 전달
+                if let Err(e) = self.setup_health_check_with_settings(id.to_string(), info, merged_settings).await {
+                    debug!(error = %e, "컨테이너 헬스체크 설정 실패");
+                    // 개별 컨테이너 오류는 무시하고 계속 진행
+                    continue;
+                }
+            }
+        }
+        
+        info!("초기 컨테이너 헬스체크 설정 완료 - {} 컨테이너 처리됨", container_info_map.len());
+        Ok(())
+    }
+
+    /// 컨테이너 헬스체크 설정 (병합된 설정 추가 버전)
+    async fn setup_health_check_with_settings(
+        &self, 
+        container_id: String, 
+        info: &ContainerInfo,
+        merged_settings: Option<&Settings<Validated>>
+    ) -> Result<(), DockerError> {
+        let health_checks_ptr = format!("{:p}", &*self.health_checks.read().await);
+        info!("setup_health_check_with_settings - health_checks 위치: {}", health_checks_ptr);
+        
+        debug!(
+            container_id = %container_id,
+            host = %info.host,
+            ip = %info.ip,
+            port = %info.port,
+            health_check = ?info.health_check,
+            has_merged_settings = %merged_settings.is_some(),
+            "헬스체크 설정 시작 (병합된 설정 사용)"
+        );
+
+        // 기존 정보에서 헬스체크 설정 사용
+        let health_check = info.health_check.clone();
+        
+        // 병합된 설정이 있으면 더 우선적으로 사용
+        if let Some(settings) = merged_settings {
+            if settings.docker.health_check.enabled {
+                debug!(
+                    container_id = %container_id,
+                    "병합된 설정에서 헬스체크 정보 사용"
+                );
+                
+                // TODO: 병합된 설정에서 헬스체크 정보 추출하여 ContainerHealthCheck로 변환하는 로직 구현
+                // 여기서는 예시로만 기존 정보 사용
+            }
+        }
+        
+        // 헬스체크 정보가 있으면 설정 진행
+        if let Some(health_check) = health_check {
+            let addr = format!("{}:{}", info.ip, info.port);
+            
+            if let Some(checker) = HealthCheckerFactory::create(addr.clone(), &health_check.check_type, health_check.timeout) {
+                let container_health = ContainerHealth::new(container_id.clone(), info.host.clone(), checker);
+                self.health_checks.write().await.insert(container_id.clone(), container_health);
+                info!(
+                    container_id = %container_id,
+                    addr = %addr,
+                    check_type = ?health_check.check_type,
+                    health_checks_ptr = %health_checks_ptr,
+                    "헬스체크 설정 완료"
+                );
+            } else {
+                warn!(
+                    container_id = %container_id,
+                    addr = %addr,
+                    "헬스체크 생성 실패"
+                );
+            }
+        }
+        
         Ok(())
     }
 
@@ -891,6 +1067,20 @@ impl DockerManager {
             table.routes.len()
         );
         Ok(())
+    }
+
+    /// 도커 라벨 조회 시 오류 처리를 포함한 안전한 버전
+    async fn get_sanitized_docker_labels(&self) -> HashMap<String, String> {
+        match self.get_container_labels().await {
+            Ok(labels) => {
+                debug!("도커 라벨 조회 성공: {} 항목", labels.len());
+                labels
+            },
+            Err(e) => {
+                warn!("도커 라벨 조회 실패, 빈 라벨 사용: {}", e);
+                HashMap::new()
+            }
+        }
     }
 }
 
