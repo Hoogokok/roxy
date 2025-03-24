@@ -319,6 +319,38 @@ impl DockerManager {
                 context: None,
             })?;
 
+        // 컨테이너 정보 추출 및 JSON 설정 로드
+        if let Ok(info) = manager.extractor.extract_info(container) {
+            debug!(
+                container_id = %container_id,
+                info = ?info,
+                "컨테이너 정보 추출 성공"
+            );
+            
+            // JSON 설정 파일 경로가 있으면 로드
+            if let Some(json_path) = &info.json_config_path {
+    
+                
+                // JSON 설정 로드 및 이벤트 발생
+                if let Err(e) = manager.load_container_json_config(
+                    container_id, 
+                    std::path::Path::new(json_path.as_str()),
+                    Some(tx)
+                ).await {
+                    warn!(
+                        container_id = %container_id,
+                        error = %e,
+                        "JSON 설정 로드 실패"
+                    );
+                } else {
+                    debug!(
+                        container_id = %container_id,
+                        "JSON 설정 로드 성공"
+                    );
+                }
+            }
+        }
+
         match manager.get_container_info(container_id).await? {
             Some((host, service, path_matcher)) => {
                 // 기존 이벤트 전송
@@ -621,18 +653,16 @@ impl DockerManager {
             );
             
             // 설정 파일 재로드
-            match self.load_container_json_config(&container_id, &path).await {
-                Ok(_) => {
-                    info!(container_id = %container_id, "컨테이너 설정 파일 재로드 성공");
-                    updated = true;
-                }
-                Err(e) => {
-                    error!(
-                        container_id = %container_id,
-                        error = %e,
-                        "컨테이너 설정 파일 재로드 실패"
-                    );
-                }
+            let result = self.load_container_json_config(&container_id, &path, None).await;
+            if result.is_ok() {
+                info!(container_id = %container_id, "컨테이너 설정 파일 재로드 성공");
+                updated = true;
+            } else {
+                error!(
+                    container_id = %container_id,
+                    error = ?result.err(),
+                    "컨테이너 설정 파일 재로드 실패"
+                );
             }
         }
         
@@ -640,7 +670,12 @@ impl DockerManager {
     }
 
     /// 컨테이너별 JSON 설정 파일 로드
-    pub async fn load_container_json_config(&self, container_id: &str, path: &Path) -> Result<(), DockerError> {
+    pub async fn load_container_json_config(
+        &self, 
+        container_id: &str, 
+        path: &Path,
+        event_tx: Option<&mpsc::Sender<DockerEvent>>
+    ) -> Result<(), DockerError> {
         info!(container_id = %container_id, path = %path.display(), "컨테이너 JSON 설정 로드");
         
         // 설정 파일 로드 시도
@@ -654,6 +689,21 @@ impl DockerManager {
         
         // 컨테이너 ID와 설정 매핑 저장
         self.container_config_manager.as_ref().container_configs.insert(container_id.to_string(), json_config);
+        
+        // 이벤트 발생 - 채널이 있는 경우에만
+        if let Some(tx) = event_tx {
+            if let Err(e) = tx.send(DockerEvent::JsonRoutingConfigLoaded {
+                container_id: container_id.to_string(),
+            }).await {
+                warn!(
+                    container_id = %container_id,
+                    error = %e,
+                    "JSON 라우팅 설정 로드 이벤트 전송 실패"
+                );
+            } else {
+                debug!(container_id = %container_id, "JSON 라우팅 설정 로드 이벤트 전송 성공");
+            }
+        }
         
         Ok(())
     }
@@ -1171,7 +1221,7 @@ mod tests {
         ).await;
         
         // 설정 파일 로드
-        manager.load_container_json_config(container_id, &config_file_path)
+        manager.load_container_json_config(container_id, &config_file_path, None)
             .await
             .expect("컨테이너 설정 로드 실패");
         
@@ -1274,7 +1324,7 @@ mod tests {
         ).await;
         
         // 컨테이너 설정 파일 로드
-        manager.load_container_json_config(container_id, &config_file_path)
+        manager.load_container_json_config(container_id, &config_file_path, None)
             .await
             .expect("컨테이너 설정 로드 실패");
         
@@ -1350,7 +1400,7 @@ mod tests {
         assert_ne!(settings_before.server.http_port(), 9999, "설정 로드 전 HTTP 포트는 9999가 아니어야 함");
         
         // 설정 파일 로드
-        let result = manager.load_container_json_config(container_id, &config_file_path).await;
+        let result = manager.load_container_json_config(container_id, &config_file_path, None).await;
         assert!(result.is_ok(), "설정 파일 로드에 실패함");
         
         // 설정이 컨테이너 설정 관리자에 저장되었는지 확인
@@ -1369,7 +1419,7 @@ mod tests {
         let mut file = File::create(&invalid_path).expect("파일 생성 실패");
         file.write_all(invalid_content.as_bytes()).expect("파일 쓰기 실패");
         
-        let invalid_result = manager.load_container_json_config("invalid-container", &invalid_path).await;
+        let invalid_result = manager.load_container_json_config("invalid-container", &invalid_path, None).await;
         assert!(invalid_result.is_err(), "무효한 JSON을 오류로 처리해야 함");
     }
 
@@ -1450,7 +1500,7 @@ mod tests {
         debug!("테스트: DockerManager 생성됨");
         
         // JSON 설정 로드
-        let load_result = manager.load_container_json_config(container_id, &config_path).await;
+        let load_result = manager.load_container_json_config(container_id, &config_path, None).await;
         assert!(load_result.is_ok(), "JSON 설정 로드 실패: {:?}", load_result.err());
         
         // 설정이 제대로 로드되었는지 확인
