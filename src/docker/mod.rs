@@ -7,6 +7,7 @@ mod health;
 mod container_test;
 mod service_builder;
 
+use bollard::secret::EventMessage;
 pub use client::{BollardDockerClient, DockerClient};
 use container::ContainerInfo;
 pub use container::{ContainerInfoExtractor, DefaultExtractor};
@@ -16,9 +17,9 @@ pub use retry::{RetryPolicy, with_retry, ContainerRoutesRetry};
 pub use service_builder::BackendServiceBuilder;
 
 use bollard::container::ListContainersOptions;
-use bollard::models::{ContainerSummary, EventMessage, EndpointSettings, ContainerSummaryNetworkSettings};
+use bollard::models::ContainerSummary;
 use bollard::system::EventsOptions;
-use futures_util::{stream::StreamExt, Stream};
+use futures_util::stream::StreamExt;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use crate::settings::container::ContainerConfigManager;
@@ -33,8 +34,6 @@ use tokio::{
     task::JoinHandle,
 };
 use self::health::{ContainerHealth, HealthCheckerFactory};
-use std::sync::atomic::AtomicUsize;
-use crate::routing_v2::LoadBalancerStrategy;
 use std::path::{Path, PathBuf};
 use crate::settings::JsonConfig;
 
@@ -693,7 +692,7 @@ mod tests {
     use tempfile;
     use std::net::SocketAddr;
     use crate::routing_v2::PathMatcher;
-    use bollard::models::ContainerSummary;
+    use bollard::{models::ContainerSummary, secret::{ContainerSummaryNetworkSettings, EndpointSettings}};
 
     // 테스트용 DockerClient 구현
     struct MockDockerClientWithContainers;
