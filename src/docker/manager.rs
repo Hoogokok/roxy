@@ -8,6 +8,7 @@ use tokio::sync::mpsc;
 use crate::settings::container::ContainerConfigManager;
 use crate::settings::json::ServiceConfig;
 use crate::settings::DockerSettings;
+use crate::settings::core::Settings;
 use crate::routing_v2::{RoutingTable, PathMatcher, BackendService, LoadBalancerStrategy};
 use tracing::{debug, error, info, warn};
 use tokio::time::Duration;
@@ -18,7 +19,6 @@ use tokio::{
     task::JoinHandle,
 };
 use std::path::{Path, PathBuf};
-use crate::settings::JsonConfig;
 use regex_lite::Regex;
 use std::sync::atomic::AtomicUsize;
 
@@ -43,9 +43,14 @@ impl DockerManager {
         extractor: Box<dyn ContainerInfoExtractor>,
         config: DockerSettings,
     ) -> Self {
-        // 설정 관리자 초기화
+        // 공유 설정 객체 생성
+        let shared_settings = Settings::default();
+        
+        // 설정 관리자 초기화 및 공유 설정 설정
         let (container_config_manager, _config_rx) = ContainerConfigManager::new();
-        let container_config_manager = Arc::new(container_config_manager);
+        let container_config_manager = Arc::new(
+            container_config_manager.with_shared_config(shared_settings)
+        );
         
         // 서비스 빌더 초기화
         let client_arc = Arc::new(client);
@@ -678,17 +683,17 @@ impl DockerManager {
     ) -> Result<(), DockerError> {
         info!(container_id = %container_id, path = %path.display(), "컨테이너 JSON 설정 로드");
         
-        // 설정 파일 로드 시도
-        let json_config = JsonConfig::from_file(path)
-            .map_err(|e| DockerError::ContainerConfigError {
+        // ContainerConfigManager의 load_container_config 메서드 활용
+        if let Err(e) = self.container_config_manager.as_ref().load_container_config(
+            container_id.to_string(), 
+            path
+        ).await {
+            return Err(DockerError::ContainerConfigError {
                 container_id: container_id.to_string(),
                 reason: "JSON 설정 로드 실패".to_string(),
                 context: Some(e.to_string()),
-            })?;
-        
-        
-        // 컨테이너 ID와 설정 매핑 저장
-        self.container_config_manager.as_ref().container_configs.insert(container_id.to_string(), json_config);
+            });
+        }
         
         // 이벤트 발생 - 채널이 있는 경우에만
         if let Some(tx) = event_tx {
