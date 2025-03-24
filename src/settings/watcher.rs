@@ -4,6 +4,7 @@ use tokio::sync::mpsc;
 use notify::{RecursiveMode, Watcher, Config, Event, Result as NotifyResult, PollWatcher};
 use crate::settings::{Result, error::SettingsError};
 use tracing::{debug, error};
+use std::collections::HashMap;
 
 /// 설정 파일 변경 이벤트 타입
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -198,6 +199,36 @@ impl ConfigWatcher {
         );
         
         Ok(watcher)
+    }
+
+    /// 컨테이너 설정 파일 감시자
+    pub async fn watch_container_configs(&mut self, container_configs: &HashMap<String, PathBuf>, timeout: Duration) -> Vec<(String, PathBuf)> {
+        let mut changed_configs = Vec::new();
+        
+        // 타임아웃 적용하여 이벤트 수집
+        let events = match tokio::time::timeout(
+            timeout,
+            self.watch_debounced(Duration::from_millis(300))
+        ).await {
+            Ok(Some(events)) => events,
+            _ => return Vec::new(), // 타임아웃 또는 이벤트 없음
+        };
+        
+        for event in events {
+            match event {
+                ConfigEvent::Modified(path) | ConfigEvent::Created(path) | ConfigEvent::Deleted(path) => {
+                    // 변경된 경로에 해당하는 컨테이너 ID 찾기
+                    for (container_id, config_path) in container_configs {
+                        if &path == config_path {
+                            changed_configs.push((container_id.clone(), path.clone()));
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        
+        changed_configs
     }
 }
 
@@ -532,5 +563,70 @@ mod tests {
         let has_modify_event = collected_events.iter()
             .any(|e| matches!(e, ConfigEvent::Modified(_)));
         assert!(has_modify_event);
+    }
+
+    #[tokio::test]
+    async fn test_watch_container_configs() {
+        use std::collections::HashMap;
+
+        // 임시 디렉토리 생성
+        let temp_dir = tempdir().unwrap();
+        let config1_path = temp_dir.path().join("container1.json");
+        let config2_path = temp_dir.path().join("container2.json");
+        
+        // 테스트용 컨테이너 설정 파일 생성
+        let mut file1 = File::create(&config1_path).unwrap();
+        file1.write_all(b"{\"version\": \"1.0\"}").unwrap();
+        
+        let mut file2 = File::create(&config2_path).unwrap();
+        file2.write_all(b"{\"version\": \"1.0\"}").unwrap();
+        
+        // 컨테이너 ID와 설정 파일 경로 매핑
+        let mut container_configs = HashMap::new();
+        container_configs.insert("container1".to_string(), config1_path.clone());
+        container_configs.insert("container2".to_string(), config2_path.clone());
+        
+        // ConfigWatcher 초기화
+        let mut watcher = ConfigWatcher::new();
+        let tx = watcher.get_sender();
+        
+        // 1. 직접 이벤트 주입 방식으로 테스트
+        tx.send(ConfigEvent::Modified(config1_path.clone())).await.unwrap();
+        
+        // 타임아웃 설정하여 컨테이너 설정 변경 감지
+        let changed_configs = watcher.watch_container_configs(&container_configs, Duration::from_secs(1)).await;
+        
+        // 검증: 변경된 컨테이너 설정이 감지되어야 함
+        assert!(!changed_configs.is_empty());
+        assert_eq!(changed_configs.len(), 1);
+        assert_eq!(changed_configs[0].0, "container1");
+        assert_eq!(changed_configs[0].1, config1_path);
+        
+        // 2. 실제 파일 변경으로 테스트
+        for path in [&config1_path, &config2_path] {
+            watcher.add_path(path);
+        }
+        watcher.start().await.unwrap();
+        
+        // 잠시 대기하여 watcher가 초기화될 시간을 줌
+        sleep(Duration::from_millis(100)).await;
+        
+        // 파일 수정
+        let mut file2 = OpenOptions::new()
+            .write(true)
+            .open(&config2_path)
+            .unwrap();
+        file2.write_all(b"{\"version\": \"1.0\", \"updated\": true}").unwrap();
+        file2.flush().unwrap();
+        
+        // 짧은 대기 후 이벤트 감지
+        sleep(Duration::from_millis(200)).await;
+        
+        let changed_configs = watcher.watch_container_configs(&container_configs, Duration::from_secs(2)).await;
+        
+        // 검증: 두 번째 변경도 감지되어야 함
+        assert!(!changed_configs.is_empty());
+        assert_eq!(changed_configs[0].0, "container2");
+        assert_eq!(changed_configs[0].1, config2_path);
     }
 } 
