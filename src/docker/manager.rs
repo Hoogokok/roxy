@@ -5,6 +5,7 @@ use bollard::system::EventsOptions;
 use futures_util::stream::StreamExt;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
+use crate::docker::container::ContainerHealthCheck;
 use crate::settings::container::ContainerConfigManager;
 use crate::settings::json::ServiceConfig;
 use crate::settings::DockerSettings;
@@ -787,7 +788,7 @@ impl DockerManager {
     }
 
     /// 컨테이너 헬스체크 설정 (병합된 설정 추가 버전)
-    async fn setup_health_check_with_settings(
+    pub(crate) async fn setup_health_check_with_settings(
         &self, 
         container_id: String, 
         info: &ContainerInfo,
@@ -807,7 +808,7 @@ impl DockerManager {
         );
 
         // 기존 정보에서 헬스체크 설정 사용
-        let health_check = info.health_check.clone();
+        let mut health_check = info.health_check.clone();
         
         // 병합된 설정이 있으면 더 우선적으로 사용
         if let Some(settings) = merged_settings {
@@ -817,8 +818,21 @@ impl DockerManager {
                     "병합된 설정에서 헬스체크 정보 사용"
                 );
                 
-                // TODO: 병합된 설정에서 헬스체크 정보 추출하여 ContainerHealthCheck로 변환하는 로직 구현
-                // 여기서는 예시로만 기존 정보 사용
+                // 병합된 설정에서 헬스체크 정보 추출하여 ContainerHealthCheck로 변환
+                health_check = Some(ContainerHealthCheck {
+                    enabled: settings.docker.health_check.enabled,
+                    check_type: settings.docker.health_check.check_type.clone(),
+                    interval: settings.docker.health_check.interval,
+                    timeout: settings.docker.health_check.timeout,
+                });
+                
+                debug!(
+                    container_id = %container_id,
+                    check_type = ?health_check.as_ref().unwrap().check_type,
+                    interval = ?health_check.as_ref().unwrap().interval,
+                    timeout = ?health_check.as_ref().unwrap().timeout,
+                    "병합된 설정에서 헬스체크 정보 추출 완료"
+                );
             }
         }
         

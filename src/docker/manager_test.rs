@@ -3,6 +3,7 @@ mod tests {
     use bollard::secret::{ContainerSummaryNetworkSettings, EndpointSettings};
     use crate::docker::ContainerInfo;
     use crate::docker::{DockerManager, DockerError, DockerClient, ContainerInfoExtractor};
+    use crate::settings::typestate::Validatable;
     use bollard::container::ListContainersOptions;
     use bollard::models::{ContainerSummary, EventMessage};
     use futures_util::Stream;
@@ -355,6 +356,82 @@ mod tests {
         }
     }
 
+    // 테스트용 컨테이너 정보 생성 함수
+    fn test_create_container_info(id: &str, host: &str, ip: &str, port: u16, config_path: Option<&str>) -> ContainerInfo {
+        use crate::settings::types::ConfigPath;
+        use crate::settings::typestate::Validated;
+        
+        ContainerInfo {
+            host: host.to_string(),
+            ip: ip.to_string(),
+            port,
+            container_id: Some(id.to_string()),
+            path_matcher: Some(crate::routing_v2::PathMatcher::from_str("/").unwrap()),
+            middlewares: None,
+            router_name: Some(format!("{}-router", host)),
+            health_check: None,
+            load_balancer: None,
+            json_config_path: config_path.map(|p| ConfigPath::new(p.to_string()).validate().unwrap()),
+        }
+    }
+
+    // 테스트용 컨테이너 생성 함수
+    fn test_create_container(id: &str, host: &str, ip: &str, port: u16) -> ContainerSummary {
+        use bollard::models::{ContainerSummaryNetworkSettings, EndpointSettings};
+        
+        let mut container = ContainerSummary::default();
+        container.id = Some(id.to_string());
+        
+        // 테스트용 라벨 설정
+        let mut labels = HashMap::new();
+        labels.insert("reverse-proxy.host".to_string(), host.to_string());
+        container.labels = Some(labels);
+        
+        // 네트워크 설정
+        let mut networks = HashMap::new();
+        let endpoint = EndpointSettings {
+            ip_address: Some(ip.to_string()),
+            ..Default::default()
+        };
+        networks.insert("bridge".to_string(), endpoint);
+        
+        let network_settings = ContainerSummaryNetworkSettings {
+            networks: Some(networks),
+            ..Default::default()
+        };
+        container.network_settings = Some(network_settings);
+        
+        container
+    }
+
+    // 테스트용 DockerManager 생성 함수
+    async fn test_create_docker_manager(container_info: ContainerInfo, containers: Vec<ContainerSummary>) -> DockerManager {
+        let client = Box::new(MockDockerClient {
+            containers: Arc::new(Mutex::new(containers))
+        });
+        
+        let extractor = Box::new(MockExtractor::new(
+            "bridge".to_string(),
+            "reverse-proxy.".to_string()
+        ));
+        
+        let docker_settings = create_test_settings();
+        
+        // ContainerConfigManager 생성 및 설정
+        let (container_config_manager, _rx) = crate::settings::container::ContainerConfigManager::new();
+        let container_config_manager = Arc::new(
+            container_config_manager.with_shared_config(crate::settings::Settings::default())
+        );
+        
+        // DockerManager 생성
+        DockerManager::with_config_manager(
+            client,
+            extractor,
+            docker_settings,
+            container_config_manager
+        ).await
+    }
+
     #[tokio::test]
     async fn test_container_routes() {
         let settings = create_test_settings();
@@ -597,5 +674,177 @@ mod tests {
         
         // 백엔드 주소 검증
         assert_eq!(backend.address.to_string(), "172.17.0.2:80");
+    }
+
+    #[tokio::test]
+    async fn test_setup_health_check_with_settings() {
+        use crate::settings::docker::{HealthCheckType, HealthCheckSettings};
+        use crate::settings::core::Settings;
+        use crate::settings::typestate::Validated;
+        
+        // 테스트용 컨테이너 정보 생성
+        let container_id = "health-check-test";
+        let host = "test.local";
+        let ip = "127.0.0.1";
+        let port = 8080;
+        
+        // 컨테이너 정보 생성 (헬스체크 설정 없음)
+        let info = test_create_container_info(container_id, host, ip, port, None);
+        
+        // 병합된 설정에 헬스체크 설정 추가
+        let mut settings = Settings::<Validated>::default();
+        
+        // 설정에서 헬스체크 활성화 및 설정
+        settings.docker.health_check.enabled = true;
+        
+        // HTTP 타입 헬스체크 설정
+        settings.docker.health_check.check_type = HealthCheckType::Http {
+            path: "/api/health".to_string(),
+            method: "GET".to_string(),
+            expected_status: 200
+        };
+        settings.docker.health_check.interval = 10; // 10초
+        settings.docker.health_check.timeout = 3;   // 3초
+        
+        // DockerManager 생성
+        let manager = test_create_docker_manager(
+            info.clone(),
+            vec![test_create_container(container_id, host, ip, port)]
+        ).await;
+        
+        // health_checks가 비어있는지 확인
+        {
+            let health_checks = manager.health_checks.read().await;
+            assert_eq!(health_checks.len(), 0, "초기 health_checks는 비어있어야 함");
+        }
+        
+        // setup_health_check_with_settings 호출
+        let result = manager.setup_health_check_with_settings(
+            container_id.to_string(), 
+            &info, 
+            Some(&settings)
+        ).await;
+        
+        // 성공했는지 확인
+        assert!(result.is_ok(), "설정 적용에 실패함: {:?}", result.err());
+        
+        // health_checks에 항목이 추가되었는지 확인
+        {
+            let health_checks = manager.health_checks.read().await;
+            assert_eq!(health_checks.len(), 1, "헬스체크가 추가되어야 함");
+            
+            // 컨테이너 ID로 헬스체크 항목 확인
+            let health_check = health_checks.get(container_id)
+                .expect("헬스체크 항목을 찾을 수 없음");
+            
+            // 값 검증
+            assert_eq!(health_check.container_id, container_id);
+            assert_eq!(health_check.host, host);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_setup_health_check_with_tcp_settings() {
+        use crate::settings::docker::{HealthCheckType, HealthCheckSettings};
+        use crate::settings::core::Settings;
+        use crate::settings::typestate::Validated;
+        
+        // 테스트용 컨테이너 정보 생성
+        let container_id = "tcp-health-check-test";
+        let host = "test.local";
+        let ip = "127.0.0.1";
+        let port = 8080;
+        
+        // 컨테이너 정보 생성 (헬스체크 설정 없음)
+        let info = test_create_container_info(container_id, host, ip, port, None);
+        
+        // 병합된 설정에 TCP 헬스체크 설정 추가
+        let mut settings = Settings::<Validated>::default();
+        
+        // 설정에서 헬스체크 활성화 및 설정
+        settings.docker.health_check.enabled = true;
+        
+        // TCP 타입 헬스체크 설정
+        settings.docker.health_check.check_type = HealthCheckType::Tcp {
+            port: 8085  // 다른 포트로 설정
+        };
+        settings.docker.health_check.timeout = 2;   // 2초
+        
+        // DockerManager 생성
+        let manager = test_create_docker_manager(
+            info.clone(),
+            vec![test_create_container(container_id, host, ip, port)]
+        ).await;
+        
+        // 초기 health_checks가 비어있는지 확인
+        {
+            let health_checks = manager.health_checks.read().await;
+            assert_eq!(health_checks.len(), 0, "초기 health_checks는 비어있어야 함");
+        }
+        
+        // setup_health_check_with_settings 호출
+        let result = manager.setup_health_check_with_settings(
+            container_id.to_string(), 
+            &info, 
+            Some(&settings)
+        ).await;
+        
+        // 성공했는지 확인
+        assert!(result.is_ok(), "설정 적용에 실패함: {:?}", result.err());
+        
+        // health_checks에 항목이 추가되었는지 확인
+        {
+            let health_checks = manager.health_checks.read().await;
+            assert_eq!(health_checks.len(), 1, "헬스체크가 추가되어야 함");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_setup_health_check_with_existing_info() {
+        use crate::docker::container::ContainerHealthCheck;
+        use crate::settings::docker::HealthCheckType;
+        
+        // 테스트용 컨테이너 정보 생성 (이미 헬스체크 설정 있음)
+        let container_id = "existing-health-check-test";
+        let host = "test.local";
+        let ip = "127.0.0.1";
+        let port = 8080;
+        
+        // 기존 헬스체크 설정 있는 컨테이너 정보 생성
+        let mut info = test_create_container_info(container_id, host, ip, port, None);
+        
+        // 기존 헬스체크 설정 추가
+        info.health_check = Some(ContainerHealthCheck {
+            enabled: true,
+            check_type: HealthCheckType::Http {
+                path: "/existing/health".to_string(),
+                method: "POST".to_string(),
+                expected_status: 201
+            },
+            interval: 20,
+            timeout: 4,
+        });
+        
+        // DockerManager 생성
+        let manager = test_create_docker_manager(
+            info.clone(),
+            vec![test_create_container(container_id, host, ip, port)]
+        ).await;
+        
+        // 병합된 설정 없이 호출 (기존 헬스체크 설정 사용)
+        let result = manager.setup_health_check_with_settings(
+            container_id.to_string(), 
+            &info, 
+            None
+        ).await;
+        
+        // 성공했는지 확인
+        assert!(result.is_ok(), "설정 적용에 실패함: {:?}", result.err());
+        
+        // health_checks에 항목이 추가되었는지 확인
+        {
+            let health_checks = manager.health_checks.read().await;
+            assert_eq!(health_checks.len(), 1, "헬스체크가 추가되어야 함");
+        }
     }
 } 
