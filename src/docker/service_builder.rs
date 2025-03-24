@@ -12,7 +12,6 @@ use crate::settings::core::Settings;
 use crate::settings::typestate::Validated;
 use bollard::container::ListContainersOptions;
 use tracing::debug;
-use crate::settings::types::ValidPort;
 
 
 /// 백엔드 서비스 생성을 담당하는 빌더 클래스입니다.
@@ -288,6 +287,7 @@ impl BackendServiceBuilder {
 mod tests {
     use super::*;
     use crate::docker::DefaultExtractor;
+    use crate::settings::types::ValidPort;
     use std::pin::Pin;
     use futures_util::stream::Stream;
     use async_trait::async_trait;
