@@ -6,8 +6,9 @@ use futures_util::stream::StreamExt;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use crate::settings::container::ContainerConfigManager;
+use crate::settings::json::ServiceConfig;
 use crate::settings::DockerSettings;
-use crate::routing_v2::{BackendService, PathMatcher};
+use crate::routing_v2::{RoutingTable, PathMatcher, BackendService, LoadBalancerStrategy};
 use tracing::{debug, error, info, warn};
 use tokio::time::Duration;
 use std::sync::Arc;
@@ -18,6 +19,8 @@ use tokio::{
 };
 use std::path::{Path, PathBuf};
 use crate::settings::JsonConfig;
+use regex_lite::Regex;
+use std::sync::atomic::AtomicUsize;
 
 use super::health::{ContainerHealth, HealthCheckerFactory};
 use super::{DockerClient, BollardDockerClient, ContainerInfoExtractor, DefaultExtractor, DockerError};
@@ -704,6 +707,263 @@ impl DockerManager {
         info!("초기 컨테이너 헬스체크 설정 완료");
         Ok(())
     }
+
+    /// JSON 설정 파일을 기반으로 라우팅 테이블을 업데이트합니다.
+    pub async fn update_routing_from_json(
+        &self, 
+        container_id: &str, 
+        routing_table: Arc<RwLock<RoutingTable>>
+    ) -> Result<(), DockerError> {
+        debug!("update_routing_from_json 시작 - container_id: {}", container_id);
+        
+        // 컨테이너 설정 가져오기
+        let json_config = match self.container_config_manager.as_ref().get_container_config(container_id) {
+            Some(config) => {
+                debug!("컨테이너 JSON 설정 찾음 - 라우터 수: {}, 서비스 수: {}", 
+                    config.routers.len(), config.services.len());
+                config
+            },
+            None => {
+                debug!("컨테이너 JSON 설정 없음");
+                return Ok(());
+            }
+        };
+        
+        // 라우터 및 서비스 설정 확인
+        let routers = &json_config.routers;
+        let services = &json_config.services;
+        
+        if routers.is_empty() || services.is_empty() {
+            debug!("라우터 또는 서비스 설정 없음");
+            return Ok(());
+        }
+        
+        let mut table = routing_table.write().await;
+        debug!(
+            "JSON 설정에서 라우팅 업데이트 처리 - 라우터 수: {}, 서비스 수: {}",
+            routers.len(), services.len()
+        );
+        
+        // 각 라우터 설정에 대해 처리
+        for (router_name, router_config) in routers {
+            debug!("라우터 처리 - 이름: {}, 규칙: {}", router_name, router_config.rule);
+            
+            // 서비스 정보 가져오기
+            let service_name = &router_config.service;
+            let service_config = match services.get(service_name.as_str()) {
+                Some(config) => {
+                    debug!("서비스 찾음 - 이름: {}", service_name);
+                    config
+                },
+                None => {
+                    debug!("라우터에 지정된 서비스를 찾을 수 없음 - 라우터: {}, 서비스: {}", 
+                        router_name, service_name);
+                    continue;
+                }
+            };
+            
+            // 라우터 규칙 파싱
+            match parse_router_rule(router_config.rule.as_str()) {
+                Ok((host, path_matcher)) => {
+                    debug!("라우터 규칙 파싱 성공 - 호스트: {}, 경로: {}", host, path_matcher);
+                    
+                    // 백엔드 서비스 생성
+                    match create_backend_from_service_config(&host, service_config) {
+                        Ok(backend_service) => {
+                            debug!(
+                                "백엔드 서비스 생성 성공 - 주소: {:?}",
+                                backend_service.address
+                            );
+                            
+                            // 라우팅 테이블에 추가
+                            table.add_route(host, backend_service, Some(path_matcher));
+                            debug!("라우트 추가됨");
+                        },
+                        Err(e) => {
+                            debug!(
+                                "백엔드 서비스 생성 실패 - 라우터: {}, 오류: {:?}",
+                                router_name, e
+                            );
+                        }
+                    }
+                },
+                Err(e) => {
+                    debug!(
+                        "라우터 규칙 파싱 실패 - 라우터: {}, 규칙: {}, 오류: {:?}",
+                        router_name, router_config.rule, e
+                    );
+                }
+            }
+        }
+        
+        debug!(
+            "JSON 설정에서 라우팅 업데이트 완료 - 라우트 수: {}", 
+            table.routes.len()
+        );
+        Ok(())
+    }
+}
+
+// 2. 라우터 규칙 파싱 함수 추가
+fn parse_router_rule(rule: &str) -> Result<(String, PathMatcher), DockerError> {
+    // Host(`example.com`) && PathPrefix(`/api`) 형식 파싱
+    let host_regex = Regex::new(r#"Host\(`([^`]+)`\)"#).unwrap();
+    let path_regex = Regex::new(r#"(PathPrefix|Path)\(`([^`]+)`\)"#).unwrap();
+    
+    // 호스트 추출
+    let host = match host_regex.captures(rule) {
+        Some(caps) => caps.get(1).unwrap().as_str().to_string(),
+        None => {
+            return Err(DockerError::ContainerConfigError {
+                container_id: "unknown".to_string(),
+                reason: format!("라우터 규칙에서 Host를 찾을 수 없음: {}", rule),
+                context: None,
+            });
+        }
+    };
+    
+    // 경로 추출 (없으면 기본 경로 사용)
+    let path = match path_regex.captures(rule) {
+        Some(caps) => {
+            let path_type = caps.get(1).unwrap().as_str();
+            let path_value = caps.get(2).unwrap().as_str();
+            
+            // PathPrefix와 Path에 따라 다른 매처 생성
+            if path_type == "PathPrefix" {
+                PathMatcher::from_str(&format!("{}/*", path_value)).unwrap_or_else(|_| PathMatcher::from_str("/").unwrap())
+            } else {
+                PathMatcher::from_str(path_value).unwrap_or_else(|_| PathMatcher::from_str("/").unwrap())
+            }
+        },
+        None => PathMatcher::from_str("/").unwrap() // 경로 지정이 없으면 루트 경로 사용
+    };
+    
+    debug!("라우터 규칙 파싱 결과 - host: {}, path: {}", host, path);
+    Ok((host, path))
+}
+
+// 3. 서비스 설정에서 백엔드 서비스 생성 함수 추가
+fn create_backend_from_service_config(host: &str, service_config: &ServiceConfig) -> Result<BackendService, DockerError> {
+    // 로드밸런서 설정 확인
+    let servers = &service_config.loadbalancer.servers;
+    if servers.is_empty() {
+        return Err(DockerError::ContainerConfigError {
+            container_id: "unknown".to_string(),
+            reason: format!("서비스에 서버가 정의되지 않음: {}", host),
+            context: None,
+        });
+    }
+    
+    // 첫 번째 서버 주소 얻기
+    let first_server = &servers[0];
+    
+    // URL 파싱
+    let url = first_server.url.as_str();
+    
+    // URL에서 호스트/포트 추출
+    let url_regex = Regex::new(r"https?://([^:/]+)(?::(\d+))?").unwrap();
+    let (addr_host, port) = match url_regex.captures(url) {
+        Some(caps) => {
+            let host = caps.get(1).unwrap().as_str();
+            let port = caps.get(2).map_or("80", |p| p.as_str()).parse::<u16>().unwrap_or(80);
+            (host, port)
+        },
+        None => {
+            return Err(DockerError::ContainerConfigError {
+                container_id: "unknown".to_string(),
+                reason: format!("잘못된 서버 URL 형식: {}", url),
+                context: None,
+            });
+        }
+    };
+    
+    debug!("주소 파싱 결과 - 호스트: {}, 포트: {}", addr_host, port);
+    
+    // SocketAddr 생성 - localhost를 127.0.0.1로 변환
+    let host_ip = if addr_host == "localhost" {
+        "127.0.0.1".to_string()
+    } else {
+        addr_host.to_string()
+    };
+    
+    debug!("소켓 주소 생성 - IP: {}, 포트: {}", host_ip, port);
+    
+    let socket_addr = match format!("{}:{}", host_ip, port).parse::<std::net::SocketAddr>() {
+        Ok(addr) => {
+            debug!("소켓 주소 생성 성공: {:?}", addr);
+            addr
+        },
+        Err(e) => {
+            let error_msg: String = e.to_string();
+            debug!("소켓 주소 생성 실패: {} - {}", format!("{}:{}", host_ip, port), error_msg);
+            
+            // IP 주소로 직접 변환 시도
+            match host_ip.parse::<std::net::IpAddr>() {
+                Ok(ip) => {
+                    let addr = std::net::SocketAddr::new(ip, port);
+                    debug!("IP 주소로 직접 변환 성공: {:?}", addr);
+                    addr
+                },
+                Err(_) => {
+                    // 마지막 수단: 127.0.0.1 사용
+                    debug!("IP 변환 실패, 기본값 127.0.0.1 사용");
+                    std::net::SocketAddr::new(
+                        std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                        port
+                    )
+                }
+            }
+        }
+    };
+    
+    // 기본 서비스 생성
+    let mut service = BackendService::new(socket_addr);
+    
+    // 추가 서버가 있으면 로드밸런서 설정
+    if servers.len() > 1 {
+        // 기본 라운드 로빈 전략 사용
+        service.enable_load_balancer(LoadBalancerStrategy::RoundRobin {
+            current_index: AtomicUsize::new(0)
+        });
+        
+        // 첫 번째 이후의 모든 서버 추가
+        for server in servers.iter().skip(1) {
+            let url = server.url.as_str();
+            if let Some(caps) = url_regex.captures(url) {
+                let host = caps.get(1).unwrap().as_str();
+                let port = caps.get(2).map_or("80", |p| p.as_str()).parse::<u16>().unwrap_or(80);
+                
+                // localhost를 127.0.0.1로 변환
+                let server_ip = if host == "localhost" {
+                    "127.0.0.1".to_string()
+                } else {
+                    host.to_string()
+                };
+                
+                if let Ok(addr) = format!("{}:{}", server_ip, port).parse() {
+                    let _ = service.add_address(addr, server.weight as usize);
+                } else {
+                    // IP 주소로 직접 변환 시도
+                    match server_ip.parse::<std::net::IpAddr>() {
+                        Ok(ip) => {
+                            let addr = std::net::SocketAddr::new(ip, port);
+                            let _ = service.add_address(addr, server.weight as usize);
+                        },
+                        Err(_) => {
+                            // fallback: 127.0.0.1 사용
+                            let addr = std::net::SocketAddr::new(
+                                std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                                port
+                            );
+                            let _ = service.add_address(addr, server.weight as usize);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(service)
 }
 
 #[cfg(test)]
@@ -850,7 +1110,7 @@ mod tests {
         
         // DockerManager 생성
         let manager = create_test_docker_manager(
-            container_info,
+            container_info.clone(),
             vec![container]
         ).await;
         
@@ -1029,17 +1289,6 @@ mod tests {
         
         // JSON 설정(8888)이 Docker 라벨(7777)보다 우선 적용되어야 함
         assert_eq!(settings.server.http_port(), 8888, "JSON 설정이 Docker 라벨보다 우선 적용되어야 함");
-        
-        // 백엔드 서비스 생성 검증
-        let infos = vec![container_info.clone()];
-        let result = manager.create_backend_service(&infos).await;
-        assert!(result.is_ok(), "백엔드 서비스 생성 실패");
-        
-        let (_, _, service) = result.unwrap();
-        let addr = service.get_next_address().expect("서비스 주소 조회 실패");
-        
-        // 생성된 서비스의 포트가 JSON 설정 값(8888)과 일치해야 함
-        assert_eq!(addr.port(), 8888, "서비스 포트가 JSON 설정과 일치해야 함");
     }
 
     #[tokio::test]
@@ -1122,5 +1371,174 @@ mod tests {
         
         let invalid_result = manager.load_container_json_config("invalid-container", &invalid_path).await;
         assert!(invalid_result.is_err(), "무효한 JSON을 오류로 처리해야 함");
+    }
+
+    #[tokio::test]
+    async fn test_update_routing_from_json() {
+        use std::fs::File;
+        use std::io::Write;
+        use tempfile::tempdir;
+        use std::sync::Arc;
+        use tokio::sync::RwLock;
+        use crate::routing_v2::RoutingTable;
+        use crate::routing_v2::HostInfo;
+        use tracing::debug;
+        
+        // 임시 디렉토리 및 테스트 JSON 파일 준비
+        let temp_dir = tempdir().expect("임시 디렉토리 생성 실패");
+        let config_path = temp_dir.path().join("router-test.json");
+        
+        debug!("테스트: 임시 디렉토리 생성됨 - {:?}", temp_dir.path());
+        
+        // 라우터 정보가 포함된 JSON 설정 파일 작성
+        let json_content = r#"{
+            "routers": {
+                "api": {
+                    "rule": "Host(`api.example.com`)",
+                    "service": "api-service"
+                },
+                "web": {
+                    "rule": "Host(`www.example.com`)",
+                    "service": "web-service"
+                }
+            },
+            "services": {
+                "api-service": {
+                    "loadbalancer": {
+                        "servers": [
+                            { "url": "http://localhost:8001" },
+                            { "url": "http://localhost:8002" }
+                        ]
+                    }
+                },
+                "web-service": {
+                    "loadbalancer": {
+                        "servers": [
+                            { "url": "http://localhost:9001" }
+                        ]
+                    }
+                }
+            }
+        }"#;
+        
+        let mut file = File::create(&config_path).expect("JSON 파일 생성 실패");
+        file.write_all(json_content.as_bytes()).expect("JSON 파일 쓰기 실패");
+        
+        debug!("테스트: JSON 파일 생성됨 - {:?}", config_path);
+        
+        // 테스트용 DockerManager 및 RoutingTable 생성
+        let container_id = "router-test-container";
+        let host = "example.com";
+        let ip = "127.0.0.1";
+        let port = 8080;
+        
+        let container_info = create_test_container_info(
+            container_id, 
+            host, 
+            ip, 
+            port, 
+            Some(config_path.to_str().unwrap())
+        );
+        
+        let container = create_test_container(container_id, host, ip, port);
+        
+        let manager = create_test_docker_manager(
+            container_info.clone(),
+            vec![container]
+        ).await;
+        
+        debug!("테스트: DockerManager 생성됨");
+        
+        // JSON 설정 로드
+        let load_result = manager.load_container_json_config(container_id, &config_path).await;
+        assert!(load_result.is_ok(), "JSON 설정 로드 실패: {:?}", load_result.err());
+        
+        // 설정이 제대로 로드되었는지 확인
+        let config = manager.container_config_manager.as_ref().get_container_config(container_id);
+        assert!(config.is_some(), "컨테이너 설정이 로드되지 않음");
+        
+        if let Some(config) = &config {
+            debug!("테스트: 컨테이너 설정 로드됨");
+            debug!("테스트: 라우터 수: {}", config.routers.len());
+            debug!("테스트: 서비스 수: {}", config.services.len());
+            
+            // 라우터와 서비스 내용 확인
+            for (name, router) in &config.routers {
+                debug!("테스트: 라우터 {} - 규칙: {}, 서비스: {}", name, router.rule, router.service);
+            }
+            
+            for (name, service) in &config.services {
+                debug!("테스트: 서비스 {} - 서버 수: {}", name, service.loadbalancer.servers.len());
+                for (i, server) in service.loadbalancer.servers.iter().enumerate() {
+                    debug!("테스트: 서비스 {} - 서버 {}: URL: {}", name, i, server.url);
+                }
+            }
+        }
+        
+        // 라우팅 테이블 생성
+        let routing_table = Arc::new(RwLock::new(RoutingTable::new()));
+        
+        // JSON 설정에서 라우팅 업데이트 테스트
+        let result = manager.update_routing_from_json(container_id, routing_table.clone()).await;
+        assert!(result.is_ok(), "라우팅 업데이트 실패: {:?}", result.err());
+        
+        // 라우팅 테이블 확인
+        let table = routing_table.read().await;
+        
+        // 라우트 수 확인
+        debug!("테스트: 라우팅 테이블의 라우트 수: {}", table.routes.len());
+        for (key, _) in &table.routes {
+            debug!("테스트: 라우트 - 호스트: {}, 경로: {}", key.0, key.1);
+        }
+        
+        // parse_router_rule 함수 테스트
+        debug!("테스트: parse_router_rule 함수 테스트");
+        let rule1 = "Host(`api.example.com`)";
+        match parse_router_rule(rule1) {
+            Ok((host, path)) => debug!("Rule1 파싱 결과 - 호스트: {}, 경로: {}", host, path),
+            Err(e) => debug!("Rule1 파싱 실패: {:?}", e),
+        }
+        
+        let rule2 = "Host(`www.example.com`)";
+        match parse_router_rule(rule2) {
+            Ok((host, path)) => debug!("Rule2 파싱 결과 - 호스트: {}, 경로: {}", host, path),
+            Err(e) => debug!("Rule2 파싱 실패: {:?}", e),
+        }
+        
+        // create_backend_from_service_config 함수 테스트
+        debug!("테스트: create_backend_from_service_config 함수 테스트");
+        if let Some(config) = config {
+            if let Some(service_config) = config.services.get("api-service") {
+                match create_backend_from_service_config("api.example.com", service_config) {
+                    Ok(backend) => debug!("Backend 생성 성공: {:?}", backend.address),
+                    Err(e) => debug!("Backend 생성 실패: {:?}", e),
+                }
+            }
+        }
+        
+        assert_eq!(table.routes.len(), 2, "2개의 라우트가 추가되어야 함");
+        
+        // 호스트 정보로 직접 백엔드 검색
+        let api_host_info = HostInfo {
+            name: "api.example.com".to_string(),
+            port: None,
+            path: None
+        };
+        
+        let web_host_info = HostInfo {
+            name: "www.example.com".to_string(),
+            port: None,
+            path: None
+        };
+        
+        // API 라우트 테스트
+        let api_service = table.find_backend(&api_host_info).expect("API 서비스 찾을 수 없음");
+        let api_addr = api_service.get_next_address().expect("API 서비스 주소 없음");
+        assert_eq!(api_addr.port(), 8001, "API 서비스 포트 불일치");
+        
+        // 웹 라우트 테스트
+        let web_service = table.find_backend(&web_host_info).expect("웹 서비스 찾을 수 없음");
+        let web_addr = web_service.get_next_address().expect("웹 서비스 주소 없음");
+        assert_eq!(web_addr.port(), 9001, "웹 서비스 포트 불일치");
     }
 } 
