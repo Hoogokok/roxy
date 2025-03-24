@@ -1,0 +1,38 @@
+{
+    "version": "1.0",
+    "middlewares": {
+        "web-ratelimit": {
+            "type": "ratelimit",
+            "settings": {
+                "average": 2,
+                "burst": 4
+            },
+            "enabled": true
+        }
+    },
+    "services": {
+        "web-service": {
+            "loadbalancer": {
+                "servers": [
+                    {
+                        "name": "web-1",
+                        "port": 80
+                    },
+                    {
+                        "name": "web-2",
+                        "port": 80
+                    }
+                ]
+            }
+        }
+    },
+    "health": {
+        "enabled": true,
+        "http": {
+            "path": "/health",
+            "method": "GET",
+            "expected_status": 200
+        },
+        "interval": 30
+    }
+}

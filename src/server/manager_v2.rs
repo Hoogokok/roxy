@@ -167,9 +167,11 @@ impl ServerManager<HttpsDisabled> {
 
         // Docker 이벤트 구독
         let mut event_rx = self.docker_manager.subscribe_to_events().await;
+        let docker_manager_arc = Arc::new(self.docker_manager.clone());
         let event_handler = DockerEventHandler::new(
             self.routing_table.clone(),
             Arc::new(RwLock::new(self.middleware_manager.clone())),
+            docker_manager_arc,
         );
 
         // Docker 이벤트 처리 태스크 시작
@@ -219,6 +221,9 @@ impl ServerManager<HttpsDisabled> {
         let shared_middleware_manager = Arc::new(RwLock::new(self.middleware_manager.clone()));
         self.shared_middleware_manager = Some(shared_middleware_manager.clone());
 
+        // DockerManager 복사본 생성
+        let docker_manager = Arc::new(self.docker_manager.clone());
+
         // 설정 감시자 초기화
         let watcher = Self::initialize_watcher(&watcher_config).await?;
         self.config_watcher = Some(watcher.clone());
@@ -252,7 +257,8 @@ impl ServerManager<HttpsDisabled> {
                 let updated = process_config_files(
                     file_paths,
                     shared_config.clone(),
-                    shared_middleware_manager.clone()
+                    shared_middleware_manager.clone(),
+                    docker_manager.clone()
                 ).await.unwrap_or_else(|e| {
                     error!("설정 파일 처리 중 오류 발생: {}", e);
                     false
@@ -316,9 +322,11 @@ impl ServerManager<HttpsEnabled> {
 
         // Docker 이벤트 구독
         let mut event_rx = self.docker_manager.subscribe_to_events().await;
+        let docker_manager_arc = Arc::new(self.docker_manager.clone());
         let event_handler = DockerEventHandler::new(
             self.routing_table.clone(),
             Arc::new(RwLock::new(self.middleware_manager.clone())),
+            docker_manager_arc,
         );
 
         // Docker 이벤트 처리 태스크 시작
@@ -368,6 +376,9 @@ impl ServerManager<HttpsEnabled> {
         let shared_middleware_manager = Arc::new(RwLock::new(self.middleware_manager.clone()));
         self.shared_middleware_manager = Some(shared_middleware_manager.clone());
 
+        // DockerManager 복사본 생성
+        let docker_manager = Arc::new(self.docker_manager.clone());
+
         // 설정 감시자 초기화
         let watcher = Self::initialize_watcher(&watcher_config).await?;
         self.config_watcher = Some(watcher.clone());
@@ -401,7 +412,8 @@ impl ServerManager<HttpsEnabled> {
                 let updated = process_config_files(
                     file_paths,
                     shared_config.clone(),
-                    shared_middleware_manager.clone()
+                    shared_middleware_manager.clone(),
+                    docker_manager.clone()
                 ).await.unwrap_or_else(|e| {
                     error!("설정 파일 처리 중 오류 발생: {}", e);
                     false
@@ -487,7 +499,8 @@ impl ServerManager {
 async fn process_config_files<HttpsState>(
     paths: Vec<PathBuf>,
     shared_config: Arc<RwLock<Settings<Validated, HttpsState>>>,
-    shared_middleware_manager: Arc<RwLock<MiddlewareManager>>
+    shared_middleware_manager: Arc<RwLock<MiddlewareManager>>,
+    docker_manager: Arc<DockerManager>
 ) -> Result<bool> 
 where
     HttpsState: TypeState + Clone + Send + Sync + 'static,
@@ -505,15 +518,38 @@ where
         return Ok(false);
     }
     
-    // 2. 설정 파일 처리 및 업데이트
+    // 2. 컨테이너 설정 파일 확인
+    let container_configs = docker_manager.get_container_config_paths().await.unwrap_or_default();
+    let mut is_container_config = false;
+    
+    for path in &config_files {
+        for (container_id, config_path) in &container_configs {
+            if path == config_path {
+                info!("컨테이너 설정 파일 변경 감지: {} - {}", container_id, path.display());
+                // 컨테이너 설정 파일 재로드
+                if let Err(e) = docker_manager.load_container_json_config(container_id, path, None).await {
+                    error!(
+                        container_id = %container_id,
+                        error = %e,
+                        "컨테이너 설정 파일 재로드 실패"
+                    );
+                } else {
+                    is_container_config = true;
+                }
+                break;
+            }
+        }
+    }
+    
+    // 3. 설정 파일 처리 및 업데이트
     let updated = process_json_configs(config_files, &shared_config).await?;
     
-    // 3. 미들웨어 매니저 업데이트 (필요한 경우)
-    if updated {
+    // 4. 미들웨어 매니저 업데이트 (필요한 경우)
+    if updated || is_container_config {
         update_middleware_manager(&shared_config, &shared_middleware_manager).await?;
     }
     
-    Ok(updated)
+    Ok(updated || is_container_config)
 }
 
 // JSON 파일만 수집

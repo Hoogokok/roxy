@@ -1,9 +1,10 @@
 use bollard::models::ContainerSummary;
-use crate::{docker::DockerError, routing_v2::{BackendService, LoadBalancerStrategy, PathMatcher}};
+use crate::{docker::DockerError, routing_v2::{BackendService, LoadBalancerStrategy, PathMatcher}, settings::{types::ConfigPath, typestate::{Raw, Validatable, Validated}}};
 use std::net::SocketAddr;
 use crate::settings::docker::HealthCheckType;
 use std::sync::atomic::AtomicUsize;
 use tracing::debug;
+use std::collections::HashMap;
 
 // 불변 데이터 구조
 #[derive(Debug, Clone)]
@@ -11,12 +12,15 @@ pub struct ContainerInfo {
     pub host: String,
     pub ip: String,
     pub port: u16,
+    pub container_id: Option<String>,
     pub path_matcher: Option<PathMatcher>,
     pub middlewares: Option<Vec<String>>,
     pub router_name: Option<String>,
     /// 헬스 체크 설정
     pub health_check: Option<ContainerHealthCheck>,
     pub load_balancer: Option<LoadBalancerStrategy>,
+    /// 컨테이너별 JSON 설정 파일 경로
+    pub json_config_path: Option<ConfigPath<Validated>>,
 }
 
 #[derive(Debug, Clone)]
@@ -33,6 +37,20 @@ pub trait ContainerInfoExtractor: Send + Sync {
     // 부수 효과가 없는 순수 함수들
     fn extract_info(&self, container: &ContainerSummary) -> Result<ContainerInfo, DockerError>;
     fn create_backend(&self, info: &ContainerInfo) -> Result<BackendService, DockerError>;
+    
+    // 라벨 프리픽스 반환
+    fn get_label_prefix(&self) -> &str;
+    
+    // 라우터 이름을 라벨에서 추출
+    fn extract_router_name(&self, labels: &std::collections::HashMap<String, String>) -> Option<String> {
+        labels.iter()
+            .find(|(k, _)| k.starts_with(&format!("{}http.routers.", self.get_label_prefix())))
+            .map(|(k, _)| {
+                let parts: Vec<&str> = k.split('.').collect();
+                parts.get(3).map(|&name| name.to_string())
+            })
+            .flatten()
+    }
     
     // 새로운 메서드 추가 (반환 타입 명시)
     fn parse_socket_addr(&self, ip: &str, port: u16) -> Result<SocketAddr, DockerError> {
@@ -172,17 +190,6 @@ impl  DefaultExtractor {
             })
     }
 
-    fn extract_router_name(&self, labels: &Option<std::collections::HashMap<String, String>>) -> Option<String> {
-        labels.as_ref()
-            .and_then(|l| l.iter()
-                .find(|(k, _)| k.starts_with(&format!("{}http.routers.", self.label_prefix)))
-                .map(|(k, _)| {
-                    let parts: Vec<&str> = k.split('.').collect();
-                    parts.get(3).map(|&name| name.to_string())
-                })
-                .flatten())
-    }
-
     fn extract_middlewares(&self, labels: &Option<std::collections::HashMap<String, String>>, router_name: &str) -> Option<Vec<String>> {
         labels
             .as_ref()
@@ -264,8 +271,14 @@ impl  DefaultExtractor {
         })
     }
 
+    fn extract_json_config_path(&self, labels: &Option<HashMap<String, String>>) -> Option<ConfigPath<Raw>> {
+        labels.as_ref()
+            .and_then(|l| l.get(&format!("{}config.json", self.label_prefix)))
+            .map(|path| ConfigPath::new(path.clone()))
+    }
+
     fn extract_info(&self, container: &ContainerSummary) -> Result<ContainerInfo, DockerError> {
-        let _id = &container.id.as_ref().ok_or_else(|| DockerError::ContainerConfigError {
+        let container_id = container.id.as_ref().ok_or_else(|| DockerError::ContainerConfigError {
             container_id: "unknown".to_string(),
             reason: "컨테이너 ID 없음".to_string(),
             context: None,
@@ -287,7 +300,12 @@ impl  DefaultExtractor {
         let port = self.extract_port(labels);
         
         // 미들웨어 목록 추출
-        let router_name = self.extract_router_name(labels);
+        let router_name = if let Some(labels_map) = labels {
+            self.extract_router_name(labels_map)
+        } else {
+            None
+        };
+        
         let middlewares = if let Some(ref r_name) = router_name {
             self.extract_middlewares(labels, r_name)
         } else {
@@ -301,15 +319,32 @@ impl  DefaultExtractor {
         let service_name = router_name.clone().unwrap_or_else(|| host.clone());
         let load_balancer = self.extract_load_balancer(labels, &service_name);
         
+        // JSON 설정 경로 추출
+        let raw_json_config_path = self.extract_json_config_path(labels);
+        
+        let json_config_path = match raw_json_config_path {
+            Some(raw_path) => match raw_path.validate() {
+                Ok(validated) => Some(validated),
+                Err(e) => return Err(DockerError::ContainerConfigError {
+                    container_id: "unknown".to_string(),
+                    reason: "설정 경로 검증 실패".to_string(),
+                    context: Some(e.to_string()),
+                }),
+            },
+            None => None,
+        };
+        
         Ok(ContainerInfo {
             host,
             ip,
             port,
+            container_id: Some(container_id.clone()),
             path_matcher,
             middlewares,
             router_name,
             health_check,
             load_balancer,
+            json_config_path,
         })
     }
 
@@ -377,5 +412,19 @@ impl ContainerInfoExtractor for DefaultExtractor {
         }
 
         Ok(service)
+    }
+    
+    fn get_label_prefix(&self) -> &str {
+        &self.label_prefix
+    }
+
+    fn extract_router_name(&self, labels: &std::collections::HashMap<String, String>) -> Option<String> {
+        labels.iter()
+            .find(|(k, _)| k.starts_with(&format!("{}http.routers.", self.label_prefix)))
+            .map(|(k, _)| {
+                let parts: Vec<&str> = k.split('.').collect();
+                parts.get(3).map(|&name| name.to_string())
+            })
+            .flatten()
     }
 } 

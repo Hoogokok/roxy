@@ -2,7 +2,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 use crate::{
-    docker::{DockerEvent, HealthStatus},
+    docker::{DockerEvent, HealthStatus, DockerManager},
     routing_v2::RoutingTable,
     middleware::MiddlewareManager,
 };
@@ -10,16 +10,19 @@ use crate::{
 pub struct DockerEventHandler {
     routing_table: Arc<RwLock<RoutingTable>>,
     middleware_manager: Arc<RwLock<MiddlewareManager>>,
+    docker_manager: Arc<DockerManager>,
 }
 
 impl DockerEventHandler {
     pub fn new(
         routing_table: Arc<RwLock<RoutingTable>>,
         middleware_manager: Arc<RwLock<MiddlewareManager>>,
+        docker_manager: Arc<DockerManager>,
     ) -> Self {
         Self { 
             routing_table,
             middleware_manager,
+            docker_manager,
         }
     }
 
@@ -124,6 +127,25 @@ impl DockerEventHandler {
                             "컨테이너 헬스 상태 변경"
                         );
                     }
+                }
+            }
+            
+            DockerEvent::JsonRoutingConfigLoaded { container_id } => {
+                // table을 잠시 해제하여 DockerManager에서 다시 잠글 수 있게 함
+                drop(table);
+                
+                // JSON 설정에서 라우팅 테이블 업데이트
+                if let Err(e) = self.docker_manager.update_routing_from_json(&container_id, self.routing_table.clone()).await {
+                    error!(
+                        error = %e,
+                        container_id = %container_id,
+                        "JSON 설정에서 라우팅 업데이트 실패"
+                    );
+                } else {
+                    info!(
+                        container_id = %container_id,
+                        "JSON 설정에서 라우팅 업데이트 성공"
+                    );
                 }
             }
             

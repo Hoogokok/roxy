@@ -13,6 +13,7 @@ services:
       - target-cache:/app/target
       - ./certs:/app/certs:ro
       - ./test:/app/test:ro
+      - ./configs:/app/configs:ro  # JSON 설정 파일 마운트
     environment:
       - PROXY_DOCKER_NETWORK=reverse-proxy-network
       - HTTP_PORT=80
@@ -27,6 +28,7 @@ services:
       - PROXY_HEALTH_CHECK_ENABLED=true
       - PROXY_HEALTH_CHECK_INTERVAL=30
       - PROXY_RETRY_COUNT=3
+      - PROXY_CONFIG_DIR=/app/configs  # JSON 설정 디렉토리 설정
     user: root
     restart: "no"
     networks:
@@ -45,23 +47,12 @@ services:
     expose:
       - "80"
     labels:
+      # 기본 라우팅 설정만 라벨로 유지
       - "rproxy.http.routers.api.rule=Host(`test.localhost`) && PathPrefix(`/api`)"
-      - "rproxy.http.services.api.loadbalancer.server.port=80"
+      - "rproxy.http.routers.api.service=api-service"
       - "rproxy.http.routers.api.middlewares=api-cors"
-      - "rproxy.http.services.api.loadbalancer.server.weight=2"
-      - "rproxy.health.enabled=true"
-      - "rproxy.health.http.path=/api/health"
-      - "rproxy.health.interval=30"
-      - "rproxy.health.timeout=5"
-      - "rproxy.health.max_failures=3"
-      - "rproxy.http.middlewares.api-cors.cors.allowOrigins=http://localhost:3000,https://example.com"
-      - "rproxy.http.middlewares.api-cors.cors.allowMethods=GET,POST,PUT,DELETE,OPTIONS"
-      - "rproxy.http.middlewares.api-cors.cors.allowHeaders=Content-Type,Authorization,X-Request-ID"
-      - "rproxy.http.middlewares.api-cors.cors.allowCredentials=true"
-      - "rproxy.http.middlewares.api-cors.cors.exposeHeaders=X-Custom-Header"
-      - "rproxy.http.middlewares.api-cors.cors.maxAge=3600"
-      - "rproxy.http.middlewares.api-cors.type=cors"
-      - "rproxy.http.middlewares.api-cors.enabled=true"
+      # JSON 설정 파일 경로 지정
+      - "rproxy.config.json=/app/configs/api-service.json"
     networks:
       - reverse-proxy-network
     volumes:
@@ -74,15 +65,12 @@ services:
     expose:
       - "80"
     labels:
+      # 기본 라우팅 설정만 라벨로 유지
       - "rproxy.http.routers.api.rule=Host(`test.localhost`) && PathPrefix(`/api`)"
-      - "rproxy.http.services.api.loadbalancer.server.port=80"
+      - "rproxy.http.routers.api.service=api-service"
       - "rproxy.http.routers.api.middlewares=api-cors"
-      - "rproxy.http.services.api.loadbalancer.server.weight=1"
-      - "rproxy.health.enabled=true"
-      - "rproxy.health.http.path=/api/health"
-      - "rproxy.health.interval=30"
-      - "rproxy.health.timeout=5"
-      - "rproxy.health.max_failures=3"
+      # JSON 설정 파일 경로 지정
+      - "rproxy.config.json=/app/configs/api-service.json"
     networks:
       - reverse-proxy-network
     volumes:
@@ -96,16 +84,12 @@ services:
     expose:
       - "80"
     labels:
+      # 기본 라우팅 설정만 라벨로 유지
       - "rproxy.http.routers.web.rule=Host(`test.localhost`) && PathPrefix(`/web`)"
-      - "rproxy.http.services.web.loadbalancer.server.port=80"
+      - "rproxy.http.routers.web.service=web-service"
       - "rproxy.http.routers.web.middlewares=web-ratelimit"
-      - "rproxy.health.enabled=true"
-      - "rproxy.health.http.path=/health"
-      - "rproxy.health.interval=30"
-      - "rproxy.http.middlewares.web-ratelimit.type=ratelimit"
-      - "rproxy.http.middlewares.web-ratelimit.enabled=true"
-      - "rproxy.http.middlewares.web-ratelimit.rateLimit.average=2"
-      - "rproxy.http.middlewares.web-ratelimit.rateLimit.burst=4"
+      # JSON 설정 파일 경로 지정
+      - "rproxy.config.json=/app/configs/web-service.json"
     networks:
       - reverse-proxy-network
     volumes:
@@ -118,12 +102,12 @@ services:
     expose:
       - "80"
     labels:
+      # 기본 라우팅 설정만 라벨로 유지
       - "rproxy.http.routers.web.rule=Host(`test.localhost`) && PathPrefix(`/web`)"
-      - "rproxy.http.services.web.loadbalancer.server.port=80"
+      - "rproxy.http.routers.web.service=web-service"
       - "rproxy.http.routers.web.middlewares=web-ratelimit"
-      - "rproxy.health.enabled=true"
-      - "rproxy.health.http.path=/health"
-      - "rproxy.health.interval=30"
+      # JSON 설정 파일 경로 지정
+      - "rproxy.config.json=/app/configs/web-service.json"
     networks:
       - reverse-proxy-network
     volumes:

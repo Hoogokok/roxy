@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use serde_json::{Value, Map};
-use tracing::debug;
+use tracing::{debug, info};
 
 /// 언더스코어(snake_case) → 캐멀케이스(camelCase) 변환
 pub fn to_camel_case(s: &str) -> String {
@@ -117,7 +117,12 @@ pub fn label_key_to_json_path(label_key: &str) -> (String, Vec<String>) {
 
 /// 주어진 문자열이 미들웨어 타입인지 확인
 fn is_middleware_type(s: &str) -> bool {
-    matches!(s, "basicAuth" | "cors" | "rateLimit" | "headers" | "stripPrefix" | "addPrefix")
+    matches!(s, 
+        // camelCase 형식
+        "basicAuth" | "cors" | "rateLimit" | "headers" | "stripPrefix" | "addPrefix" | 
+        // lowercase 형식 추가
+        "basicauth" | "ratelimit" | "stripprefix" | "addprefix"
+    )
 }
 
 /// 문자열 값을 적절한 타입으로 변환
@@ -132,10 +137,20 @@ pub fn convert_value(value: &str, key: &str) -> Value {
         return Value::Array(values);
     }
 
-    // 불리언 값 처리
-    if value.eq_ignore_ascii_case("true") {
+    // 불리언 값 처리 - 따옴표로 묶인 경우도 처리
+    let trimmed_value = value.trim();
+    if trimmed_value.eq_ignore_ascii_case("true") || 
+       trimmed_value.eq_ignore_ascii_case("\"true\"") ||
+       trimmed_value.eq_ignore_ascii_case("'true'") {
+        // loadbalancer 필드에 대한 특별 처리 - 객체로 반환
+        if key.ends_with(".loadbalancer") {
+            debug!("loadbalancer 필드를 객체로 변환: {}", key);
+            return Value::Object(Map::new());
+        }
         return Value::Bool(true);
-    } else if value.eq_ignore_ascii_case("false") {
+    } else if trimmed_value.eq_ignore_ascii_case("false") || 
+              trimmed_value.eq_ignore_ascii_case("\"false\"") ||
+              trimmed_value.eq_ignore_ascii_case("'false'") {
         return Value::Bool(false);
     }
     
@@ -168,12 +183,24 @@ pub fn labels_to_json(labels: &HashMap<String, String>, prefix: &str) -> Value {
         filtered_labels.into_iter()
             .partition(|(key, _)| key.contains(".loadbalancer.server."));
     
+    info!("변환 중인 라벨 개수 - 일반: {}, 서버: {}", regular_labels.len(), server_labels.len());
+    
     // 일반 라벨 처리
     let mut root = process_regular_labels(&regular_labels, &normalized_prefix);
     
     // 서버 라벨 처리
     if !server_labels.is_empty() {
+        info!("서버 라벨 처리 시작");
         process_server_labels(&mut root, &server_labels, &normalized_prefix);
+    }
+    
+    // 최종 변환 결과 구조 간략 출력
+    if let Some(services) = root.get("services") {
+        if let Some(services_obj) = services.as_object() {
+            for service_name in services_obj.keys() {
+                info!("변환된 서비스: {}", service_name);
+            }
+        }
     }
     
     Value::Object(root)
@@ -230,6 +257,7 @@ fn process_regular_labels(
         let mut current = root.get_mut(&root_key).unwrap().as_object_mut().unwrap();
         
         for (i, segment) in path.iter().enumerate() {
+            debug!("세그먼트 처리 중: {} (인덱스: {})", segment, i);
             if i == path.len() - 1 {
                 // 마지막 세그먼트는 값을 설정
                 debug!("필드 설정: {} = {:?}", segment, converted_value);
@@ -254,35 +282,74 @@ fn process_server_labels(
     server_labels: &HashMap<String, String>,
     prefix: &str
 ) {
-    // 서비스별로 서버 속성 그룹화
-    let mut grouped_servers: HashMap<String, HashMap<String, String>> = HashMap::new();
+    // 처리 전 서버 라벨 로깅
+    debug!("처리할 서버 라벨: {:?}", server_labels);
+    
+    // 서비스별 서버별 속성 그룹화
+    // 형식: HashMap<서비스이름, HashMap<서버식별자, HashMap<속성이름, 값>>>
+    let mut grouped_servers: HashMap<String, HashMap<String, HashMap<String, String>>> = HashMap::new();
     
     for (key, value) in server_labels {
         // 서비스 이름과 서버 속성 추출
         let parts: Vec<&str> = key.split('.').collect();
         if parts.len() >= 7 {
+            debug!("서버 라벨 파싱: {:?}", parts);
             let service_name = parts[3].to_string();
-            let server_property = parts[6].to_string();
             
+            // 서버 식별자 추출 (있는 경우)
+            // 예: rproxy.http.services.api-service.loadbalancer.server.port
+            // 또는 rproxy.http.services.api-service.loadbalancer.server.1.port
+            let server_id = if parts.len() >= 8 && parts[7].chars().all(|c| c.is_digit(10)) {
+                parts[7].to_string()
+            } else {
+                // 기본 서버 ID
+                "0".to_string()
+            };
+            
+            // 서버 속성(port, weight 등) 추출
+            let server_property = if parts.len() >= 8 && parts[7].chars().all(|c| c.is_digit(10)) {
+                // 서버 ID가 있는 형식: .server.1.port
+                if parts.len() >= 9 {
+                    parts[8].to_string()
+                } else {
+                    continue; // 속성이 없으면 스킵
+                }
+            } else {
+                // 기본 형식: .server.port
+                parts[6].to_string()
+            };
+            
+            debug!("서버 속성 추출: 서비스={}, 서버ID={}, 속성={}, 값={}", 
+                  service_name, server_id, server_property, value);
+            
+            // 서버 속성 맵에 추가
             grouped_servers
                 .entry(service_name)
+                .or_insert_with(HashMap::new)
+                .entry(server_id)
                 .or_insert_with(HashMap::new)
                 .insert(server_property, value.clone());
         }
     }
     
+    debug!("그룹화된 서버 정보: {:?}", grouped_servers);
+    
     // services 객체가 없으면 생성
     if !root.contains_key("services") {
         root.insert("services".to_string(), Value::Object(Map::new()));
+        debug!("services 루트 객체 생성");
     }
     
     let services = root.get_mut("services").unwrap().as_object_mut().unwrap();
     
     // 각 서비스별로 서버 객체 생성
-    for (service_name, server_props) in grouped_servers {
+    for (service_name, server_groups) in grouped_servers {
+        debug!("서비스 처리 중: {}", service_name);
+        
         // 해당 서비스가 없으면 생성
         if !services.contains_key(&service_name) {
             services.insert(service_name.clone(), Value::Object(Map::new()));
+            debug!("새 서비스 생성: {}", service_name);
         }
         
         let service = services.get_mut(&service_name).unwrap().as_object_mut().unwrap();
@@ -290,34 +357,72 @@ fn process_server_labels(
         // loadbalancer가 없으면 생성
         if !service.contains_key("loadbalancer") {
             service.insert("loadbalancer".to_string(), Value::Object(Map::new()));
+            debug!("loadbalancer 객체 생성: {}", service_name);
         }
         
-        let loadbalancer = service.get_mut("loadbalancer").unwrap().as_object_mut().unwrap();
-        
-        // 서버 객체 생성
-        let mut server_obj = Map::new();
-        
-        // URL 생성: port를 url로 변환
-        if let Some(port) = server_props.get("port") {
-            let url = format!("http://localhost:{}", port);
-            server_obj.insert("url".to_string(), Value::String(url));
-        }
-        
-        // weight 추가
-        if let Some(weight) = server_props.get("weight") {
-            if let Ok(w) = weight.parse::<u64>() {
-                server_obj.insert("weight".to_string(), Value::Number(w.into()));
+        // 안전하게 loadbalancer 객체 가져오기
+        if let Some(loadbalancer_value) = service.get_mut("loadbalancer") {
+            if let Some(loadbalancer) = loadbalancer_value.as_object_mut() {
+                // 서버 배열 생성
+                let mut servers = Vec::new();
+                
+                // 각 서버 그룹 처리
+                for (server_id, server_props) in server_groups {
+                    debug!("서버 처리 중: 서비스={}, 서버ID={}, 속성={:?}", 
+                          service_name, server_id, server_props);
+                    
+                    // 서버 객체 생성
+                    let mut server_obj = Map::new();
+                    
+                    // URL 생성: Docker 환경에서는 컨테이너 이름으로 통신이 가능
+                    if let Some(port) = server_props.get("port") {
+                        // 컨테이너 이름이 제공된 경우 사용
+                        let container_name = if let Some(name) = server_props.get("name") {
+                            name.clone()
+                        } else {
+                            // 서비스 이름으로부터 컨테이너 이름 유추 (서비스 이름에서 -service 접미사 제거)
+                            if service_name.ends_with("-service") {
+                                service_name[0..service_name.len()-8].to_string()
+                            } else {
+                                // 접미사가 없으면 그대로 사용
+                                service_name.clone()
+                            }
+                        };
+                        
+                        let url = format!("http://{}:{}", container_name, port);
+                        debug!("서버 URL 생성: {}", url);
+                        server_obj.insert("url".to_string(), Value::String(url));
+                    }
+                    
+                    // weight 추가
+                    if let Some(weight) = server_props.get("weight") {
+                        if let Ok(w) = weight.parse::<u64>() {
+                            server_obj.insert("weight".to_string(), Value::Number(w.into()));
+                            debug!("서버 가중치 설정: {}", w);
+                        }
+                    }
+                    
+                    // 기본 weight 추가 (없는 경우)
+                    if !server_obj.contains_key("weight") {
+                        server_obj.insert("weight".to_string(), Value::Number(1.into()));
+                        debug!("기본 가중치 추가: 1");
+                    }
+                    
+                    // servers 배열에 추가
+                    servers.push(Value::Object(server_obj));
+                }
+                
+                // 서버 배열이 비어있지 않은 경우에만 추가
+                if !servers.is_empty() {
+                    debug!("서비스 {} 서버 배열 추가: {} 서버", service_name, servers.len());
+                    loadbalancer.insert("servers".to_string(), Value::Array(servers));
+                }
+            } else {
+                debug!("loadbalancer 필드가 객체가 아님: {:?}", loadbalancer_value);
             }
+        } else {
+            debug!("loadbalancer 필드를 찾을 수 없음");
         }
-        
-        // 기본 weight 추가 (없는 경우)
-        if !server_obj.contains_key("weight") {
-            server_obj.insert("weight".to_string(), Value::Number(1.into()));
-        }
-        
-        // servers 배열에 추가
-        let servers = vec![Value::Object(server_obj)];
-        loadbalancer.insert("servers".to_string(), Value::Array(servers));
     }
 }
 
@@ -355,7 +460,7 @@ fn process_resource_items(
             match resource_type {
                 "middlewares" => process_middleware_item(result, prefix, item_key, obj),
                 "services" => process_service_item(result, prefix, item_key, obj),
-                _ => process_generic_item(result, prefix, resource_type, item_key, obj)
+                _ => process_generic_item(result, prefix, resource_type, &item_key, obj)
             }
         }
     }
@@ -509,12 +614,18 @@ fn process_generic_item(
 /// 미들웨어 타입에 따른 설정 키 결정
 fn get_middleware_type_key(middleware_type: &str) -> String {
     match middleware_type {
+        // kebab-case 형식
         "basic-auth" => "basicAuth".to_string(),
         "cors" => "cors".to_string(),
         "rate-limit" => "rateLimit".to_string(),
         "header" => "headers".to_string(),
         "strip-prefix" => "stripPrefix".to_string(),
         "add-prefix" => "addPrefix".to_string(),
+        // lowercase 형식 추가
+        "basicauth" => "basicAuth".to_string(),
+        "ratelimit" => "rateLimit".to_string(),
+        "stripprefix" => "stripPrefix".to_string(),
+        "addprefix" => "addPrefix".to_string(),
         _ => "unknown".to_string()
     }
 }
@@ -875,8 +986,8 @@ mod tests {
         assert!(server.contains_key("url"));
         assert!(server.contains_key("weight"));
         
-        // URL 형식 검증
-        assert_eq!(server.get("url").unwrap(), "http://localhost:8080");
+        // URL 형식 검증 - 실제 구현은 "web"을 서비스 이름으로 사용하므로 수정
+        assert_eq!(server.get("url").unwrap(), "http://web:8080");
         assert_eq!(server.get("weight").unwrap().as_u64().unwrap(), 2);
     }
     

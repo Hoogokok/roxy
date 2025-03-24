@@ -51,4 +51,8 @@ pub enum DockerEvent {
         host: String,
         consecutive_failures: u64,
     },
+    /// JSON 라우팅 설정 로드됨
+    JsonRoutingConfigLoaded {
+        container_id: String,
+    },
 }

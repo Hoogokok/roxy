@@ -6,6 +6,9 @@
 use std::fmt;
 use url::Url;
 use serde;
+use std::marker::PhantomData;
+use super::typestate::{Raw, Validated, TypeState, Validatable};
+use super::error::SettingsError;
 
 /// A validated service identifier.
 /// 
@@ -783,6 +786,59 @@ impl serde::Serialize for ValidMiddlewareReference {
     fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
     where S: serde::Serializer {
         self.0.serialize(serializer)
+    }
+}
+
+/// 설정 파일 경로를 위한 강 타입
+/// 
+/// 타입스테이트 패턴을 사용하여 경로가 검증되었는지 컴파일 타임에 보장합니다.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConfigPath<S: TypeState = Raw> {
+    path: String,
+    _state: PhantomData<S>,
+}
+
+impl ConfigPath<Raw> {
+    pub fn new(path: String) -> Self {
+        Self {
+            path,
+            _state: PhantomData,
+        }
+    }
+}
+
+impl<S: TypeState> ConfigPath<S> {
+    pub fn as_str(&self) -> &str {
+        &self.path
+    }
+}
+
+impl Validatable<ConfigPath<Validated>> for ConfigPath<Raw> {
+    type Error = SettingsError;
+    
+    fn validate(self) -> Result<ConfigPath<Validated>, Self::Error> {
+        // 경로가 비어있는지 검사
+        if self.path.is_empty() {
+            return Err(SettingsError::InvalidValue {
+                field: "config_path".to_string(),
+                context: "설정 경로".to_string(),
+                message: "경로가 비어있습니다".to_string(),
+            });
+        }
+        
+        // 절대 경로인지 검사
+        if !self.path.starts_with('/') {
+            return Err(SettingsError::InvalidValue {
+                field: "config_path".to_string(),
+                context: "설정 경로".to_string(),
+                message: "경로는 절대 경로여야 합니다 (/ 로 시작)".to_string(),
+            });
+        }
+        
+        Ok(ConfigPath {
+            path: self.path,
+            _state: PhantomData,
+        })
     }
 }
 
