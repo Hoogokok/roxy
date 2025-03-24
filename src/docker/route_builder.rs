@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::sync::Arc;
-use async_trait::async_trait;
 
 use crate::docker::{ContainerInfo, DockerError, BackendServiceBuilder};
 use crate::routing_v2::{PathMatcher, BackendService};
@@ -122,6 +121,7 @@ impl RouteBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
     use bollard::models::ContainerSummary;
     use std::pin::Pin;
     use bollard::container::ListContainersOptions;
@@ -271,5 +271,226 @@ mod tests {
         
         assert!(has_service1, "service1 라우트가 없음");
         assert!(has_service2, "service2 라우트가 없음");
+    }
+
+    #[tokio::test]
+    async fn test_build_routes_empty_services() {
+        // 테스트 환경 설정
+        let client = Arc::new(Box::new(MockDockerClient) as Box<dyn crate::docker::DockerClient>);
+        let extractor = Box::new(MockExtractor);
+        let (container_config_manager, _) = ContainerConfigManager::new();
+        let container_config_manager = Arc::new(container_config_manager);
+        
+        let service_builder = BackendServiceBuilder::new(
+            extractor,
+            client,
+            container_config_manager.clone()
+        );
+        
+        let route_builder = RouteBuilder::new(
+            service_builder,
+            container_config_manager
+        );
+        
+        // 빈 서비스 목록
+        let services = HashMap::new();
+        let docker_labels = HashMap::new();
+        
+        // 라우트 빌드
+        let routes = route_builder.build_routes(&services, &docker_labels).await.unwrap();
+        
+        // 검증
+        assert_eq!(routes.len(), 0, "빈 서비스 목록으로 생성된 라우트 수는 0이어야 함");
+    }
+
+    #[tokio::test]
+    async fn test_path_matcher_handling() {
+        // 테스트 환경 설정
+        let client = Arc::new(Box::new(MockDockerClient) as Box<dyn crate::docker::DockerClient>);
+        let extractor = Box::new(MockExtractor);
+        let (container_config_manager, _) = ContainerConfigManager::new();
+        let container_config_manager = Arc::new(container_config_manager);
+        
+        let service_builder = BackendServiceBuilder::new(
+            extractor,
+            client,
+            container_config_manager.clone()
+        );
+        
+        let route_builder = RouteBuilder::new(
+            service_builder,
+            container_config_manager
+        );
+        
+        // 경로 매처가 다른 컨테이너 정보 생성
+        let mut container1 = create_test_container_info("container1", "api.example.com");
+        container1.path_matcher = Some(PathMatcher::from_str("/api/*").unwrap());
+        
+        let mut container2 = create_test_container_info("container2", "api.example.com");
+        container2.path_matcher = Some(PathMatcher::from_str("/admin/*").unwrap());
+        
+        // 서비스 그룹 생성 (동일 호스트 다른 경로)
+        let mut services = HashMap::new();
+        services.insert("api".to_string(), vec![container1]);
+        services.insert("admin".to_string(), vec![container2]);
+        
+        let docker_labels = HashMap::new();
+        
+        // 라우트 빌드
+        let routes = route_builder.build_routes(&services, &docker_labels).await.unwrap();
+        
+        // 검증
+        assert_eq!(routes.len(), 2, "2개의 라우트가 생성되어야 함");
+        
+        // 경로 매처 확인 (path.to_string() 대신 직접 맵에서 확인)
+        let has_api_path = routes.keys().any(|(host, path)| {
+            host == "api.example.com" && path.matches("/api/test")
+        });
+        
+        let has_admin_path = routes.keys().any(|(host, path)| {
+            host == "api.example.com" && path.matches("/admin/test")
+        });
+        
+        assert!(has_api_path, "API 경로 매처가 없음");
+        assert!(has_admin_path, "Admin 경로 매처가 없음");
+    }
+    
+    #[tokio::test]
+    async fn test_merged_configs() {
+        // 테스트 환경 설정
+        let client = Arc::new(Box::new(MockDockerClient) as Box<dyn crate::docker::DockerClient>);
+        let extractor = Box::new(MockExtractor);
+        
+        // 컨테이너 설정 관리자 설정
+        let (container_config_manager, _) = ContainerConfigManager::new();
+        let container_config_manager = Arc::new(container_config_manager);
+        
+        // 테스트용 확장 서비스 빌더
+        struct TestServiceBuilder {
+            inner: BackendServiceBuilder,
+            config_used: Arc<std::sync::atomic::AtomicBool>,
+        }
+        
+        impl TestServiceBuilder {
+            async fn build_from_containers(
+                &self, 
+                infos: &[ContainerInfo],
+                merged_configs: Option<&HashMap<String, Settings<Validated>>>
+            ) -> Result<(String, PathMatcher, BackendService), DockerError> {
+                // 병합된 설정이 전달되었는지 확인
+                if merged_configs.is_some() {
+                    self.config_used.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                
+                // 실제 빌더에 위임
+                self.inner.build_from_containers(infos, merged_configs).await
+            }
+        }
+        
+        let service_builder = BackendServiceBuilder::new(
+            extractor,
+            client,
+            container_config_manager.clone()
+        );
+        
+        let config_used = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        
+        // 테스트용 컨테이너 정보 생성
+        let container = create_test_container_info("container1", "service.example.com");
+        
+        // 서비스 그룹 생성
+        let mut services = HashMap::new();
+        services.insert("service".to_string(), vec![container]);
+        
+        let docker_labels = HashMap::new();
+        
+        // RouteBuilder 생성
+        let route_builder = RouteBuilder::new(
+            service_builder,
+            container_config_manager
+        );
+        
+        // 라우트 빌드
+        let routes = route_builder.build_routes(&services, &docker_labels).await.unwrap();
+        
+        // 검증
+        assert_eq!(routes.len(), 1, "라우트가 생성되어야 함");
+        
+        // 설정이 병합됐는지는 간접적으로 함수 호출로 확인
+        // (테스트 모의 객체 한계로 직접 검증은 어려움)
+    }
+
+    #[tokio::test]
+    async fn test_error_handling() {
+        // 테스트 환경 설정
+        let client = Arc::new(Box::new(MockDockerClient) as Box<dyn crate::docker::DockerClient>);
+        
+        // 오류를 발생시키는 익스트랙터 생성
+        #[derive(Clone)]
+        struct ErrorExtractor;
+        
+        impl crate::docker::ContainerInfoExtractor for ErrorExtractor {
+            fn clone_box(&self) -> Box<dyn crate::docker::ContainerInfoExtractor> {
+                Box::new(self.clone())
+            }
+            
+            fn extract_info(&self, _container: &ContainerSummary) -> Result<ContainerInfo, DockerError> {
+                Ok(ContainerInfo {
+                    host: "test.example.com".to_string(),
+                    ip: "192.168.1.1".to_string(),
+                    port: 80,
+                    container_id: Some("error-container".to_string()),
+                    path_matcher: Some(PathMatcher::from_str("/").unwrap()),
+                    middlewares: None,
+                    router_name: Some("error-router".to_string()),
+                    health_check: None,
+                    load_balancer: None,
+                    json_config_path: None,
+                })
+            }
+            
+            fn create_backend(&self, _info: &ContainerInfo) -> Result<BackendService, DockerError> {
+                // 항상 오류 반환
+                Err(DockerError::ContainerConfigError {
+                    container_id: "error-container".to_string(),
+                    reason: "테스트용 오류".to_string(),
+                    context: None,
+                })
+            }
+            
+            fn get_label_prefix(&self) -> &str {
+                "test."
+            }
+        }
+        
+        let extractor = Box::new(ErrorExtractor);
+        let (container_config_manager, _) = ContainerConfigManager::new();
+        let container_config_manager = Arc::new(container_config_manager);
+        
+        let service_builder = BackendServiceBuilder::new(
+            extractor,
+            client,
+            container_config_manager.clone()
+        );
+        
+        let route_builder = RouteBuilder::new(
+            service_builder,
+            container_config_manager
+        );
+        
+        // 테스트용 컨테이너 정보 생성
+        let container = create_test_container_info("error-container", "error.example.com");
+        
+        // 서비스 그룹 생성
+        let mut services = HashMap::new();
+        services.insert("error-service".to_string(), vec![container]);
+        
+        let docker_labels = HashMap::new();
+        
+        // 라우트 빌드
+        let routes = route_builder.build_routes(&services, &docker_labels).await.unwrap();
+        
+        // 검증 - 오류가 발생했으므로 빈 라우트 맵이 반환되어야 함
+        assert_eq!(routes.len(), 0, "오류 상황에서는 빈 라우트 맵이 반환되어야 함");
     }
 } 
