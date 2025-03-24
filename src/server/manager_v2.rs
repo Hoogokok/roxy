@@ -167,9 +167,11 @@ impl ServerManager<HttpsDisabled> {
 
         // Docker 이벤트 구독
         let mut event_rx = self.docker_manager.subscribe_to_events().await;
+        let docker_manager_arc = Arc::new(self.docker_manager.clone());
         let event_handler = DockerEventHandler::new(
             self.routing_table.clone(),
             Arc::new(RwLock::new(self.middleware_manager.clone())),
+            docker_manager_arc,
         );
 
         // Docker 이벤트 처리 태스크 시작
@@ -320,9 +322,11 @@ impl ServerManager<HttpsEnabled> {
 
         // Docker 이벤트 구독
         let mut event_rx = self.docker_manager.subscribe_to_events().await;
+        let docker_manager_arc = Arc::new(self.docker_manager.clone());
         let event_handler = DockerEventHandler::new(
             self.routing_table.clone(),
             Arc::new(RwLock::new(self.middleware_manager.clone())),
+            docker_manager_arc,
         );
 
         // Docker 이벤트 처리 태스크 시작
@@ -523,7 +527,7 @@ where
             if path == config_path {
                 info!("컨테이너 설정 파일 변경 감지: {} - {}", container_id, path.display());
                 // 컨테이너 설정 파일 재로드
-                if let Err(e) = docker_manager.load_container_json_config(container_id, path).await {
+                if let Err(e) = docker_manager.load_container_json_config(container_id, path, None).await {
                     error!(
                         container_id = %container_id,
                         error = %e,
