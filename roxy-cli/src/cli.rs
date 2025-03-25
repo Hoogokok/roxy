@@ -89,4 +89,47 @@ pub enum ConfigCommands {
         #[arg(long, short, default_value = "true")]
         pretty: bool,
     },
+
+    /// Docker 라벨에서 JSON 설정으로 마이그레이션
+    Migrate {
+        /// 마이그레이션할 컨테이너 ID 또는 이름 목록 (쉼표로 구분)
+        #[arg(long, short, value_delimiter = ',')]
+        containers: Option<Vec<String>>,
+        
+        /// 모든 실행 중인 컨테이너 마이그레이션
+        #[arg(long, short)]
+        all: bool,
+        
+        /// 출력 디렉토리 경로
+        #[arg(long, short, required = true)]
+        output_dir: PathBuf,
+        
+        /// 라벨 접두사 (기본값: roxy.http.)
+        #[arg(long, default_value = "roxy.http.")]
+        prefix: String,
+        
+        /// 백업 디렉토리 경로 (기본값: {output_dir}/backups)
+        #[arg(long)]
+        backup_dir: Option<PathBuf>,
+        
+        /// 로그 파일 경로 (기본값: {output_dir}/migration.log)
+        #[arg(long)]
+        log_file: Option<PathBuf>,
+        
+        /// 예쁘게 포맷팅
+        #[arg(long, short, default_value = "true")]
+        pretty: bool,
+        
+        /// 파일명 패턴 (기본값: {}.json, {}는 컨테이너 ID로 대체됨)
+        #[arg(long, default_value = "{}.json")]
+        filename_pattern: String,
+        
+        /// 검증 실패 시 중단
+        #[arg(long, default_value = "true")]
+        fail_fast: bool,
+        
+        /// 자동으로 설정 파일 적용
+        #[arg(long)]
+        auto_apply: bool,
+    },
 }
