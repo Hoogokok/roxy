@@ -1,0 +1,55 @@
+[package]
+name = "reverse_proxy_traefik"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "reverse_proxy_traefik"
+path = "src/lib.rs"
+
+[[bin]]
+name = "reverse_proxy_traefik"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { version = "1", features = ["net", "macros", "rt-multi-thread", "fs"] }
+hyper = { version = "1.6.0", features = ["server", "http1", "client"] }
+hyper-util = { version = "0.1.1", features = ["tokio", "client-legacy", "http1"] }
+http-body-util = "0.1"
+bytes = "1.0"
+bollard = "0.18.1"
+futures-util = "0.3"
+uuid = { version = "1.0", features = ["v4"] }
+tracing = { version = "0.1", features = ["attributes"] }
+tracing-subscriber = { version = "0.3.19", features = ["fmt", "json", "time", "env-filter"] }
+tokio-rustls = "0.26.2"
+toml = "0.8"
+rustls-pemfile = "2.2.0"
+serde = { version = "1.0", features = ["derive"] }
+time = { version = "0.3", features = ["formatting"] }
+tracing-appender = "0.2"
+async-trait = "0.1"
+regex-lite = "0.1.0"
+serde_json = "1.0"
+base64 = "=0.22.1"
+bcrypt = "0.17.0"
+notify = { version = "6.1", features = ["serde"] }
+jsonschema = "0.29.0"
+url = "2.5.4"
+dashmap = "6.1.0"
+
+[dev-dependencies]
+tempfile = "3.2"
+serial_test = "3.2.0"
+reqwest = { version = "0.12", features = ["json"] }
+http-body = "1.0"
+criterion = { version = "0.5", features = ["async_tokio"] }
+
+[profile.test]
+opt-level = 3
+debug = true
+debug-assertions = true
+overflow-checks = true
+lto = false
+incremental = true
+codegen-units = 16
