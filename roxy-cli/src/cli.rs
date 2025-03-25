@@ -45,6 +45,33 @@ pub enum ConfigCommands {
         example: bool,
     },
     
+    /// 여러 컨테이너의 Docker 라벨을 JSON 설정으로 일괄 변환
+    BatchConvert {
+        /// 컨테이너 ID 또는 이름 목록 (쉼표로 구분)
+        #[arg(long, short, required = true, value_delimiter = ',')]
+        containers: Vec<String>,
+        
+        /// 라벨 접두사 (기본값: roxy.http.)
+        #[arg(long, default_value = "roxy.http.")]
+        prefix: String,
+        
+        /// 출력 디렉토리 경로 (필수)
+        #[arg(long, short, required = true)]
+        output_dir: PathBuf,
+        
+        /// 예쁘게 포맷팅
+        #[arg(long, short, default_value = "true")]
+        pretty: bool,
+        
+        /// 파일명 패턴 (기본값: {}.json, {}는 컨테이너 ID로 대체됨)
+        #[arg(long, default_value = "{}.json")]
+        filename_pattern: String,
+        
+        /// 모든 실행 중인 컨테이너 포함
+        #[arg(long)]
+        all: bool,
+    },
+    
     /// 설정 파일 유효성 검사
     Validate {
         /// 검사할 JSON 설정 파일 경로
