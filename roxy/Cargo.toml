@@ -1,14 +1,14 @@
 [package]
-name = "reverse_proxy_traefik"
+name = "roxy"
 version = "0.1.0"
 edition = "2021"
 
 [lib]
-name = "reverse_proxy_traefik"
+name = "roxy"
 path = "src/lib.rs"
 
 [[bin]]
-name = "reverse_proxy_traefik"
+name = "roxy"
 path = "src/main.rs"
 
 [dependencies]

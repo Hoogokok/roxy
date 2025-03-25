@@ -1,4 +1,4 @@
-use reverse_proxy_traefik::{
+use roxy::{
     settings::{Settings, HttpsDisabled, HttpsEnabled, typestate::Validated},
     server::manager_v2::ServerManager,
     docker::{DockerClient, DockerError, DockerManager, container::DefaultExtractor},
@@ -60,6 +60,8 @@ impl DockerClient for MockDockerClient {
 
 #[cfg(test)]
 mod tests {
+    use roxy::settings::Either;
+
     use super::*;
     
     // 테스트 환경 정리 (환경 변수 초기화)
@@ -103,8 +105,8 @@ mod tests {
         // HTTP 설정 로드
         let settings_either = Settings::<Validated, HttpsDisabled>::load().await.unwrap();
         let settings = match settings_either {
-            reverse_proxy_traefik::settings::Either::Left(settings) => settings,
-            reverse_proxy_traefik::settings::Either::Right(_) => panic!("Expected HTTP settings")
+           Either::Left(settings) => settings,
+            Either::Right(_) => panic!("Expected HTTP settings")
         };
         
         // Mock 객체 생성
@@ -115,7 +117,7 @@ mod tests {
             Box::new(mock_client),
             Box::new(DefaultExtractor::new(
                 "default-network".to_string(),
-                "rproxy.".to_string(),
+                "roxy.".to_string(),
             )),
             settings.docker.clone(),
         ).await;
@@ -161,8 +163,8 @@ mod tests {
         
         // HTTPS 설정 추출
         let settings = match settings_either {
-            reverse_proxy_traefik::settings::Either::Right(settings) => settings,
-            reverse_proxy_traefik::settings::Either::Left(_) => panic!("Expected HTTPS settings")
+           Either::Right(settings) => settings,
+            Either::Left(_) => panic!("Expected HTTPS settings")
         };
         
         // Mock 객체 생성
@@ -173,7 +175,7 @@ mod tests {
             Box::new(mock_client),
             Box::new(DefaultExtractor::new(
                 "default-network".to_string(), 
-                "rproxy.".to_string()
+                "roxy.".to_string()
             )),
             settings.docker.clone(),
         ).await;
@@ -214,11 +216,11 @@ mod tests {
         // 테스트용 컨테이너 설정
         let mut labels = HashMap::new();
         labels.insert(
-            "rproxy.http.routers.test.rule".to_string(), 
+            "roxy.http.routers.test.rule".to_string(), 
             "Host(`test.local`)".to_string()
         );
         labels.insert(
-            "rproxy.http.services.test.loadbalancer.server.port".to_string(),
+            "roxy.http.services.test.loadbalancer.server.port".to_string(),
             "8080".to_string()
         );
         
@@ -245,8 +247,8 @@ mod tests {
         // Settings 로드
         let settings_either = Settings::<Validated, HttpsDisabled>::load().await.unwrap();
         let mut settings = match settings_either {
-            reverse_proxy_traefik::settings::Either::Left(settings) => settings,
-            reverse_proxy_traefik::settings::Either::Right(_) => panic!("Expected HTTP settings")
+            Either::Left(settings) => settings,
+            Either::Right(_) => panic!("Expected HTTP settings")
         };
         
         // 네트워크 설정

@@ -1,10 +1,9 @@
-use reverse_proxy_traefik::routing_v2::{RoutingTable, BackendService, HostInfo, PathMatcher, RoutingError};
-use std::net::SocketAddr;
+use roxy::routing_v2::{RoutingTable, BackendService, HostInfo, PathMatcher, RoutingError};
 use hyper::{Request, Method};
 use http_body_util::Empty;
 use hyper::body::Bytes;
 use std::sync::atomic::AtomicUsize;
-use reverse_proxy_traefik::routing_v2::backend::LoadBalancerStrategy;
+use roxy::routing_v2::backend::LoadBalancerStrategy;
 
 // 테스트 헬퍼 함수
 fn create_request(host: Option<&str>, path: &str) -> Request<Empty<Bytes>> {

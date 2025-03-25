@@ -1,4 +1,4 @@
-use reverse_proxy_traefik::routing_v2::matcher::{PathMatcher, PathMatcherKind};
+use roxy::routing_v2::matcher::{PathMatcher, PathMatcherKind};
 
 #[test]
 fn test_path_matcher_creation() {

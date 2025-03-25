@@ -312,9 +312,9 @@ mod tests {
             
             // 테스트용 라벨 설정 - 포트 9090으로 설정
             let mut labels = HashMap::new();
-            labels.insert("rproxy.enable".to_string(), "true".to_string());
-            labels.insert("rproxy.http.routers.test.rule".to_string(), "Host(`test-host.com`)".to_string());
-            labels.insert("rproxy.http.services.test.loadbalancer.server.port".to_string(), "9090".to_string());
+            labels.insert("roxy.enable".to_string(), "true".to_string());
+            labels.insert("roxy.http.routers.test.rule".to_string(), "Host(`test-host.com`)".to_string());
+            labels.insert("roxy.http.services.test.loadbalancer.server.port".to_string(), "9090".to_string());
             container.labels = Some(labels);
             
             // 네트워크 설정 추가
@@ -347,7 +347,7 @@ mod tests {
         // 테스트 준비
         let extractor = Box::new(DefaultExtractor::new(
             "bridge".to_string(),
-            "rproxy.".to_string(),
+            "roxy.".to_string(),
         ));
         let client = Arc::new(Box::new(MockDockerClient) as Box<dyn DockerClient>);
         let (container_config_manager, _) = ContainerConfigManager::new();
@@ -397,7 +397,7 @@ mod tests {
         // 테스트 준비
         let extractor = Box::new(DefaultExtractor::new(
             "bridge".to_string(),
-            "rproxy.".to_string(),
+            "roxy.".to_string(),
         ));
         let client = Arc::new(Box::new(MockDockerClient) as Box<dyn DockerClient>);
         let (container_config_manager, _) = ContainerConfigManager::new();
@@ -450,7 +450,7 @@ mod tests {
         // 테스트 준비
         let extractor = Box::new(DefaultExtractor::new(
             "bridge".to_string(),
-            "rproxy.".to_string(),
+            "roxy.".to_string(),
         ));
         let client = Arc::new(Box::new(MockDockerClient) as Box<dyn DockerClient>);
         let (container_config_manager, _) = ContainerConfigManager::new();

@@ -55,7 +55,7 @@ mod container_config_manager_tests {
         
         // 테스트용 도커 라벨
         let mut labels = HashMap::new();
-        labels.insert("rproxy.host".to_string(), "example.com".to_string());
+        labels.insert("roxy.host".to_string(), "example.com".to_string());
         
         // 설정 병합이 성공하는지만 확인
         let settings = manager.merge_config("container1", &labels);
@@ -114,7 +114,7 @@ mod container_config_manager_tests {
         
         // 도커 라벨과 충돌하는 설정 (우선순위 낮음)
         let mut labels = HashMap::new();
-        labels.insert("rproxy.server.http_port".to_string(), "9090".to_string());
+        labels.insert("roxy.server.http_port".to_string(), "9090".to_string());
         
         // 설정 병합
         let settings = manager.merge_config("container1", &labels);
@@ -319,7 +319,7 @@ mod container_config_manager_tests {
         
         // 테스트용 도커 라벨
         let mut labels = HashMap::new();
-        labels.insert("rproxy.host".to_string(), "example.com".to_string());
+        labels.insert("roxy.host".to_string(), "example.com".to_string());
         
         // 컨테이너 ID 배열 생성
         let container_ids: Vec<&str> = vec!["container1", "container2", "container3", "container4", "container5"];
@@ -420,7 +420,7 @@ mod container_config_manager_tests {
         // 대량의 Docker 라벨 생성
         let mut large_labels = HashMap::new();
         for i in 0..1000 {
-            large_labels.insert(format!("rproxy.test.label.{}", i), format!("value-{}", i));
+            large_labels.insert(format!("roxy.test.label.{}", i), format!("value-{}", i));
         }
         
         // JSON 설정 생성

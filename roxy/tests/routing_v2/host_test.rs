@@ -1,4 +1,4 @@
-use reverse_proxy_traefik::routing_v2::{HostInfo, RoutingError};
+use roxy::routing_v2::{HostInfo, RoutingError};
 
 #[test]
 fn test_host_info_parsing() {

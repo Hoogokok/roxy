@@ -667,15 +667,15 @@ mod tests {
     fn test_from_docker_labels() {
         // Docker 라벨 생성
         let mut labels = HashMap::new();
-        labels.insert("rproxy.http.middlewares.cors.type".to_string(), "cors".to_string());
-        labels.insert("rproxy.http.middlewares.cors.enabled".to_string(), "true".to_string());
-        labels.insert("rproxy.http.middlewares.cors.cors.allowOrigins".to_string(), "*".to_string());
-        labels.insert("rproxy.http.routers.api.rule".to_string(), "Host(`api.example.com`)".to_string());
-        labels.insert("rproxy.http.routers.api.middlewares".to_string(), "cors".to_string());
-        labels.insert("rproxy.http.routers.api.service".to_string(), "api-service".to_string());
+        labels.insert("roxy.http.middlewares.cors.type".to_string(), "cors".to_string());
+        labels.insert("roxy.http.middlewares.cors.enabled".to_string(), "true".to_string());
+        labels.insert("roxy.http.middlewares.cors.cors.allowOrigins".to_string(), "*".to_string());
+        labels.insert("roxy.http.routers.api.rule".to_string(), "Host(`api.example.com`)".to_string());
+        labels.insert("roxy.http.routers.api.middlewares".to_string(), "cors".to_string());
+        labels.insert("roxy.http.routers.api.service".to_string(), "api-service".to_string());
         
         // Docker 라벨에서 설정 생성
-        let config = JsonConfig::from_docker_labels(&labels, "rproxy.http.");
+        let config = JsonConfig::from_docker_labels(&labels, "roxy.http.");
         
         // 결과 확인
         assert!(config.middlewares.contains_key("cors"));

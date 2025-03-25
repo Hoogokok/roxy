@@ -45,9 +45,9 @@ impl<State: TypeState, HttpsState> Settings<State, HttpsState> {
     
     /// 라우터-미들웨어 맵핑 추출
     fn extract_router_middleware(key: &String, value: &String) -> Option<(String, Vec<ValidMiddlewareId>)> {
-        // 라우터-미들웨어 맵핑 라벨 형식: rproxy.http.routers.{router-name}.middlewares
+        // 라우터-미들웨어 맵핑 라벨 형식: roxy.http.routers.{router-name}.middlewares
         let parts: Vec<&str> = key.split('.').collect();
-        if parts.len() == 5 && parts[0] == "rproxy" && parts[1] == "http" && parts[2] == "routers" && parts[4] == "middlewares" {
+        if parts.len() == 5 && parts[0] == "roxy" && parts[1] == "http" && parts[2] == "routers" && parts[4] == "middlewares" {
             let router_name = parts[3].to_string();
             
             // 미들웨어 ID 파싱
@@ -135,15 +135,15 @@ impl<State: TypeState, HttpsState> Settings<State, HttpsState> {
     pub async fn load_json_from_labels(&mut self, labels: &HashMap<String, String>) -> Result<()> {
         debug!("Docker 라벨에서 JSON 설정 로드");
         
-        // rproxy.http. 접두사를 가진 라벨 필터링
+        // roxy.http. 접두사를 가진 라벨 필터링
         let filtered_labels: HashMap<String, String> = labels.iter()
-            .filter(|(k, _)| k.starts_with("rproxy.http."))
+            .filter(|(k, _)| k.starts_with("roxy.http."))
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
             
         if !filtered_labels.is_empty() {
             debug!("Docker 라벨에서 설정 로드: {} 개", filtered_labels.len());
-            let config = JsonConfig::from_docker_labels(&filtered_labels, "rproxy.http.");
+            let config = JsonConfig::from_docker_labels(&filtered_labels, "roxy.http.");
             return self.merge_with_json_config(&config, true);
         }
         
@@ -153,7 +153,7 @@ impl<State: TypeState, HttpsState> Settings<State, HttpsState> {
     /// 모든 설정 소스 병합
     pub async fn merge_all_config_sources(&mut self, labels: &HashMap<String, String>) -> Result<()> {
         // 1. 기본 설정 디렉토리에서 설정 로드
-        let config_dir = std::env::var("PROXY_CONFIG_DIR").unwrap_or_else(|_| "/etc/rproxy".to_string());
+        let config_dir = std::env::var("PROXY_CONFIG_DIR").unwrap_or_else(|_| "/etc/roxy".to_string());
         let config_dir_path = PathBuf::from(config_dir);
         
         if config_dir_path.exists() && config_dir_path.is_dir() {
@@ -380,7 +380,7 @@ mod tests {
     
     #[test]
     fn test_extract_router_middleware() {
-        let key = "rproxy.http.routers.api.middlewares".to_string();
+        let key = "roxy.http.routers.api.middlewares".to_string();
         let value = "cors,ratelimit".to_string();
         
         let result = Settings::<crate::settings::server::HttpsDisabled>::extract_router_middleware(&key, &value);
@@ -396,8 +396,8 @@ mod tests {
     #[test]
     fn test_parse_router_middlewares() {
         let mut labels = HashMap::new();
-        labels.insert("rproxy.http.routers.api.middlewares".to_string(), "cors,ratelimit".to_string());
-        labels.insert("rproxy.http.routers.admin.middlewares".to_string(), "basicauth".to_string());
+        labels.insert("roxy.http.routers.api.middlewares".to_string(), "cors,ratelimit".to_string());
+        labels.insert("roxy.http.routers.admin.middlewares".to_string(), "basicauth".to_string());
         
         let result = Settings::<crate::settings::server::HttpsDisabled>::parse_router_middlewares(&labels);
         assert_eq!(result.len(), 2);

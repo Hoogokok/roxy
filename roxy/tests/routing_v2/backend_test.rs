@@ -1,5 +1,5 @@
 use std::sync::atomic::AtomicUsize;
-use reverse_proxy_traefik::routing_v2::{
+use roxy::routing_v2::{
     BackendService,
     backend::LoadBalancerStrategy,
     error::BackendError,

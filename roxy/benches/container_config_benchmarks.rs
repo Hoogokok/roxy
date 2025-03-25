@@ -6,8 +6,8 @@ use std::sync::Arc;
 use futures_util::future::join_all;
 use tempfile;
 
-use reverse_proxy_traefik::settings::container::ContainerConfigManager;
-use reverse_proxy_traefik::settings::json::JsonConfig;
+use roxy::settings::container::ContainerConfigManager;
+use roxy::settings::json::JsonConfig;
 
 /// 설정 로드 벤치마크
 fn bench_load_config(c: &mut Criterion) {
@@ -43,8 +43,8 @@ fn bench_merge_config(c: &mut Criterion) {
     
     // 테스트용 라벨 생성
     let mut labels = HashMap::new();
-    labels.insert("rproxy.host".to_string(), "example.com".to_string());
-    labels.insert("rproxy.server.http_port".to_string(), "9090".to_string());
+    labels.insert("roxy.host".to_string(), "example.com".to_string());
+    labels.insert("roxy.server.http_port".to_string(), "9090".to_string());
     
     let mut group = c.benchmark_group("container_config_merge");
     group.warm_up_time(Duration::from_millis(500));
@@ -56,7 +56,7 @@ fn bench_merge_config(c: &mut Criterion) {
             // 지정된 크기의 설정 생성
             let mut test_labels = labels.clone();
             for i in 0..size {
-                test_labels.insert(format!("rproxy.test.value.{}", i), format!("test-{}", i));
+                test_labels.insert(format!("roxy.test.value.{}", i), format!("test-{}", i));
             }
             
             b.iter(|| {
@@ -125,7 +125,7 @@ fn bench_concurrent_access(c: &mut Criterion) {
                     
                     let manager = Arc::new(manager);
                     let mut labels = HashMap::new();
-                    labels.insert("rproxy.host".to_string(), "example.com".to_string());
+                    labels.insert("roxy.host".to_string(), "example.com".to_string());
                     
                     let mut tasks = Vec::new();
                     for i in 0..concurrency {

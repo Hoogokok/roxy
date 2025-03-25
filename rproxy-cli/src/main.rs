@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 use anyhow::{Result, Context};
-use roxy::settings::json::JsonConfig;
-use roxy::settings::converter::labels_to_json;
+use reverse_proxy_traefik::settings::json::JsonConfig;
+use reverse_proxy_traefik::settings::converter::labels_to_json;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use console::style;

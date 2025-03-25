@@ -18,7 +18,7 @@ fn default_docker_network() -> String {
 }
 
 fn default_label_prefix() -> String {
-    "rproxy.".to_string()
+    "roxy.".to_string()
 }
 
 /// HTTP 헬스 체크 기본 메서드

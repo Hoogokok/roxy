@@ -1,4 +1,4 @@
-use reverse_proxy_traefik::{
+use roxy::{
     settings::{Settings, Either, HttpsDisabled, HttpsEnabled, typestate::Validated},
 };
 use std::sync::Once;
@@ -90,7 +90,7 @@ mod tests {
         assert!(!settings.server.https_enabled());
         assert_eq!(settings.logging.level, tracing::Level::INFO);
         assert_eq!(settings.docker.network, "reverse-proxy-network");
-        assert_eq!(settings.docker.label_prefix, "rproxy.");
+        assert_eq!(settings.docker.label_prefix, "roxy.");
         assert!(settings.middleware.is_empty());
         teardown();
     }
@@ -110,7 +110,7 @@ mod tests {
 
             [docker]
             network = "test-network"
-            label_prefix = "rproxy."
+            label_prefix = "roxy."
         "#;
         
         let (file_path, _dir) = create_test_toml(content);
@@ -136,7 +136,7 @@ mod tests {
         assert_eq!(settings.server.https_port(), 443);
         assert!(settings.server.https_enabled());
         assert_eq!(settings.docker.network, "test-network");
-        assert_eq!(settings.docker.label_prefix, "rproxy.");
+        assert_eq!(settings.docker.label_prefix, "roxy.");
         
         teardown();
     }
@@ -154,7 +154,7 @@ mod tests {
         std::env::set_var("PROXY_TLS_KEY", "/path/to/key.pem");
         std::env::set_var("PROXY_LOG_LEVEL", "debug");
         std::env::set_var("PROXY_DOCKER_NETWORK", "custom-network");
-        std::env::set_var("PROXY_LABEL_PREFIX", "custom.");
+        std::env::set_var("PROXY_LABEL_PREFIX", "roxy.");
 
         // 설정 로드 및 검증
         let settings_either = Settings::<Validated, HttpsDisabled>::load().await.unwrap();
@@ -166,7 +166,7 @@ mod tests {
                 assert!(settings.server.https_enabled());
                 assert_eq!(settings.logging.level, tracing::Level::DEBUG);
                 assert_eq!(settings.docker.network, "custom-network");
-                assert_eq!(settings.docker.label_prefix, "custom.");
+                assert_eq!(settings.docker.label_prefix, "roxy.");
             },
             Either::Left(_) => panic!("Expected HTTPS settings")
         };

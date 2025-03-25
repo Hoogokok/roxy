@@ -58,7 +58,7 @@ mod tests {
     // DefaultExtractor가 ContainerInfo에 JSON 설정 경로를 추출하여 포함하는지 확인
     #[test]
     fn test_extract_info_includes_json_config_path() {
-        let extractor = DefaultExtractor::new("bridge".to_string(), "rproxy.".to_string());
+        let extractor = DefaultExtractor::new("bridge".to_string(), "roxy.".to_string());
         
         // 테스트용 컨테이너 생성
         let mut container = ContainerSummary::default();
@@ -78,8 +78,8 @@ mod tests {
         
         // 필수 라벨 추가
         let mut labels = HashMap::new();
-        labels.insert("rproxy.host".to_string(), "example.com".to_string());
-        labels.insert("rproxy.config.json".to_string(), "/config/service.json".to_string());
+        labels.insert("roxy.host".to_string(), "example.com".to_string());
+        labels.insert("roxy.config.json".to_string(), "/config/service.json".to_string());
         container.labels = Some(labels);
         
         // ContainerInfo 추출 (ContainerInfoExtractor 트레이트 메서드 호출)
@@ -93,7 +93,7 @@ mod tests {
     // 설정 파일 경로가 제공되지 않은 경우 None으로 설정되는지 확인
     #[test]
     fn test_extract_info_without_json_config_path() {
-        let extractor = DefaultExtractor::new("bridge".to_string(), "rproxy.".to_string());
+        let extractor = DefaultExtractor::new("bridge".to_string(), "roxy.".to_string());
         
         // 테스트용 컨테이너 생성
         let mut container = ContainerSummary::default();
@@ -113,7 +113,7 @@ mod tests {
         
         // JSON 설정 경로가 없는 라벨 추가
         let mut labels = HashMap::new();
-        labels.insert("rproxy.host".to_string(), "example.com".to_string());
+        labels.insert("roxy.host".to_string(), "example.com".to_string());
         container.labels = Some(labels);
         
         // ContainerInfo 추출
@@ -126,11 +126,11 @@ mod tests {
 
     #[test]
     fn test_extract_info_with_invalid_path() {
-        let extractor = DefaultExtractor::new("bridge".to_string(), "rproxy.".to_string());
+        let extractor = DefaultExtractor::new("bridge".to_string(), "roxy.".to_string());
         
         let mut labels = HashMap::new();
-        labels.insert("rproxy.host".to_string(), "example.com".to_string());
-        labels.insert("rproxy.config.json".to_string(), "invalid/path.json".to_string());
+        labels.insert("roxy.host".to_string(), "example.com".to_string());
+        labels.insert("roxy.config.json".to_string(), "invalid/path.json".to_string());
         
         let container = create_test_container_with_labels(labels);
         let result = extractor.extract_info(&container);

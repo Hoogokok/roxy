@@ -1,4 +1,4 @@
-use reverse_proxy_traefik::routing_v2::*;
+use roxy::routing_v2::*;
 use hyper::{Request, Method};
 use http_body_util::Empty;
 use hyper::body::Bytes;

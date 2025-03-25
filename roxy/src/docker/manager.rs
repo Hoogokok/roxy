@@ -1207,7 +1207,7 @@ mod tests {
         }
         
         fn get_label_prefix(&self) -> &str {
-            "rproxy."
+            "roxy."
         }
     }
     
@@ -1218,8 +1218,8 @@ mod tests {
         
         // 테스트용 라벨 설정
         let mut labels = HashMap::new();
-        labels.insert("rproxy.enable".to_string(), "true".to_string());
-        labels.insert("rproxy.http.routers.test.rule".to_string(), format!("Host(`{}`)", host));
+        labels.insert("roxy.enable".to_string(), "true".to_string());
+        labels.insert("roxy.http.routers.test.rule".to_string(), format!("Host(`{}`)", host));
         container.labels = Some(labels);
         
         // 네트워크 설정
@@ -1424,7 +1424,7 @@ mod tests {
         // Docker 라벨에 HTTP 포트 7777 설정
         let mut container = create_test_container(container_id, host, ip, port);
         let mut labels = container.labels.take().unwrap_or_default();
-        labels.insert("rproxy.http.services.test.loadbalancer.server.port".to_string(), "7777".to_string());
+        labels.insert("roxy.http.services.test.loadbalancer.server.port".to_string(), "7777".to_string());
         container.labels = Some(labels);
         
         let container_info = create_test_container_info(
@@ -1448,7 +1448,7 @@ mod tests {
         
         // Docker 라벨 생성
         let mut docker_labels = HashMap::new();
-        docker_labels.insert("rproxy.http.services.test.loadbalancer.server.port".to_string(), "7777".to_string());
+        docker_labels.insert("roxy.http.services.test.loadbalancer.server.port".to_string(), "7777".to_string());
         
         // 병합된 설정 조회
         let settings = manager.get_container_merged_settings(container_id, &docker_labels)

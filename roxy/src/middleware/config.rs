@@ -78,7 +78,7 @@ impl MiddlewareConfig {
         let mut configs = HashMap::new();
         
         for (key, value) in labels {
-            if let Some(middleware_name) = key.strip_prefix("rproxy.http.middlewares.") {
+            if let Some(middleware_name) = key.strip_prefix("roxy.http.middlewares.") {
                 debug!("미들웨어 라벨 파싱: key={}, value={}", key, value);
                 
                 let parts: Vec<&str> = middleware_name.split('.').collect();
@@ -133,15 +133,15 @@ mod tests {
     fn test_parse_docker_labels() {
         let mut labels = HashMap::new();
         labels.insert(
-            "rproxy.http.middlewares.my-headers.type".to_string(),
+            "roxy.http.middlewares.my-headers.type".to_string(),
             "headers".to_string(),
         );
         labels.insert(
-            "rproxy.http.middlewares.my-headers.headers.customResponseHeaders.X-Custom-Header".to_string(),
+            "roxy.http.middlewares.my-headers.headers.customResponseHeaders.X-Custom-Header".to_string(),
             "value".to_string(),
         );
         labels.insert(
-            "rproxy.http.middlewares.my-headers.enabled".to_string(),
+            "roxy.http.middlewares.my-headers.enabled".to_string(),
             "true".to_string(),
         );
 
