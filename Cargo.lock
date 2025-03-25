@@ -2107,7 +2107,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "reverse_proxy_traefik"
+name = "ring"
+version = "0.17.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
+dependencies = [
+ "cc",
+ "cfg-if",
+ "getrandom 0.2.15",
+ "libc",
+ "untrusted",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "roxy"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -2143,20 +2157,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ring"
-version = "0.17.14"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4689e6c2294d81e88dc6261c768b63bc4fcdb852be6d1352498b114f61383b7"
-dependencies = [
- "cc",
- "cfg-if",
- "getrandom 0.2.15",
- "libc",
- "untrusted",
- "windows-sys 0.52.0",
-]
-
-[[package]]
 name = "roxy-cli"
 version = "0.1.0"
 dependencies = [
@@ -2166,7 +2166,7 @@ dependencies = [
  "console",
  "dialoguer",
  "indicatif",
- "reverse_proxy_traefik",
+ "roxy",
  "serde",
  "serde_json",
  "tokio",
