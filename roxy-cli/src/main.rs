@@ -20,7 +20,7 @@ async fn main() -> Result<()> {
         Commands::Config { subcommand } => {
             match subcommand {
                 ConfigCommands::Convert { container, prefix, output, pretty, example } => {
-                    commands::execute_convert(container, prefix, output, *pretty, *example).await?;
+                    commands::convert::execute(container, prefix, output, *pretty, *example).await?;
                 },
                 ConfigCommands::BatchConvert { containers, prefix, output_dir, pretty, filename_pattern, all } => {
                     // 모든 컨테이너 처리 옵션이 활성화된 경우
@@ -49,11 +49,14 @@ async fn main() -> Result<()> {
                     ).await?;
                 },
                 ConfigCommands::Validate { file } => {
-                    commands::execute_validate(file)?;
+                    commands::validate::execute(file)?;
                 },
                 ConfigCommands::Show { format, pretty } => {
-                    commands::execute_show(format, *pretty)?;
+                    commands::show::execute(format, *pretty)?;
                 },
+                ConfigCommands::Migrate { containers, all, output_dir, backup_dir, log_file, prefix, filename_pattern, pretty, fail_fast, auto_apply } => {
+                    commands::migrate::execute(containers.clone(), *all, output_dir.clone(), backup_dir.clone(), log_file.clone(), prefix.clone(), filename_pattern.clone(), *pretty, *fail_fast, *auto_apply).await?;
+                }
             }
         }
     }
