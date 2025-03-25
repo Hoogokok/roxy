@@ -7,7 +7,7 @@ use roxy::settings::converter::labels_to_json;
 use serde_json;
 use std::collections::HashMap;
 
-use crate::docker::{self, get_container_labels, get_all_running_containers};
+use crate::docker::{self, get_container_labels, get_all_running_containers, DockerClient, create_docker_client};
 
 // 마이그레이션 상태를 나타내는 타입들
 pub struct Uninitialized;
@@ -27,6 +27,7 @@ pub struct MigrationContext<State> {
     pretty: bool,
     fail_fast: bool,
     auto_apply: bool,
+    docker_client: Option<Box<dyn DockerClient>>,
     _state: std::marker::PhantomData<State>,
 }
 
@@ -43,6 +44,9 @@ impl MigrationContext<Uninitialized> {
         fail_fast: bool,
         auto_apply: bool,
     ) -> Result<Self> {
+        // Docker 클라이언트 생성
+        let docker_client = Some(create_docker_client());
+
         // 컨테이너 목록 결정
         let containers = if all {
             get_all_running_containers().await?
@@ -70,6 +74,7 @@ impl MigrationContext<Uninitialized> {
             pretty,
             fail_fast,
             auto_apply,
+            docker_client,
             _state: std::marker::PhantomData,
         })
     }
@@ -90,6 +95,7 @@ impl MigrationContext<Uninitialized> {
             pretty: self.pretty,
             fail_fast: self.fail_fast,
             auto_apply: self.auto_apply,
+            docker_client: self.docker_client,
             _state: std::marker::PhantomData,
         })
     }
@@ -127,6 +133,7 @@ impl MigrationContext<Initialized> {
             pretty: self.pretty,
             fail_fast: self.fail_fast,
             auto_apply: self.auto_apply,
+            docker_client: self.docker_client,
             _state: std::marker::PhantomData,
         })
     }
@@ -160,6 +167,7 @@ impl MigrationContext<Validated> {
             pretty: self.pretty,
             fail_fast: self.fail_fast,
             auto_apply: self.auto_apply,
+            docker_client: self.docker_client,
             _state: std::marker::PhantomData,
         })
     }
@@ -221,13 +229,18 @@ impl MigrationContext<Backed> {
             pretty: self.pretty,
             fail_fast: self.fail_fast,
             auto_apply: self.auto_apply,
+            docker_client: self.docker_client,
             _state: std::marker::PhantomData,
         })
     }
 
     async fn migrate_container(&self, container: &str) -> Result<()> {
         // 라벨 가져오기
-        let labels = get_container_labels(container).await?;
+        let labels = if let Some(client) = &self.docker_client {
+            client.get_container_labels(container).await?
+        } else {
+            get_container_labels(container).await?
+        };
 
         // JSON으로 변환
         let json = labels_to_json(&labels, &self.prefix);
@@ -321,6 +334,14 @@ pub fn get_example_labels() -> HashMap<String, String> {
     labels.insert("roxy.http.services.api.loadbalancer.server.port".to_string(), "80".to_string());
     
     labels
+}
+
+// 테스트 도우미 메서드
+impl<State> MigrationContext<State> {
+    pub fn with_test_docker_client(mut self, client: Box<dyn DockerClient>) -> Self {
+        self.docker_client = Some(client);
+        self
+    }
 }
 
 // 단위 테스트
