@@ -460,8 +460,7 @@ impl MigrationContext<Migrated> {
             
         writeln!(log, "\n## 설정 적용 실행\n")?;
         
-        // 여기에 설정 적용 로직 구현 (예: traefik 서비스 재시작 등)
-        // ...
+        todo!("설정 적용 로직 추가");
         
         writeln!(log, "설정 적용 완료: {}", Local::now())?;
         
