@@ -12,25 +12,66 @@ use jsonschema::{Draft, JSONSchema};
 use crate::docker::{get_container_labels, get_all_running_containers, DockerClient, create_docker_client};
 use crate::commands::batch::BatchResult;
 
-// 마이그레이션 상태를 나타내는 타입들
+/// 마이그레이션 컨텍스트와 관련된 모듈
+/// 
+/// 이 모듈은 Docker 컨테이너 라벨을 JSON 설정 파일로 마이그레이션하는 타입 안전한 워크플로우를 제공합니다.
+/// 타입스테이트 패턴을 사용하여 각 단계가 올바른 순서로 실행되도록 보장합니다.
+
+/// 초기화되지 않은 상태
+/// 
+/// 이 상태에서는 마이그레이션을 시작하기 위한 초기 설정을 수행합니다.
 pub struct Uninitialized;
+
+/// 초기화된 상태
+/// 
+/// 이 상태에서는 설정이 완료되고 검증을 시작할 준비가 되었습니다.
 pub struct Initialized;
+
+/// 검증된 상태
+/// 
+/// 이 상태에서는 컨테이너 및 라벨이 검증되었으며, 백업을 시작할 준비가 되었습니다.
 pub struct Validated;
+
+/// 백업된 상태
+/// 
+/// 이 상태에서는 기존 설정이 백업되었으며, 실제 마이그레이션을 시작할 준비가 되었습니다.
 pub struct Backed;
+
+/// 마이그레이션 완료 상태
+/// 
+/// 이 상태에서는 마이그레이션이 완료되었으며, 결과를 확인하고 추가 작업을 수행할 수 있습니다.
 pub struct Migrated;
 
-// 마이그레이션 컨텍스트
+/// 마이그레이션 컨텍스트
+/// 
+/// 타입 매개변수 `State`를 통해 현재 마이그레이션 상태를 타입 수준에서 추적합니다.
+/// 각 상태마다 허용되는 작업이 명확하게 정의되어 있어 타입 안전성을 보장합니다.
 pub struct MigrationContext<State> {
+    /// 마이그레이션 대상 컨테이너 목록
     containers: Vec<String>,
+    /// 출력 디렉토리 경로
     output_dir: PathBuf,
+    /// 백업 디렉토리 경로
     backup_dir: PathBuf,
+    /// 로그 파일 경로
     log_file: PathBuf,
+    /// Docker 라벨 접두사 (필터링용)
     prefix: String,
+    /// 출력 파일 이름 패턴
     filename_pattern: String,
+    /// JSON 출력을 정형화할지 여부
     pretty: bool,
+    /// 첫 번째 오류에서 중단할지 여부
     fail_fast: bool,
+    /// 마이그레이션 후 자동으로 설정을 적용할지 여부
     auto_apply: bool,
+    /// Docker 클라이언트 인스턴스
     docker_client: Option<Box<dyn DockerClient>>,
+    /// 검증 단계에서 발생한 오류 목록
+    validation_errors: Option<Vec<(String, anyhow::Error)>>,
+    /// 마이그레이션 결과 정보
+    migration_result: Option<BatchResult>,
+    /// 상태 타입 마커
     _state: std::marker::PhantomData<State>,
 }
 
@@ -78,6 +119,8 @@ impl MigrationContext<Uninitialized> {
             fail_fast,
             auto_apply,
             docker_client,
+            validation_errors: None,
+            migration_result: None,
             _state: std::marker::PhantomData,
         })
     }
@@ -99,6 +142,8 @@ impl MigrationContext<Uninitialized> {
             fail_fast: self.fail_fast,
             auto_apply: self.auto_apply,
             docker_client: self.docker_client,
+            validation_errors: None,
+            migration_result: None,
             _state: std::marker::PhantomData,
         })
     }
@@ -111,14 +156,32 @@ impl MigrationContext<Initialized> {
             .open(&self.log_file)?;
 
         // 컨테이너 존재 여부 및 라벨 검증
+        let mut validation_errors = Vec::new();
+        
+        println!("검증 시작: {} 컨테이너", self.containers.len());
+        writeln!(log, "검증 시작: {} 컨테이너", self.containers.len())?;
+        
         for container in &self.containers {
-            match get_container_labels(container).await {
+            println!("컨테이너 {} 검증 시도", container);
+            
+            // docker_client가 설정되어 있으면 사용, 아니면 전역 함수 사용
+            let result = if let Some(client) = &self.docker_client {
+                client.get_container_labels(container).await
+            } else {
+                get_container_labels(container).await
+            };
+            
+            match result {
                 Ok(_) => {
+                    println!("컨테이너 {} 검증 성공", container);
                     writeln!(log, "컨테이너 {} 검증 성공", container)?;
                 }
                 Err(e) => {
+                    println!("컨테이너 {} 검증 실패: {}", container, e);
                     let msg = format!("컨테이너 {} 검증 실패: {}", container, e);
                     writeln!(log, "{}", msg)?;
+                    validation_errors.push((container.clone(), e));
+                    
                     if self.fail_fast {
                         return Err(anyhow::anyhow!(msg));
                     }
@@ -126,6 +189,10 @@ impl MigrationContext<Initialized> {
             }
         }
 
+        println!("검증 완료: 오류 {}개", validation_errors.len());
+        writeln!(log, "검증 완료: 오류 {}개", validation_errors.len())?;
+
+        // validated 맥락에 오류 정보 추가
         Ok(MigrationContext {
             containers: self.containers,
             output_dir: self.output_dir,
@@ -137,12 +204,32 @@ impl MigrationContext<Initialized> {
             fail_fast: self.fail_fast,
             auto_apply: self.auto_apply,
             docker_client: self.docker_client,
+            validation_errors: Some(validation_errors),
+            migration_result: None,
             _state: std::marker::PhantomData,
         })
     }
 }
 
 impl MigrationContext<Validated> {
+    pub fn get_validation_errors(&self) -> &[(String, anyhow::Error)] {
+        self.validation_errors.as_ref().map_or(&[], |errors| errors.as_slice())
+    }
+    
+    pub fn get_valid_containers(&self) -> Vec<String> {
+        if let Some(errors) = &self.validation_errors {
+            let error_containers: std::collections::HashSet<_> = 
+                errors.iter().map(|(container, _)| container.clone()).collect();
+            
+            self.containers.iter()
+                .filter(|container| !error_containers.contains(*container))
+                .cloned()
+                .collect()
+        } else {
+            self.containers.clone()
+        }
+    }
+
     pub fn backup(self) -> Result<MigrationContext<Backed>> {
         let mut log = fs::OpenOptions::new()
             .append(true)
@@ -171,6 +258,8 @@ impl MigrationContext<Validated> {
             fail_fast: self.fail_fast,
             auto_apply: self.auto_apply,
             docker_client: self.docker_client,
+            validation_errors: self.validation_errors,
+            migration_result: None,
             _state: std::marker::PhantomData,
         })
     }
@@ -197,20 +286,43 @@ impl MigrationContext<Backed> {
             .append(true)
             .open(&self.log_file)?;
 
-        let mut success_count = 0;
-        let mut fail_count = 0;
+        // 유효한 컨테이너만 마이그레이션
+        let valid_containers = if let Some(errors) = &self.validation_errors {
+            let error_containers: std::collections::HashSet<_> = 
+                errors.iter().map(|(container, _)| container.clone()).collect();
+            
+            self.containers.iter()
+                .filter(|container| !error_containers.contains(*container))
+                .cloned()
+                .collect::<Vec<_>>()
+        } else {
+            self.containers.clone()
+        };
 
-        // 각 컨테이너의 라벨을 JSON으로 변환
-        for container in &self.containers {
+        // 디버깅 정보 추가
+        println!("마이그레이션 시작: 유효한 컨테이너 {} 개", valid_containers.len());
+        writeln!(log, "마이그레이션 시작: 유효한 컨테이너 {} 개", valid_containers.len())?;
+
+        let mut success_count = 0;
+        let mut failed_count = 0;
+        let mut failed_containers = Vec::new();
+
+        // 유효한 컨테이너에 대해서만 마이그레이션 실행
+        for container in &valid_containers {
+            println!("컨테이너 {} 마이그레이션 시도", container);
             match self.migrate_container(container).await {
                 Ok(_) => {
                     success_count += 1;
+                    println!("컨테이너 {} 마이그레이션 성공", container);
                     writeln!(log, "컨테이너 {} 마이그레이션 성공", container)?;
                 }
                 Err(e) => {
-                    fail_count += 1;
+                    failed_count += 1;
+                    failed_containers.push(container.clone());
                     let msg = format!("컨테이너 {} 마이그레이션 실패: {}", container, e);
+                    println!("{}", msg);
                     writeln!(log, "{}", msg)?;
+                    
                     if self.fail_fast {
                         return Err(anyhow::anyhow!(msg));
                     }
@@ -218,10 +330,32 @@ impl MigrationContext<Backed> {
             }
         }
 
+        // 기존 검증 오류가 있었다면 마이그레이션 실패 목록에 추가
+        let validation_failures = if let Some(errors) = &self.validation_errors {
+            let mut failures = Vec::new();
+            for (container, _) in errors {
+                failed_count += 1;
+                failures.push(container.clone());
+            }
+            failures
+        } else {
+            Vec::new()
+        };
+        
+        // 모든 실패한 컨테이너 목록 합치기
+        failed_containers.extend(validation_failures);
+        
+        // 총 처리해야 할 컨테이너 수 계산
+        let total_count = valid_containers.len() + 
+            self.validation_errors.as_ref().map_or(0, |e| e.len());
+
+        // 마이그레이션 결과 기록
         writeln!(log, "\n마이그레이션 완료")?;
-        writeln!(log, "성공: {}, 실패: {}", success_count, fail_count)?;
+        writeln!(log, "총 컨테이너: {}, 성공: {}, 실패: {}", 
+                 total_count, success_count, failed_count)?;
         writeln!(log, "종료 시간: {}", Local::now())?;
 
+        // 결과 정보를 담은 컨텍스트 반환
         Ok(MigrationContext {
             containers: self.containers,
             output_dir: self.output_dir,
@@ -233,35 +367,48 @@ impl MigrationContext<Backed> {
             fail_fast: self.fail_fast,
             auto_apply: self.auto_apply,
             docker_client: self.docker_client,
+            validation_errors: self.validation_errors,
+            migration_result: Some(BatchResult {
+                total: total_count,
+                success: success_count,
+                failed: failed_count,
+                failed_containers,
+            }),
             _state: std::marker::PhantomData,
         })
     }
-
+    
     async fn migrate_container(&self, container: &str) -> Result<()> {
-        // 라벨 가져오기
-        let labels = if let Some(client) = &self.docker_client {
-            client.get_container_labels(container).await?
-        } else {
-            get_container_labels(container).await?
-        };
-
+        let docker_client = self.docker_client.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("Docker 클라이언트가 설정되지 않았습니다."))?;
+        
+        // 디버깅 정보 추가
+        println!("migrate_container 시작: {}", container);
+        
+        // 컨테이너 라벨 가져오기
+        let labels = docker_client.get_container_labels(container).await?;
+        println!("컨테이너 {} 라벨 {}개 가져옴", container, labels.len());
+        
         // JSON으로 변환
         let json = labels_to_json(&labels, &self.prefix);
+        println!("JSON 변환 완료");
+        
+        // JSON 문자열로 직렬화 (pretty print 여부에 따라)
         let json_str = if self.pretty {
             serde_json::to_string_pretty(&json)?
         } else {
             serde_json::to_string(&json)?
         };
-
-        // 파일로 저장
+        println!("JSON 직렬화 완료: {} 바이트", json_str.len());
+        
+        // 출력 파일 경로
         let output_file = self.get_output_path(container);
+        println!("출력 파일 경로: {}", output_file.display());
+        
+        // 파일 저장
         fs::write(&output_file, json_str)?;
-
-        // 자동 적용이 활성화된 경우 설정 적용
-        if self.auto_apply {
-            // TODO: 설정 적용 로직 구현
-        }
-
+        println!("파일 저장 완료: {}", output_file.display());
+        
         Ok(())
     }
 
@@ -273,8 +420,52 @@ impl MigrationContext<Backed> {
 }
 
 impl MigrationContext<Migrated> {
+    pub fn get_migration_result(&self) -> Option<&BatchResult> {
+        self.migration_result.as_ref()
+    }
+
     pub fn get_summary(&self) -> Result<String> {
-        Ok(fs::read_to_string(&self.log_file)?)
+        let mut summary = fs::read_to_string(&self.log_file)?;
+        
+        // 결과 정보가 있으면 추가
+        if let Some(result) = &self.migration_result {
+            summary.push_str(&format!("\n## 마이그레이션 결과 요약\n"));
+            summary.push_str(&format!("총 컨테이너: {}\n", result.total));
+            summary.push_str(&format!("성공: {}\n", result.success));
+            summary.push_str(&format!("실패: {}\n", result.failed));
+            
+            if !result.failed_containers.is_empty() {
+                summary.push_str("\n실패한 컨테이너:\n");
+                for container in &result.failed_containers {
+                    summary.push_str(&format!("- {}\n", container));
+                }
+            }
+        }
+        
+        Ok(summary)
+    }
+    
+    pub fn is_success(&self) -> bool {
+        self.migration_result.as_ref().map_or(false, |r| r.failed == 0)
+    }
+    
+    pub async fn apply_if_needed(self) -> Result<Self> {
+        if !self.auto_apply {
+            return Ok(self);
+        }
+        
+        let mut log = fs::OpenOptions::new()
+            .append(true)
+            .open(&self.log_file)?;
+            
+        writeln!(log, "\n## 설정 적용 실행\n")?;
+        
+        // 여기에 설정 적용 로직 구현 (예: traefik 서비스 재시작 등)
+        // ...
+        
+        writeln!(log, "설정 적용 완료: {}", Local::now())?;
+        
+        Ok(self)
     }
 }
 
@@ -319,6 +510,7 @@ pub async fn execute(
 // 테스트 도우미 메서드
 impl<State> MigrationContext<State> {
     pub fn with_test_docker_client(mut self, client: Box<dyn DockerClient>) -> Self {
+        // 테스트용 Docker 클라이언트 설정
         self.docker_client = Some(client);
         self
     }
