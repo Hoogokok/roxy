@@ -131,5 +131,13 @@ pub enum ConfigCommands {
         /// 자동으로 설정 파일 적용
         #[arg(long)]
         auto_apply: bool,
+        
+        /// 생성된 JSON 설정 파일 검증
+        #[arg(short = 'v', long)]
+        validate: bool,
+        
+        /// 상세 로깅 활성화
+        #[arg(short = 'd', long)]
+        detailed_logging: bool,
     },
 }
