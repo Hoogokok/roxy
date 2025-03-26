@@ -54,8 +54,80 @@ async fn main() -> Result<()> {
                 ConfigCommands::Show { format, pretty } => {
                     commands::show::execute(format, *pretty)?;
                 },
-                ConfigCommands::Migrate { containers, all, output_dir, backup_dir, log_file, prefix, filename_pattern, pretty, fail_fast, auto_apply } => {
-                    commands::migrate::execute(containers.clone(), *all, output_dir.clone(), backup_dir.clone(), log_file.clone(), prefix.clone(), filename_pattern.clone(), *pretty, *fail_fast, *auto_apply).await?;
+                ConfigCommands::Migrate { containers, all, output_dir, backup_dir, log_file, prefix, filename_pattern, pretty, fail_fast, auto_apply, validate, detailed_logging } => {
+                    if *validate || *detailed_logging {
+                        // Docker 클라이언트 생성
+                        let docker_client = docker::create_docker_client();
+                        let container_ids = if *all {
+                            match docker::get_all_running_containers().await {
+                                Ok(ids) => ids,
+                                Err(e) => {
+                                    eprintln!("컨테이너 목록을 가져오는 중 오류: {}", e);
+                                    return Err(e);
+                                }
+                            }
+                        } else {
+                            containers.clone().ok_or_else(|| anyhow::anyhow!("컨테이너 목록이나 --all 옵션이 필요합니다."))?
+                        };
+                        
+                        if *detailed_logging {
+                            // 상세 로깅 활성화
+                            let result = commands::migrate::execute_with_detailed_logging(
+                                container_ids,
+                                output_dir.clone(),
+                                backup_dir.clone(),
+                                log_file.clone(),
+                                prefix.clone(),
+                                filename_pattern.clone(),
+                                true, // 상세 로깅 활성화
+                                docker_client
+                            ).await?;
+                            
+                            println!("마이그레이션 완료");
+                            println!("총 처리: {}, 성공: {}, 실패: {}", 
+                                result.batch_result.total,
+                                result.batch_result.success,
+                                result.batch_result.failed
+                            );
+                        } else if *validate {
+                            // 검증 활성화
+                            let result = commands::migrate::execute_with_validation(
+                                container_ids,
+                                output_dir.clone(),
+                                backup_dir.clone(),
+                                log_file.clone(),
+                                prefix.clone(),
+                                filename_pattern.clone(),
+                                true,
+                                docker_client
+                            ).await?;
+                            
+                            println!("마이그레이션 완료");
+                            println!("총 처리: {}, 성공: {}, 실패: {}", 
+                                result.batch_result.total,
+                                result.batch_result.success,
+                                result.batch_result.failed
+                            );
+                            
+                            if let Some(report) = result.validation_report {
+                                println!("\n{}", report);
+                            }
+                        }
+                    } else {
+                        // 기존 방식으로 실행
+                        commands::migrate::execute(
+                            containers.clone(),
+                            *all,
+                            output_dir.clone(),
+                            backup_dir.clone(),
+                            log_file.clone(),
+                            prefix.clone(),
+                            filename_pattern.clone(),
+                            *pretty,
+                            *fail_fast,
+                            *auto_apply
+                        ).await?;
+                    }
                 }
             }
         }

@@ -75,6 +75,7 @@ impl DockerClient for RealDockerClient {
 }
 
 // 4. 모의 Docker 클라이언트 구현
+#[derive(Clone)]
 pub struct MockDockerClient {
     containers: HashMap<String, HashMap<String, String>>,
 }
