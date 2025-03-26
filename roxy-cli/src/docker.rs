@@ -128,16 +128,24 @@ impl MockDockerClient {
 #[async_trait]
 impl DockerClient for MockDockerClient {
     async fn get_container_labels(&self, container_id: &str) -> Result<HashMap<String, String>> {
-        println!("테스트용 모의 Docker 구현 사용 중");
+        println!("테스트용 모의 Docker 구현에서 컨테이너 {} 라벨 조회 시도", container_id);
         match self.containers.get(container_id) {
-            Some(labels) => Ok(labels.clone()),
-            None => Err(anyhow::anyhow!("컨테이너 {}를 찾을 수 없습니다", container_id))
+            Some(labels) => {
+                println!("컨테이너 {} 라벨 {}개 찾음", container_id, labels.len());
+                Ok(labels.clone())
+            }
+            None => {
+                println!("컨테이너 {}를 찾을 수 없습니다", container_id);
+                Err(anyhow::anyhow!("컨테이너 {}를 찾을 수 없습니다", container_id))
+            }
         }
     }
     
     async fn get_all_running_containers(&self) -> Result<Vec<String>> {
-        println!("테스트용 모의 Docker 구현 사용 중");
-        Ok(self.containers.keys().cloned().collect())
+        println!("테스트용 모의 Docker 구현에서 모든 컨테이너 목록 조회");
+        let container_ids = self.containers.keys().cloned().collect();
+        println!("컨테이너 {}개 찾음", self.containers.len());
+        Ok(container_ids)
     }
 }
 
