@@ -3,7 +3,7 @@ use std::marker::PhantomData;
 use serde::Deserialize;
 use serde::de::Error;
 
-use crate::settings::core::{AnyLoadBalancerSettings, Settings};
+use crate::settings::core::Settings;
 use crate::settings::server::HttpsDisabled;
 use crate::settings::typestate::{Raw, Validated};
 use crate::settings::logging::LogSettings;
@@ -11,7 +11,6 @@ use crate::settings::tls::TlsSettings;
 use crate::settings::docker::DockerSettings;
 use crate::middleware::config::MiddlewareConfig;
 use crate::settings::types::ValidMiddlewareId;
-use crate::settings::load_balancer::{LoadBalancerSettings, NoLoadBalancing};
 
 /// Settings 역직렬화 구현
 impl<'de> Deserialize<'de> for Settings<Validated, HttpsDisabled> {
@@ -60,7 +59,7 @@ impl<'de> Deserialize<'de> for Settings<Validated, HttpsDisabled> {
             docker: validated_docker,
             middleware: settings_helper.middleware,
             router_middlewares: settings_helper.router_middlewares,
-            load_balancer: AnyLoadBalancerSettings::None(LoadBalancerSettings::<Validated, NoLoadBalancing>::new()),
+            services: HashMap::new(),
             _marker: PhantomData,
         })
     }
