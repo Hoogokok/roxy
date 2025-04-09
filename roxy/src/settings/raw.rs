@@ -10,9 +10,7 @@ use crate::settings::tls::TlsSettings;
 use crate::settings::logging::LogSettings;
 use crate::settings::docker::DockerSettings;
 use crate::settings::{SettingsError, Settings, Either, Result, parse_env_var};
-use crate::settings::load_balancer::{LoadBalancerSettings, NoLoadBalancing};
 
-use super::core::AnyLoadBalancerSettings;
 use super::types::ValidPort;
 use super::typestate::Raw;
 use crate::settings::typestate::{ContextValidatable, AsyncContextValidatable, Validated};
@@ -37,7 +35,7 @@ impl<HttpsState> RawSettings<HttpsState> {
             docker,
             middleware,
             router_middlewares,
-            load_balancer: AnyLoadBalancerSettings::None(LoadBalancerSettings::<Raw, NoLoadBalancing>::new()),
+            services: HashMap::new(),
             _marker: PhantomData,
         }
     }
@@ -62,7 +60,7 @@ impl RawSettings<HttpsDisabled> {
             docker,
             middleware: HashMap::new(),
             router_middlewares: HashMap::new(),
-            load_balancer: AnyLoadBalancerSettings::None(LoadBalancerSettings::<Raw, NoLoadBalancing>::new()),
+            services: HashMap::new(),
             _marker: PhantomData,
         })
     }
@@ -89,7 +87,7 @@ impl RawSettings<HttpsDisabled> {
             docker: validated_docker,
             middleware: self.middleware,
             router_middlewares: self.router_middlewares,
-            load_balancer: AnyLoadBalancerSettings::None(LoadBalancerSettings::<Validated, NoLoadBalancing>::new()),
+            services: HashMap::new(),
             _marker: PhantomData,
         })
     }
@@ -137,7 +135,7 @@ impl RawSettings<HttpsEnabled> {
             docker,
             middleware: HashMap::new(),
             router_middlewares: HashMap::new(),
-            load_balancer: AnyLoadBalancerSettings::None(LoadBalancerSettings::<Raw, NoLoadBalancing>::new()),
+            services: HashMap::new(),
             _marker: PhantomData,
         })
     }
@@ -168,7 +166,7 @@ impl RawSettings<HttpsEnabled> {
             docker: validated_docker,
             middleware: self.middleware,
             router_middlewares: self.router_middlewares,
-            load_balancer: AnyLoadBalancerSettings::None(LoadBalancerSettings::<Validated, NoLoadBalancing>::new()),
+            services: HashMap::new(),
             _marker: PhantomData,
         })
     }
@@ -199,7 +197,7 @@ impl RawSettings<HttpsEnabled> {
             docker: validated_docker,
             middleware: self.middleware,
             router_middlewares: self.router_middlewares,
-            load_balancer: AnyLoadBalancerSettings::None(LoadBalancerSettings::<Validated, NoLoadBalancing>::new()),
+            services: HashMap::new(),
             _marker: PhantomData,
         })
     }
@@ -247,7 +245,7 @@ impl RawSettings<HttpsEnabled> {
                 docker: helper.docker.validated()?,
                 middleware: helper.middleware,
                 router_middlewares: helper.router_middlewares,
-                load_balancer: AnyLoadBalancerSettings::None(LoadBalancerSettings::<Validated, NoLoadBalancing>::new()),
+                services: HashMap::new(),
                 _marker: PhantomData,
             };
             
@@ -266,7 +264,7 @@ impl RawSettings<HttpsEnabled> {
                 docker: helper.docker.validated()?,
                 middleware: helper.middleware,
                 router_middlewares: helper.router_middlewares,
-                load_balancer: AnyLoadBalancerSettings::None(LoadBalancerSettings::<Validated, NoLoadBalancing>::new()),
+                services: HashMap::new(),
                 _marker: PhantomData,
             };
             
