@@ -133,3 +133,60 @@ impl ContainerConfigManager {
         results
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::json::{JsonConfig, ServiceConfig, LoadBalancerConfig, ServerConfig};
+    use crate::settings::types::ValidUrl;
+    use crate::settings::core::Settings; // Settings 임포트 추가
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+    use std::collections::HashMap; // HashMap 임포트 추가
+
+    #[tokio::test]
+    async fn test_merge_config_includes_services_from_json() {
+        // 1. 임시 JSON 파일 생성
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test_service.json");
+        let json_content = r#"{
+            "version": "1.0",
+            "services": {
+                "api-service": {
+                    "loadbalancer": {
+                        "servers": [
+                            {"url": "http://api1.local", "weight": 3}
+                        ]
+                    }
+                }
+            }
+        }"#;
+        std::fs::write(&file_path, json_content).unwrap();
+
+        // 2. ContainerConfigManager 설정
+        let (manager, _) = ContainerConfigManager::new(); // new()는 Sender와 Receiver를 반환
+        // 기본 Settings 객체로 초기화 (Validated 상태 사용)
+        let manager = manager.with_shared_config(Settings::default());
+
+        let container_id = "test-container-json-merge".to_string();
+
+        // 3. 컨테이너 설정 로드 (비동기)
+        // load_container_config가 self를 받으므로, DashMap 직접 수정 대신 호출
+        manager.load_container_config(container_id.clone(), &file_path).await.unwrap();
+
+
+        // 4. 설정 병합 호출 (Docker 라벨은 비워둠)
+        let merged_settings = manager.merge_config(&container_id, &HashMap::new());
+
+        // 5. 검증: 병합된 설정에 JSON 파일의 서비스 설정이 포함되었는지 확인
+        assert!(merged_settings.services.contains_key("api-service"), "Merged settings should contain 'api-service'");
+        if let Some(service_config) = merged_settings.services.get("api-service") {
+            assert_eq!(service_config.loadbalancer.servers.len(), 1, "Should have one server for 'api-service'");
+            assert_eq!(service_config.loadbalancer.servers[0].weight, 3, "Weight should be 3 for the server");
+            // ValidUrl은 PartialEq를 구현하지 않으므로 as_str()로 비교
+            assert_eq!(service_config.loadbalancer.servers[0].url.as_str(), "http://api1.local");
+        } else {
+            panic!("'api-service' configuration not found in merged settings");
+        }
+    }
+}
