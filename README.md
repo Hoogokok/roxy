@@ -31,14 +31,14 @@ services:
   web1:
     image: nginx
     labels:
-      - "rproxy.http.routers.web.rule=Host(`web.example.com`)"
-      - "rproxy.http.services.web.loadbalancer.server.port=80"
+      - "roxy.http.routers.web.rule=Host(`web.example.com`)"
+      - "roxy.http.services.web.loadbalancer.server.port=80"
   
   web2:
     image: nginx
     labels:
-      - "rproxy.http.routers.web.rule=Host(`web.example.com`)"
-      - "rproxy.http.services.web.loadbalancer.server.port=80"
+      - "roxy.http.routers.web.rule=Host(`web.example.com`)"
+      - "roxy.http.services.web.loadbalancer.server.port=80"
 ```
 
 ### 2. 가중치 기반 (Weighted)
@@ -49,16 +49,16 @@ services:
   web1:
     image: nginx
     labels:
-      - "rproxy.http.routers.web.rule=Host(`web.example.com`)"
-      - "rproxy.http.services.web.loadbalancer.server.port=80"
-      - "rproxy.http.services.web.loadbalancer.server.weight=2"  # 2배 더 많은 트래픽
+      - "roxy.http.routers.web.rule=Host(`web.example.com`)"
+      - "roxy.http.services.web.loadbalancer.server.port=80"
+      - "roxy.http.services.web.loadbalancer.server.weight=2"  # 2배 더 많은 트래픽
   
   web2:
     image: nginx
     labels:
-      - "rproxy.http.routers.web.rule=Host(`web.example.com`)"
-      - "rproxy.http.services.web.loadbalancer.server.port=80"
-      - "rproxy.http.services.web.loadbalancer.server.weight=1"
+      - "roxy.http.routers.web.rule=Host(`web.example.com`)"
+      - "roxy.http.services.web.loadbalancer.server.port=80"
+      - "roxy.http.services.web.loadbalancer.server.weight=1"
 ```
 
 ### 설정 방법
@@ -223,13 +223,13 @@ HTTP 요청/응답을 처리하는 미들웨어 체인을 지원합니다.
 #### Docker 라벨 설정
 ```
 # 기본 설정
-rproxy.http.middlewares.cors.type=cors
-rproxy.http.middlewares.cors.enabled=true
-rproxy.http.middlewares.cors.order=1
+roxy.http.middlewares.cors.type=cors
+roxy.http.middlewares.cors.enabled=true
+roxy.http.middlewares.cors.order=1
 
 # CORS 설정
-rproxy.http.middlewares.cors.headers.access-control-allow-origin=*
-rproxy.http.middlewares.cors.headers.access-control-allow-methods=GET,POST,PUT,DELETE
+roxy.http.middlewares.cors.headers.access-control-allow-origin=*
+roxy.http.middlewares.cors.headers.access-control-allow-methods=GET,POST,PUT,DELETE
 ```
 
 #### TOML 설정
@@ -287,32 +287,32 @@ HTTP Basic 인증을 제공하는 미들웨어입니다.
 직접 사용자와 해시된 비밀번호를 라벨에 지정합니다.
 ```yaml
 labels:
-  - "rproxy.http.middlewares.my-auth.type=basic-auth"
-  - "rproxy.http.middlewares.my-auth.basicAuth.users=admin:$2y$05$..."
+  - "roxy.http.middlewares.my-auth.type=basic-auth"
+  - "roxy.http.middlewares.my-auth.basicAuth.users=admin:$2y$05$..."
 ```
 
 ### 2. .htpasswd 파일
 Apache 스타일의 .htpasswd 파일을 사용합니다.
 ```yaml
 labels:
-  - "rproxy.http.middlewares.my-auth.basicAuth.source=htpasswd"
-  - "rproxy.http.middlewares.my-auth.basicAuth.htpasswd.path=/etc/nginx/.htpasswd"
+  - "roxy.http.middlewares.my-auth.basicAuth.source=htpasswd"
+  - "roxy.http.middlewares.my-auth.basicAuth.htpasswd.path=/etc/nginx/.htpasswd"
 ```
 
 ### 3. 환경 변수
 환경 변수에서 사용자 정보를 로드합니다.
 ```yaml
 labels:
-  - "rproxy.http.middlewares.my-auth.basicAuth.source=env"
-  - "rproxy.http.middlewares.my-auth.basicAuth.env.prefix=BASIC_AUTH_USER_"
+  - "roxy.http.middlewares.my-auth.basicAuth.source=env"
+  - "roxy.http.middlewares.my-auth.basicAuth.env.prefix=BASIC_AUTH_USER_"
 ```
 
 ### 4. Docker Secrets
 Docker secrets에서 사용자 정보를 로드합니다.
 ```yaml
 labels:
-  - "rproxy.http.middlewares.my-auth.basicAuth.source=docker-secret"
-  - "rproxy.http.middlewares.my-auth.basicAuth.secret.path=/run/secrets/basic-auth"
+  - "roxy.http.middlewares.my-auth.basicAuth.source=docker-secret"
+  - "roxy.http.middlewares.my-auth.basicAuth.secret.path=/run/secrets/basic-auth"
 ```
 
 ## 비밀번호 해시 생성
@@ -337,12 +337,12 @@ htpasswd -nbB admin "my-password"
 ```yaml
 labels:
   # 기본 설정
-  - "rproxy.http.middlewares.my-ratelimit.type=ratelimit"
-  - "rproxy.http.middlewares.my-ratelimit.enabled=true"
+  - "roxy.http.middlewares.my-ratelimit.type=ratelimit"
+  - "roxy.http.middlewares.my-ratelimit.enabled=true"
   
   # Rate Limit 설정
-  - "rproxy.http.middlewares.my-ratelimit.rateLimit.average=100"  # 초당 평균 요청 수
-  - "rproxy.http.middlewares.my-ratelimit.rateLimit.burst=200"    # 최대 버스트 허용량
+  - "roxy.http.middlewares.my-ratelimit.rateLimit.average=100"  # 초당 평균 요청 수
+  - "roxy.http.middlewares.my-ratelimit.rateLimit.burst=200"    # 최대 버스트 허용량
 ```
 
 ### TOML 설정
@@ -372,11 +372,11 @@ services:
   web:
     image: nginx
     labels:
-      - "rproxy.http.middlewares.web-ratelimit.type=ratelimit"
-      - "rproxy.http.middlewares.web-ratelimit.enabled=true"
-      - "rproxy.http.middlewares.web-ratelimit.rateLimit.average=2"   # 초당 2개 요청
-      - "rproxy.http.middlewares.web-ratelimit.rateLimit.burst=4"     # 최대 4개 버스트
-      - "rproxy.http.routers.web.middlewares=web-ratelimit"
+      - "roxy.http.middlewares.web-ratelimit.type=ratelimit"
+      - "roxy.http.middlewares.web-ratelimit.enabled=true"
+      - "roxy.http.middlewares.web-ratelimit.rateLimit.average=2"   # 초당 2개 요청
+      - "roxy.http.middlewares.web-ratelimit.rateLimit.burst=4"     # 최대 4개 버스트
+      - "roxy.http.routers.web.middlewares=web-ratelimit"
 ```
 
 ### API 서비스에 Rate Limit 적용
@@ -385,11 +385,11 @@ services:
   api:
     image: node
     labels:
-      - "rproxy.http.middlewares.api-ratelimit.type=ratelimit"
-      - "rproxy.http.middlewares.api-ratelimit.enabled=true"
-      - "rproxy.http.middlewares.api-ratelimit.rateLimit.average=50"  # 초당 50개 요청
-      - "rproxy.http.middlewares.api-ratelimit.rateLimit.burst=100"   # 최대 100개 버스트
-      - "rproxy.http.routers.api.middlewares=api-ratelimit"
+      - "roxy.http.middlewares.api-ratelimit.type=ratelimit"
+      - "roxy.http.middlewares.api-ratelimit.enabled=true"
+      - "roxy.http.middlewares.api-ratelimit.rateLimit.average=50"  # 초당 50개 요청
+      - "roxy.http.middlewares.api-ratelimit.rateLimit.burst=100"   # 최대 100개 버스트
+      - "roxy.http.routers.api.middlewares=api-ratelimit"
 ```
 
 ### 재시도 메커니즘
@@ -427,22 +427,22 @@ services:
     image: nginx
     labels:
       # 헬스 체크 활성화
-      - "rproxy.health.enabled=true"
+      - "roxy.health.enabled=true"
       
       # HTTP 체크 설정
-      - "rproxy.health.http.path=/health"
-      - "rproxy.health.http.method=GET"
-      - "rproxy.health.http.expected_status=200"
+      - "roxy.health.http.path=/health"
+      - "roxy.health.http.method=GET"
+      - "roxy.health.http.expected_status=200"
       
       # 또는 TCP 체크 설정
-      - "rproxy.health.tcp.port=80"
+      - "roxy.health.tcp.port=80"
       
       # 체크 간격 및 타임아웃
-      - "rproxy.health.interval=30"  # 30초마다 체크
-      - "rproxy.health.timeout=5"    # 5초 타임아웃
+      - "roxy.health.interval=30"  # 30초마다 체크
+      - "roxy.health.timeout=5"    # 5초 타임아웃
       
       # 연속 실패 허용 횟수
-      - "rproxy.health.max_failures=3"  # 3회 연속 실패시 제거
+      - "roxy.health.max_failures=3"  # 3회 연속 실패시 제거
 ```
 
 ### 헬스 체크 타입
@@ -553,8 +553,8 @@ JSON 설정과 Docker 라벨은 서로 변환 가능합니다. 예를 들어:
 #### 동일한 Docker 라벨:
 ```yaml
 labels:
-  - "rproxy.http.middlewares.api-cors.type=cors"
-  - "rproxy.http.middlewares.api-cors.cors.allowOrigins=http://localhost:3000"
+  - "roxy.http.middlewares.api-cors.type=cors"
+  - "roxy.http.middlewares.api-cors.cors.allowOrigins=http://localhost:3000"
 ```
 
 ### 설정 자동 감지 및 리로드
@@ -584,7 +584,7 @@ services:
 
   api:
     labels:
-      - "rproxy.http.services.api.loadbalancer.server.port=3000"
+      - "roxy.http.services.api.loadbalancer.server.port=3000"
       # 컨테이너별 특수 설정만 라벨로 정의
 ```
 
@@ -602,7 +602,7 @@ services:
 
   api:
     labels:
-      - "rproxy.http.routers.api.rule=Host(`api.example.com`)"
+      - "roxy.http.routers.api.rule=Host(`api.example.com`)"
       # 라벨 설정이 JSON 설정을 덮어씀
 ```
 

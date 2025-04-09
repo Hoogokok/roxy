@@ -1,0 +1,703 @@
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
+
+use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
+use super::error::SettingsError;
+use super::parser::ConfigParser;
+use super::types::{ValidMiddlewareId, ValidRule, ValidServiceId, Version};
+use super::{Result, ValidatedConfig};
+use super::converter::labels_to_json;
+
+/// JSON 설정 파일을 위한 구조체
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonConfig {
+    /// 설정 파일 버전
+    #[serde(default = "default_version")]
+    pub version: Version,
+    
+    /// 설정 고유 ID (선택적)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    
+    /// 미들웨어 설정
+    #[serde(default)]
+    pub middlewares: HashMap<String, MiddlewareConfig>,
+    
+    /// 라우터 설정
+    #[serde(default)]
+    pub routers: HashMap<String, RouterConfig>,
+    
+    /// 서비스 설정
+    #[serde(default)]
+    pub services: HashMap<String, ServiceConfig>,
+    
+    /// 라우터-미들웨어 매핑
+    #[serde(default)]
+    pub router_middlewares: HashMap<String, Vec<String>>,
+    
+    /// 헬스체크 설정
+    #[serde(default)]
+    pub health: Option<HealthConfig>,
+    
+    /// 마지막 유효성 검사 시간
+    #[serde(skip)]
+    pub last_validated: Option<SystemTime>,
+    
+    /// 설정 로드 경로
+    #[serde(skip)]
+    pub source_path: Option<PathBuf>,
+}
+
+/// 라우터 설정
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RouterConfig {
+    /// 라우팅 규칙
+    pub rule: ValidRule,
+    
+    /// 연결된 미들웨어 목록
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub middlewares: Option<Vec<ValidMiddlewareId>>,
+    
+    /// 서비스 이름
+    pub service: ValidServiceId,
+}
+
+/// 서비스 설정
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServiceConfig {
+    pub loadbalancer: LoadBalancerConfig,
+}
+
+/// 로드밸런서 설정
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoadBalancerConfig {
+    pub servers: Vec<ServerConfig>,
+}
+
+/// 서버 설정
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfig {
+    pub url: crate::settings::types::ValidUrl,
+    
+    #[serde(default = "default_weight")]
+    pub weight: u32,
+}
+
+/// 헬스체크 설정
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    
+    pub http: HttpHealthConfig,
+    
+    #[serde(default = "default_interval")]
+    pub interval: u64,
+    
+    #[serde(default = "default_timeout")]
+    pub timeout: u64,
+    
+    #[serde(default = "default_max_failures")]
+    pub max_failures: u32,
+}
+
+/// HTTP 헬스체크 설정
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HttpHealthConfig {
+    #[serde(default = "default_health_path")]
+    pub path: String,
+}
+
+/// 기본 설정값을 위한 함수들
+fn default_version() -> Version {
+    Version::new("1.0").unwrap()
+}
+
+fn default_weight() -> u32 {
+    1
+}
+
+fn default_interval() -> u64 {
+    30
+}
+
+fn default_timeout() -> u64 {
+    5
+}
+
+fn default_max_failures() -> u32 {
+    3
+}
+
+fn default_health_path() -> String {
+    "/health".to_string()
+}
+
+impl Default for JsonConfig {
+    fn default() -> Self {
+        Self {
+            version: default_version(),
+            id: None,
+            middlewares: HashMap::new(),
+            routers: HashMap::new(),
+            services: HashMap::new(),
+            router_middlewares: HashMap::new(),
+            health: None,
+            last_validated: None,
+            source_path: None,
+        }
+    }
+}
+
+impl JsonConfig {
+    /// 파일에서 설정 로드
+    pub fn from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let file_path = path.as_ref();
+        let file_content = std::fs::read_to_string(file_path)
+            .map_err(|e| SettingsError::FileError { 
+                path: file_path.to_string_lossy().to_string(),
+                error: e 
+            })?;
+        
+        // 방법 1: 기존 파싱 방식 (유효성 검사 후처리)
+        let mut config: Self = serde_json::from_str(&file_content)
+            .map_err(|e| SettingsError::JsonParseError { source: e })?;
+        
+        // 파일 경로 저장
+        config.source_path = Some(file_path.to_path_buf());
+        
+        // 유효성 검증 수행
+        config.validate()?;
+        
+        Ok(config)
+    }
+    
+    /// 파일에서 설정 로드 (강력한 타입 검증 사용)
+    pub fn from_file_strongly_typed<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let file_path = path.as_ref();
+        let file_content = std::fs::read_to_string(file_path)
+            .map_err(|e| SettingsError::FileError { 
+                path: file_path.to_string_lossy().to_string(),
+                error: e 
+            })?;
+        
+        // 방법 2: 새로운 파싱 방식 (타입 시스템을 활용한 유효성 검사)
+        // ConfigParser를 사용하여 강력한 타입 검증을 수행
+        let validated_config = ConfigParser::parse(&file_content)?;
+        
+        // 검증된 설정에서 JsonConfig 생성
+        let mut config = Self::from_validated_config(validated_config);
+        
+        // 파일 경로 저장
+        config.source_path = Some(file_path.to_path_buf());
+        config.last_validated = Some(std::time::SystemTime::now());
+        
+        Ok(config)
+    }
+    
+    /// Docker 라벨에서 JSON 설정 생성
+    pub fn from_docker_labels(labels: &HashMap<String, String>, prefix: &str) -> Self {
+        let json = labels_to_json(labels, prefix);
+        match serde_json::from_value(json) {
+            Ok(config) => config,
+            Err(err) => {
+                eprintln!("라벨에서 JSON 설정 변환 실패: {}", err);
+                
+                // 부분적으로 설정 구성
+                let mut config = JsonConfig::default();
+                
+                // 미들웨어 설정 직접 파싱
+                for (key, value) in labels {
+                    if !key.starts_with(prefix) {
+                        continue;
+                    }
+                    
+                    // 미들웨어 타입 추출
+                    if key.contains(".type") && key.contains(".middlewares.") {
+                        let parts: Vec<&str> = key.split('.').collect();
+                        if parts.len() >= 5 {
+                            let middleware_name = parts[3];
+                            let middleware_type = match value.as_str() {
+                                "cors" => MiddlewareType::Cors,
+                                "basic-auth" => MiddlewareType::BasicAuth,
+                                "ratelimit" => MiddlewareType::RateLimit,
+                                "headers" => MiddlewareType::Headers,
+                                _ => MiddlewareType::Headers,
+                            };
+                            
+                            // 미들웨어 생성 또는 업데이트
+                            if !config.middlewares.contains_key(middleware_name) {
+                                config.middlewares.insert(middleware_name.to_string(), MiddlewareConfig {
+                                    middleware_type,
+                                    enabled: true,
+                                    order: 0,
+                                    settings: HashMap::new(),
+                                });
+                            }
+                        }
+                    }
+                    
+                    // 라우터 설정 추출
+                    if key.contains(".rule") && key.contains(".routers.") {
+                        let parts: Vec<&str> = key.split('.').collect();
+                        if parts.len() >= 5 {
+                            let router_name = parts[3];
+                            
+                            // 라우터 생성 또는 업데이트
+                            if !config.routers.contains_key(router_name) {
+                                config.routers.insert(router_name.to_string(), RouterConfig {
+                                    rule: crate::settings::types::ValidRule::new(value.clone()).unwrap(),
+                                    middlewares: None,
+                                    service: crate::settings::types::ValidServiceId::new("default").unwrap(),
+                                });
+                            } else if let Some(router) = config.routers.get_mut(router_name) {
+                                router.rule = crate::settings::types::ValidRule::new(value.clone()).unwrap();
+                            }
+                        }
+                    }
+                    
+                    // 미들웨어 설정 추출
+                    if key.contains(".middlewares.") && 
+                       (key.contains(".cors.") || key.contains(".basicAuth.") || 
+                        key.contains(".rateLimit.") || key.contains(".headers.")) {
+                        let parts: Vec<&str> = key.split('.').collect();
+                        if parts.len() >= 6 {
+                            let middleware_name = parts[3];
+                            let setting_key = parts[5..].join(".");
+                            
+                            if let Some(middleware) = config.middlewares.get_mut(middleware_name) {
+                                middleware.settings.insert(setting_key, value.clone());
+                            }
+                        }
+                    }
+                    
+                    // 라우터-미들웨어 맵핑 추출
+                    if key.contains(".middlewares") && key.contains(".routers.") {
+                        let parts: Vec<&str> = key.split('.').collect();
+                        if parts.len() >= 5 {
+                            let router_name = parts[3];
+                            
+                            if let Some(router) = config.routers.get_mut(router_name) {
+                                router.middlewares = Some(value.split(',')
+                                    .map(|s| crate::settings::types::ValidMiddlewareId::new(s.trim()).unwrap())
+                                    .collect());
+                            }
+                        }
+                    }
+                    
+                    // 서비스 설정 추출
+                    if key.contains(".service") && key.contains(".routers.") {
+                        let parts: Vec<&str> = key.split('.').collect();
+                        if parts.len() >= 5 {
+                            let router_name = parts[3];
+                            
+                            if let Some(router) = config.routers.get_mut(router_name) {
+                                router.service = crate::settings::types::ValidServiceId::new(value.clone()).unwrap();
+                            }
+                        }
+                    }
+                }
+                
+                config
+            }
+        }
+    }
+    
+    /// 설정 ID 계산 (파일명 또는 명시적 ID 사용)
+    pub fn get_id(&self, file_path: &Path) -> String {
+        // 1. JSON에 명시적 ID가 있으면 사용
+        if let Some(id) = self.id.as_ref() {
+            return id.clone();
+        }
+        
+        // 2. 파일명에서 ID 추출
+        file_path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+    
+    /// 설정 유효성 검증
+    pub fn validate(&mut self) -> Result<()> {
+        // JSON 문자열로 변환
+        let json_str = match serde_json::to_string(self) {
+            Ok(s) => s,
+            Err(e) => return Err(SettingsError::JsonParseError { source: e }),
+        };
+        
+        // 기존 방식: JsonConfigValidator 사용
+        // 새로운 방식: ConfigParser를 사용한 타입 변환으로 검증
+        let file_name = self.source_path
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+            
+        // ConfigParser로 파싱 시도 - 성공하면 모든 유효성 검사 통과
+        match ConfigParser::parse(&json_str) {
+            Ok(_) => {
+                // 검증 성공 시 타임스탬프 업데이트
+                self.last_validated = Some(SystemTime::now());
+                Ok(())
+            },
+            Err(err) => {
+                // 파일 정보 추가
+                match err {
+                    SettingsError::ValidationErrors { errors, .. } => {
+                        Err(SettingsError::ValidationErrors { errors, file: file_name })
+                    },
+                    other => Err(other.into_with_file(file_name)),
+                }
+            }
+        }
+    }
+
+    /// ValidatedConfig에서 JsonConfig 인스턴스 생성
+    pub fn from_validated_config(validated: ValidatedConfig) -> Self {
+        // ValidatedConfig에서 JsonConfig로 변환
+        let services = validated.services.into_iter()
+            .map(|(id, service)| {
+                let servers = service.loadbalancer.servers.into_iter()
+                    .map(|s| ServerConfig {
+                        url: s.url,
+                        weight: s.weight,
+                    })
+                    .collect();
+                
+                (id.into_inner(), ServiceConfig {
+                    loadbalancer: LoadBalancerConfig { servers }
+                })
+            })
+            .collect();
+            
+        let middlewares = validated.middlewares.into_iter()
+            .map(|(id, mw)| (id.into_inner(), mw))
+            .collect();
+            
+        // router_middlewares를 먼저 생성
+        let router_middlewares = validated.routers.iter()
+            .filter_map(|(id, router)| {
+                if let Some(mids) = &router.middlewares {
+                    if !mids.is_empty() {
+                        let middleware_ids: Vec<String> = mids.iter()
+                            .map(|m| m.id().to_string())
+                            .collect();
+                        Some((id.to_string(), middleware_ids))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+            
+        // 그 후 routers 생성
+        let routers = validated.routers.into_iter()
+            .map(|(id, router)| {
+                (id.into_inner(), RouterConfig {
+                    rule: router.rule,
+                    service: router.service.into_inner(),
+                    middlewares: router.middlewares.map(|mids| 
+                        mids.into_iter().map(|m| m.into_inner()).collect()
+                    ),
+                })
+            })
+            .collect();
+        
+        JsonConfig {
+            version: validated.version,
+            id: None,
+            middlewares,
+            routers,
+            services,
+            router_middlewares,
+            health: validated.health,
+            last_validated: Some(SystemTime::now()),
+            source_path: None,
+        }
+    }
+}
+
+// Extension trait for SettingsError to set file name
+trait SettingsErrorExt {
+    fn into_with_file(self, file: String) -> SettingsError;
+}
+
+impl SettingsErrorExt for SettingsError {
+    fn into_with_file(self, file: String) -> SettingsError {
+        match self {
+            SettingsError::ValidationErrors { errors, .. } => {
+                SettingsError::ValidationErrors { errors, file }
+            }
+            other => other,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::middleware::config::MiddlewareType;
+
+    use super::*;
+    use std::path::PathBuf;
+
+    #[test]
+    fn test_json_config_default() {
+        let config = JsonConfig::default();
+        assert_eq!(config.version.as_str(), "1.0");
+        assert!(config.id.is_none());
+        assert!(config.middlewares.is_empty());
+        assert!(config.routers.is_empty());
+        assert!(config.services.is_empty());
+        assert!(config.router_middlewares.is_empty());
+    }
+
+    #[test]
+    fn test_get_id_from_file_path() {
+        let config = JsonConfig::default();
+        let path = PathBuf::from("/tmp/test-config.json");
+        assert_eq!(config.get_id(&path), "test-config");
+    }
+
+    #[test]
+    fn test_get_id_from_explicit_id() {
+        let mut config = JsonConfig::default();
+        config.id = Some("explicit-id".to_string());
+        let path = PathBuf::from("/tmp/test-config.json");
+        assert_eq!(config.get_id(&path), "explicit-id");
+    }
+
+    #[test]
+    fn test_validate_version() {
+        let mut config = JsonConfig::default();
+        
+        // 테스트 전용 메서드를 사용하여 유효하지 않은 버전을 설정
+        config.version = crate::settings::types::Version::new_unchecked("2.0");
+        
+        // 유효한 서비스 추가 (스키마 검증이 가능하도록)
+        config.services.insert("test-service".to_string(), ServiceConfig {
+            loadbalancer: LoadBalancerConfig {
+                servers: vec![ServerConfig {
+                    url: crate::settings::types::ValidUrl::new("http://localhost:80").unwrap(),
+                    weight: 1,
+                }],
+            }
+        });
+        
+        // health 설정 추가 (스키마 검증이 가능하도록)
+        config.health = Some(HealthConfig {
+            enabled: true,
+            interval: 10,
+            timeout: 5,
+            max_failures: 3,
+            http: HttpHealthConfig {
+                path: "/health".to_string(),
+            },
+        });
+        
+        // 미들웨어 추가 (스키마 검증이 가능하도록)
+        let mut settings = HashMap::new();
+        settings.insert("cors.allowOrigins".to_string(), "*".to_string());
+        
+        config.middlewares.insert("test-middleware".to_string(), MiddlewareConfig {
+            middleware_type: MiddlewareType::Cors,
+            enabled: true,
+            order: 0,
+            settings,
+        });
+        
+        let result = config.validate();
+        
+        // 버전 검증 실패 확인
+        assert!(result.is_err(), "버전 검증이 실패해야 함");
+        println!("오류: {:?}", result);
+    }
+
+    #[test]
+    fn test_validate_router_service() {
+        let mut config = JsonConfig::default();
+        
+        // 서비스가 없는 라우터 추가
+        config.routers.insert("test-router".to_string(), RouterConfig {
+            rule: crate::settings::types::ValidRule::new("Host(`example.com`)").unwrap(),
+            middlewares: None,
+            service: crate::settings::types::ValidServiceId::new("non-existent-service").unwrap(),
+        });
+        
+        // 유효한 서비스 추가 (스키마 검증이 가능하도록)
+        config.services.insert("test-service".to_string(), ServiceConfig {
+            loadbalancer: LoadBalancerConfig {
+                servers: vec![ServerConfig {
+                    url: crate::settings::types::ValidUrl::new("http://localhost:80").unwrap(),
+                    weight: 1,
+                }],
+            }
+        });
+        
+        // health 설정 추가 (스키마 검증이 가능하도록)
+        config.health = Some(HealthConfig {
+            enabled: true,
+            interval: 10,
+            timeout: 5,
+            max_failures: 3,
+            http: HttpHealthConfig {
+                path: "/health".to_string(),
+            },
+        });
+        
+        // 미들웨어 추가 (스키마 검증이 가능하도록)
+        let mut settings = HashMap::new();
+        settings.insert("cors.allowOrigins".to_string(), "*".to_string());
+        
+        config.middlewares.insert("test-middleware".to_string(), MiddlewareConfig {
+            middleware_type: MiddlewareType::Cors,
+            enabled: true,
+            order: 0,
+            settings,
+        });
+        
+        let result = config.validate();
+        
+        // 서비스 참조 검증 실패 확인
+        assert!(result.is_err(), "서비스 참조 검증이 실패해야 함");
+        println!("오류: {:?}", result);
+    }
+
+    #[test]
+    fn test_validate_router_middleware() {
+        let mut config = JsonConfig::default();
+        
+        // 서비스 추가
+        config.services.insert("test-service".to_string(), ServiceConfig {
+            loadbalancer: LoadBalancerConfig {
+                servers: vec![ServerConfig {
+                    url: crate::settings::types::ValidUrl::new("http://localhost:80").unwrap(),
+                    weight: 1,
+                }],
+            }
+        });
+        
+        // 존재하지 않는 미들웨어를 참조하는 라우터 추가
+        config.routers.insert("test-router".to_string(), RouterConfig {
+            rule: crate::settings::types::ValidRule::new("Host(`example.com`)").unwrap(),
+            middlewares: Some(vec![crate::settings::types::ValidMiddlewareId::new("non-existent-middleware").unwrap()]),
+            service: crate::settings::types::ValidServiceId::new("test-service").unwrap(),
+        });
+        
+        // health 설정 추가 (스키마 검증이 가능하도록)
+        config.health = Some(HealthConfig {
+            enabled: true,
+            interval: 10,
+            timeout: 5,
+            max_failures: 3,
+            http: HttpHealthConfig {
+                path: "/health".to_string(),
+            },
+        });
+        
+        // 미들웨어 추가 (스키마 검증이 가능하도록)
+        let mut settings = HashMap::new();
+        settings.insert("cors.allowOrigins".to_string(), "*".to_string());
+        
+        config.middlewares.insert("test-middleware".to_string(), MiddlewareConfig {
+            middleware_type: MiddlewareType::Cors,
+            enabled: true,
+            order: 0,
+            settings,
+        });
+        
+        let result = config.validate();
+        
+        // 미들웨어 참조 검증 실패 확인
+        assert!(result.is_err(), "미들웨어 참조 검증이 실패해야 함");
+        println!("오류: {:?}", result);
+    }
+
+    #[test]
+    fn test_validate_valid_config() {
+        let mut config = JsonConfig::default();
+        
+        // 미들웨어 추가 - 스키마에 맞게 수정
+        let mut settings = HashMap::new();
+        settings.insert("allowOrigins".to_string(), "*".to_string());
+        
+        config.middlewares.insert("test-middleware".to_string(), MiddlewareConfig {
+            middleware_type: MiddlewareType::Cors, // 스키마에 정의된 타입 사용
+            enabled: true,
+            order: 0,
+            settings,
+        });
+        
+        // 서비스 추가
+        config.services.insert("test-service".to_string(), ServiceConfig {
+            loadbalancer: LoadBalancerConfig {
+                servers: vec![ServerConfig {
+                    url: crate::settings::types::ValidUrl::new("http://localhost:80").unwrap(),
+                    weight: 1,
+                }],
+            }
+        });
+        
+        // 라우터 추가
+        config.routers.insert("test-router".to_string(), RouterConfig {
+            rule: crate::settings::types::ValidRule::new("Host(`example.com`)").unwrap(),
+            middlewares: Some(vec![crate::settings::types::ValidMiddlewareId::new("test-middleware").unwrap()]),
+            service: crate::settings::types::ValidServiceId::new("test-service").unwrap(),
+        });
+        
+        // health 설정 추가
+        config.health = Some(HealthConfig {
+            enabled: true,
+            interval: 10,
+            timeout: 5,
+            max_failures: 3,
+            http: HttpHealthConfig {
+                path: "/health".to_string(),
+            },
+        });
+        
+        // 유효한 설정이므로 오류가 없어야 함
+        let result = config.validate();
+        assert!(result.is_ok(), "유효성 검사 실패: {:?}", result);
+    }
+
+    #[test]
+    fn test_from_docker_labels() {
+        // Docker 라벨 생성
+        let mut labels = HashMap::new();
+        labels.insert("roxy.http.middlewares.cors.type".to_string(), "cors".to_string());
+        labels.insert("roxy.http.middlewares.cors.enabled".to_string(), "true".to_string());
+        labels.insert("roxy.http.middlewares.cors.cors.allowOrigins".to_string(), "*".to_string());
+        labels.insert("roxy.http.routers.api.rule".to_string(), "Host(`api.example.com`)".to_string());
+        labels.insert("roxy.http.routers.api.middlewares".to_string(), "cors".to_string());
+        labels.insert("roxy.http.routers.api.service".to_string(), "api-service".to_string());
+        
+        // Docker 라벨에서 설정 생성
+        let config = JsonConfig::from_docker_labels(&labels, "roxy.http.");
+        
+        // 결과 확인
+        assert!(config.middlewares.contains_key("cors"));
+        if let Some(middleware) = config.middlewares.get("cors") {
+            assert_eq!(middleware.middleware_type, MiddlewareType::Cors);
+            assert_eq!(middleware.enabled, true);
+            
+            // 키 형식 변환 확인 (camelCase → snake_case)
+            assert!(middleware.settings.contains_key("allow_origins"));
+            assert_eq!(middleware.settings.get("allow_origins"), Some(&"*".to_string()));
+        } else {
+            panic!("cors middleware not found");
+        }
+        
+        assert!(config.routers.contains_key("api"));
+        if let Some(router) = config.routers.get("api") {
+            assert_eq!(router.rule.as_str(), "Host(`api.example.com`)");
+            assert!(router.middlewares.as_ref().map_or(false, |mids| 
+                mids.len() == 1 && mids[0].as_str() == "cors"));
+            assert_eq!(router.service.as_str(), "api-service");
+        } else {
+            panic!("api router not found");
+        }
+    }
+} 

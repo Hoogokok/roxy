@@ -2,3 +2,4 @@
 /certs
 /plan/*
 /.idea/*
+.cursor/*

@@ -1,0 +1,214 @@
+use roxy::{
+    settings::{Settings, Either, HttpsDisabled, HttpsEnabled, typestate::Validated},
+};
+use std::sync::Once;
+use std::fs;
+use serial_test::serial;
+use toml;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use tempfile::TempDir;
+
+    static INIT: Once = Once::new();
+
+    fn setup() {
+        INIT.call_once(|| {
+            cleanup_env();
+        });
+    }
+
+    fn teardown() {
+        cleanup_env();
+    }
+
+    // 테스트 전후 환경변수 초기화를 위한 헬퍼 함수
+    fn cleanup_env() {
+        let vars = vec![
+            "PROXY_HTTP_PORT", "PROXY_HTTPS_ENABLED", "PROXY_HTTPS_PORT",
+            "PROXY_TLS_CERT", "PROXY_TLS_KEY", "PROXY_LOG_LEVEL",
+            "PROXY_DOCKER_NETWORK", "PROXY_LABEL_PREFIX",
+        ];
+        
+        for var in vars.iter() {
+            std::env::remove_var(var);
+        }
+    }
+
+    // 테스트용 임시 TOML 파일 생성 헬퍼
+    fn create_test_toml(content: &str) -> (String, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test_config.toml");
+        fs::write(&file_path, content).unwrap();
+        (file_path.to_str().unwrap().to_string(), dir)
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_settings_validation() {
+        setup();
+
+        // 1. 잘못된 포트 번호
+        std::env::set_var("PROXY_HTTP_PORT", "99999");
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
+        assert!(result.is_err());
+        teardown();
+        
+        // 2. 잘못된 로그 레벨
+        std::env::set_var("PROXY_LOG_LEVEL", "invalid_level");
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
+        assert!(result.is_err());
+        teardown();
+        
+        // 3. 잘못된 Docker 네트워크 이름
+        std::env::set_var("PROXY_DOCKER_NETWORK", "invalid@network");
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
+        assert!(result.is_err());
+        teardown();
+        
+        // 4. 잘못된 라벨 접두사
+        std::env::set_var("PROXY_LABEL_PREFIX", "invalid-prefix");
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
+        assert!(result.is_err());
+        teardown();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_settings_defaults() {
+        setup();
+        
+        let settings_either = Settings::<Validated, HttpsDisabled>::load().await.unwrap();
+        let settings = match settings_either {
+            Either::Left(settings) => settings,
+            Either::Right(_) => panic!("Expected HTTP settings")
+        };
+        
+        assert_eq!(settings.server.http_port(), 80);
+        assert!(!settings.server.https_enabled());
+        assert_eq!(settings.logging.level, tracing::Level::INFO);
+        assert_eq!(settings.docker.network, "reverse-proxy-network");
+        assert_eq!(settings.docker.label_prefix, "roxy.");
+        assert!(settings.middleware.is_empty());
+        teardown();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_settings_from_toml() {
+        setup();
+        
+        let content = r#"
+            [server]
+            http_port = 9090
+            https_enabled = true
+            https_port = 443
+            tls_cert_path = "/path/to/cert.pem"
+            tls_key_path = "/path/to/key.pem"
+
+            [docker]
+            network = "test-network"
+            label_prefix = "roxy."
+        "#;
+        
+        let (file_path, _dir) = create_test_toml(content);
+        
+        // 파일 내용 출력
+        let file_content = std::fs::read_to_string(&file_path).unwrap();
+
+        print!("TOML 파일 내용: {}", file_content);
+        
+        // from_toml_file 메서드 사용
+        let settings_either = Settings::<Validated, HttpsDisabled>::from_toml_file(&file_path).await.unwrap();
+        
+        // HTTPS 설정 가져오기 (Either::Right 기대)
+        let settings = match settings_either {
+            Either::Right(settings) => settings,
+            Either::Left(_) => panic!("Expected HTTPS settings, got HTTP settings"),
+        };
+        
+        // 설정 검증
+        println!("HTTP port: {}", settings.server.http_port());
+        println!("HTTPS port: {}", settings.server.https_port());
+        assert_eq!(settings.server.http_port(), 9090);
+        assert_eq!(settings.server.https_port(), 443);
+        assert!(settings.server.https_enabled());
+        assert_eq!(settings.docker.network, "test-network");
+        assert_eq!(settings.docker.label_prefix, "roxy.");
+        
+        teardown();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_settings_from_env() {
+        setup();
+
+        // 환경변수 설정
+        std::env::set_var("PROXY_HTTP_PORT", "9090");
+        std::env::set_var("PROXY_HTTPS_ENABLED", "true");
+        std::env::set_var("PROXY_HTTPS_PORT", "443");
+        std::env::set_var("PROXY_TLS_CERT", "/path/to/cert.pem");
+        std::env::set_var("PROXY_TLS_KEY", "/path/to/key.pem");
+        std::env::set_var("PROXY_LOG_LEVEL", "debug");
+        std::env::set_var("PROXY_DOCKER_NETWORK", "custom-network");
+        std::env::set_var("PROXY_LABEL_PREFIX", "roxy.");
+
+        // 설정 로드 및 검증
+        let settings_either = Settings::<Validated, HttpsDisabled>::load().await.unwrap();
+        
+        // 설정값 검증
+        match settings_either {
+            Either::Right(settings) => {
+                assert_eq!(settings.server.http_port(), 9090);
+                assert!(settings.server.https_enabled());
+                assert_eq!(settings.logging.level, tracing::Level::DEBUG);
+                assert_eq!(settings.docker.network, "custom-network");
+                assert_eq!(settings.docker.label_prefix, "roxy.");
+            },
+            Either::Left(_) => panic!("Expected HTTPS settings")
+        };
+
+        teardown();
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_settings_edge_cases() {
+        setup();
+
+        // 1. 포트 충돌 케이스 (HTTP와 HTTPS 포트가 같은 경우)
+        std::env::set_var("PROXY_HTTP_PORT", "443");
+        std::env::set_var("PROXY_HTTPS_ENABLED", "true");
+        std::env::set_var("PROXY_HTTPS_PORT", "443");
+        std::env::set_var("PROXY_TLS_CERT", "/path/to/cert.pem");
+        std::env::set_var("PROXY_TLS_KEY", "/path/to/key.pem");
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
+        assert!(result.is_err(), "포트 충돌이 감지되어야 함");
+        if let Err(e) = result {
+            assert!(e.to_string().contains("HTTP와 HTTPS 포트는 달라야 합니다"));
+        }
+
+        // 2. 포트 번호 0 케이스
+        teardown();
+        std::env::set_var("PROXY_HTTP_PORT", "0");
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
+        assert!(result.is_err(), "포트 0은 허용되지 않아야 함");
+
+        // 3. 빈 네트워크 이름 케이스
+        teardown();
+        std::env::set_var("PROXY_DOCKER_NETWORK", "");
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
+        assert!(result.is_err(), "빈 네트워크 이름은 허용되지 않아야 함");
+
+        // 4. 매우 긴 라벨 접두사 케이스
+        teardown();
+        std::env::set_var("PROXY_LABEL_PREFIX", "a".repeat(1000) + ".");
+        let result = Settings::<Validated, HttpsDisabled>::load().await;
+        assert!(result.is_err(), "너무 긴 라벨 접두사는 허용되지 않아야 함");
+
+        teardown();
+    }
+} 
