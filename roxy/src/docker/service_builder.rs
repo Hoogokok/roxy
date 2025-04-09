@@ -8,6 +8,7 @@ use crate::docker::ContainerInfoExtractor;
 use crate::docker::DockerClient;
 use crate::routing_v2::{BackendService, PathMatcher, LoadBalancerStrategy};
 use crate::settings::container::ContainerConfigManager;
+use crate::settings::core::AnyLoadBalancerSettings;
 use crate::settings::core::Settings;
 use crate::settings::typestate::Validated;
 use bollard::container::ListContainersOptions;
@@ -210,18 +211,59 @@ impl BackendServiceBuilder {
         
         service.enable_load_balancer(strategy);
         
+        // 로드밸런서의 addresses 필드에 첫번째 주소와 가중치도 추가해야 함
+        let first_weight = self.get_weight_from_config(infos[0].container_id.as_deref(), merged_configs).unwrap_or(1);
+        if let Some(lb) = &mut service.load_balancer {
+             // enable_load_balancer에서 이미 첫 번째 주소가 (기본 가중치 1로) 추가되었으므로,
+             // 첫 번째 주소의 가중치를 업데이트합니다.
+             if let Some(first_addr_entry) = lb.addresses.first_mut() {
+                 first_addr_entry.1 = first_weight;
+             }
+             // 가중치 전략인 경우 total_weight 업데이트
+             if let LoadBalancerStrategy::Weighted { total_weight, .. } = &mut lb.strategy {
+                *total_weight = first_weight; // 첫 번째 주소의 가중치로 초기화
+             }
+        }
+
+
         // 추가 컨테이너 처리
         for info in &infos[1..] {
             // 기본 IP:PORT 주소
             let addr = self.extractor.parse_socket_addr(&info.ip, info.port)?;
-            // weight는 기본값 1 사용
-            service.add_address(addr, 1)?;
+
+            // *** 가중치 가져오기 로직 수정 ***
+            let weight = self.get_weight_from_config(info.container_id.as_deref(), merged_configs).unwrap_or(1);
+            debug!("컨테이너 {} 가중치: {}", info.container_id.as_deref().unwrap_or("unknown"), weight);
+
+            // 가져온 가중치로 주소 추가
+            service.add_address(addr, weight)?; 
             
             // 추가 컨테이너 JSON 설정 적용 (병합된 설정 전달)
+            // update_backend_port는 포트만 업데이트하므로 가중치 관련 수정은 불필요
             self.update_backend_port(info, service, merged_configs).await?;
         }
         
         Ok(())
+    }
+    
+    // *** 가중치 추출 헬퍼 함수 추가 ***
+    fn get_weight_from_config(
+        &self,
+        container_id: Option<&str>,
+        merged_configs: Option<&HashMap<String, Settings<Validated>>>
+    ) -> Option<usize> {
+        container_id.and_then(|id| {
+            merged_configs.and_then(|configs| {
+                configs.get(id).and_then(|settings| {
+                    match &settings.load_balancer {
+                        AnyLoadBalancerSettings::Weighted(weighted_settings) => {
+                            Some(weighted_settings.weight()) // WeightedStrategy의 weight() 메서드 사용
+                        }
+                        _ => None, // 다른 전략이거나 설정이 없으면 None 반환
+                    }
+                })
+            })
+        })
     }
     
     /// 백엔드 포트를 업데이트합니다.
@@ -287,6 +329,7 @@ impl BackendServiceBuilder {
 mod tests {
     use super::*;
     use crate::docker::DefaultExtractor;
+    use crate::settings::load_balancer::{LoadBalancerSettings, WeightedStrategy};
     use crate::settings::types::ValidPort;
     use std::pin::Pin;
     use futures_util::stream::Stream;
@@ -528,5 +571,100 @@ mod tests {
         let addr2 = service.get_next_address().unwrap();
         assert_eq!(addr2.port(), 9999);
         assert_eq!(addr2.ip().to_string(), "127.0.0.2");
+    }
+
+    #[tokio::test]
+    async fn test_build_from_containers_with_weighted_load_balancer() {
+        // 테스트 준비
+        let extractor = Box::new(DefaultExtractor::new(
+            "bridge".to_string(),
+            "roxy.".to_string(),
+        ));
+        let client = Arc::new(Box::new(MockDockerClient) as Box<dyn DockerClient>);
+        let (container_config_manager, _) = ContainerConfigManager::new();
+        
+        let builder = BackendServiceBuilder::new(
+            extractor,
+            client,
+            Arc::new(container_config_manager),
+        );
+        
+        // 컨테이너 1 (가중치 5)
+        let container1 = ContainerInfo {
+            host: "weighted-host.com".to_string(),
+            ip: "127.0.0.1".to_string(),
+            port: 80,
+            container_id: Some("container-w1".to_string()),
+            path_matcher: None,
+            middlewares: None,
+            router_name: Some("weighted-service".to_string()),
+            health_check: None,
+             // 이 필드는 BackendService 생성 시점에 사용됨
+            load_balancer: Some(LoadBalancerStrategy::Weighted { 
+                current_index: AtomicUsize::new(0),
+                total_weight: 0 // 빌더가 계산하므로 초기값은 중요하지 않음
+            }),
+            json_config_path: None,
+        };
+        
+        // 컨테이너 2 (가중치 10)
+        let container2 = ContainerInfo {
+            host: "weighted-host.com".to_string(),
+            ip: "127.0.0.2".to_string(),
+            port: 80,
+            container_id: Some("container-w2".to_string()),
+            path_matcher: None,
+            middlewares: None,
+            router_name: Some("weighted-service".to_string()),
+            health_check: None,
+            load_balancer: None, // 첫 번째 컨테이너 정보만 사용됨
+            json_config_path: None,
+        };
+        
+        // 미리 병합된 설정 준비 - 가중치 설정
+        let mut merged_configs = HashMap::new();
+        
+        // 컨테이너 1의 설정 (가중치 5)
+        let mut settings1 = Settings::<Validated>::default(); // 기본 HttpsDisabled 사용
+        settings1.load_balancer = AnyLoadBalancerSettings::Weighted(
+            LoadBalancerSettings::<Validated, WeightedStrategy>::new(5)
+        );
+        merged_configs.insert("container-w1".to_string(), settings1);
+        
+        // 컨테이너 2의 설정 (가중치 10)
+        let mut settings2 = Settings::<Validated>::default(); // 기본 HttpsDisabled 사용
+        settings2.load_balancer = AnyLoadBalancerSettings::Weighted(
+            LoadBalancerSettings::<Validated, WeightedStrategy>::new(10)
+        );
+        merged_configs.insert("container-w2".to_string(), settings2);
+        
+        // 테스트 실행 (미리 병합된 설정 전달)
+        let result = builder.build_from_containers(
+            &[container1, container2], 
+            Some(&merged_configs)
+        ).await;
+        
+        // 검증
+        assert!(result.is_ok(), "Build failed: {:?}", result.err());
+        let (host, _, service) = result.unwrap();
+        assert_eq!(host, "weighted-host.com");
+        
+        // 로드밸런서 및 가중치 확인
+        assert!(service.load_balancer.is_some(), "Load balancer should be enabled");
+        let lb = service.load_balancer.unwrap();
+        
+        // BackendService는 addresses 벡터에 (SocketAddr, usize) 형태로 저장함
+        assert_eq!(lb.addresses.len(), 2, "Should have 2 backend addresses");
+        
+        // 각 주소의 가중치 확인 (순서는 중요하지 않을 수 있음)
+        let weight1 = lb.addresses.iter().find(|(addr, _)| addr.ip().to_string() == "127.0.0.1").map(|(_, w)| *w);
+        let weight2 = lb.addresses.iter().find(|(addr, _)| addr.ip().to_string() == "127.0.0.2").map(|(_, w)| *w);
+        
+        // 이 단언문은 현재 구현에서 실패할 것임 (항상 1로 추가되기 때문)
+        assert_eq!(weight1, Some(5), "Weight for container-w1 should be 5"); 
+        assert_eq!(weight2, Some(10), "Weight for container-w2 should be 10"); 
+        
+        // total_weight 확인 (구현 수정 후 확인)
+        // assert_eq!(lb.get_total_weight(), Some(15), "Total weight should be 15");
     }
 } 
