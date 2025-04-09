@@ -160,7 +160,7 @@ pub struct LoadBalancer {
     /// 튜플의 첫 번째 요소는 서버 주소, 두 번째 요소는 가중치입니다.
     pub addresses: Vec<(SocketAddr, usize)>,
     /// 사용할 로드밸런싱 전략입니다.
-    strategy: LoadBalancerStrategy,
+    pub strategy: LoadBalancerStrategy,
 }
 
 impl LoadBalancer {
