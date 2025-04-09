@@ -12,6 +12,7 @@ use crate::settings::core::Settings;
 use crate::settings::typestate::Validated;
 use bollard::container::ListContainersOptions;
 use tracing::debug;
+use tracing::warn;
 use crate::settings::json::{ServiceConfig, LoadBalancerConfig, ServerConfig};
 use crate::settings::types::ValidUrl;
 use std::net::SocketAddr;
@@ -245,9 +246,10 @@ impl BackendServiceBuilder {
         container_info: &ContainerInfo,
         merged_configs: Option<&HashMap<String, Settings<Validated>>>
     ) -> Option<usize> {
-        // 1. 컨테이너 ID와 서비스 이름(라우터 이름) 가져오기
+        // 1. 컨테이너 ID, 서비스 이름(라우터 이름), 컨테이너 IP 가져오기
         let container_id = container_info.container_id.as_deref()?;
         let service_name = container_info.router_name.as_deref()?;
+        let container_ip = &container_info.ip; // 컨테이너 IP 추가
 
         // 2. merged_configs 에서 해당 컨테이너의 Settings 조회
         let configs = merged_configs?;
@@ -256,8 +258,26 @@ impl BackendServiceBuilder {
         // 3. settings.services 에서 해당 서비스의 ServiceConfig 조회
         let service_config = settings.services.get(service_name)?;
 
-        // 4. ServiceConfig 에서 첫 번째 서버의 weight 반환 (단순화된 로직)
-        service_config.loadbalancer.servers.first().map(|server| server.weight as usize)
+        // 4. ServiceConfig 의 servers 배열 순회하며 IP 매칭
+        for server in &service_config.loadbalancer.servers {
+            // server.url 에서 호스트(IP) 추출 (구현된 host() 메서드 사용)
+            let server_host = server.url.host();
+            // 컨테이너 IP와 서버 URL의 호스트 비교
+            if server_host.as_str() == container_ip {
+                debug!(
+                    "컨테이너 {} ({}) 와 매칭되는 서버 발견 ({}). 가중치: {}",
+                    container_id, container_ip, server.url.as_str(), server.weight
+                );
+                return Some(server.weight as usize); // 일치하면 가중치 반환
+            }
+        }
+
+        // 매칭되는 서버를 찾지 못한 경우
+        warn!(
+            "컨테이너 {} ({}) 에 대해 서비스 '{}' 설정에서 매칭되는 서버 IP를 찾지 못했습니다. 기본 가중치(1) 사용.",
+            container_id, container_ip, service_name
+        );
+        None // 매칭 실패 시 None 반환
     }
     
     /// 백엔드 포트를 업데이트합니다.
@@ -652,6 +672,6 @@ mod tests {
         assert_eq!(weight2, Some(10), "Weight for container-w2 should be 10");
 
         // total_weight 확인 (선택적)
-        // assert_eq!(lb.get_total_weight(), Some(15), "Total weight should be 15"); // get_total_weight 구현 필요
+         assert_eq!(lb.get_total_weight(), Some(15), "Total weight should be 15"); // get_total_weight 구현 필요
     }
 } 
