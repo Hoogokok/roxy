@@ -1,18 +1,17 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 use std::fs;
-use crate::settings::load_balancer::WeightedStrategy;
-use std::io::Write;
 
-use crate::settings::core::{Settings, Result, AnyLoadBalancerSettings};
+use crate::settings::core::{Settings, Result};
 use crate::settings::json::JsonConfig;
 use crate::settings::error::SettingsError;
 use crate::settings::types::ValidMiddlewareId;
 use crate::settings::typestate::TypeState;
 use crate::settings::types::ValidPort;
-use crate::settings::load_balancer::{LoadBalancerSettings};
 use crate::settings::typestate::Validated;
+
+use super::json::ServiceConfig;
 
 
 /// 설정 병합 모듈
@@ -227,7 +226,7 @@ impl<HttpsState> Settings<Validated, HttpsState> {
         
         // JSON 파싱
         let json: serde_json::Value = serde_json::from_str(&file_content)
-             .map_err(|e| SettingsError::JsonParseError { source: e })?; // From 구현 추가 필요할 수 있음
+             .map_err(|e| SettingsError::JsonParseError { source: e })?;
         
         // 서버 설정 적용
         if let Some(server) = json.get("server") {
@@ -245,24 +244,24 @@ impl<HttpsState> Settings<Validated, HttpsState> {
         }
         
         // 로드밸런서 설정 적용
-        if let Some(services) = json.get("services").and_then(|s| s.as_object()) {
-            // 첫 번째 서비스의 로드밸런서 설정을 가져옴 (테스트 목적상)
-            if let Some(first_service_config) = services.values().next() {
-                if let Some(lb_config) = first_service_config.get("loadbalancer").and_then(|lb| lb.as_object()) {
-                    if let Some(servers) = lb_config.get("servers").and_then(|s| s.as_array()) {
-                        if let Some(first_server) = servers.first().and_then(|s| s.as_object()) {
-                            if let Some(weight) = first_server.get("weight").and_then(|w| w.as_u64()) {
-                                if weight > 0 {
-                                    // 이제 State가 Validated이므로 타입이 일치함
-                                    debug!("JSON에서 로드밸런서 가중치 설정: {}", weight);
-                                    self.load_balancer = AnyLoadBalancerSettings::Weighted(
-                                        LoadBalancerSettings::<Validated, WeightedStrategy>::new(weight as usize)
-                                    );
-                                } else {
-                                     warn!("JSON 설정의 로드밸런서 가중치가 0보다 커야 합니다.");
-                                }
-                            }
+        if let Some(services_json) = json.get("services").and_then(|s| s.as_object()) {
+            for (service_name, service_config_json) in services_json {
+                // 각 서비스 설정을 ServiceConfig 타입으로 역직렬화 시도
+                match serde_json::from_value::<ServiceConfig>(service_config_json.clone()) {
+                    Ok(service_config) => {
+                        debug!("서비스 '{}' 설정 파싱 성공: {:?}", service_name, service_config);
+                        // override_existing 또는 기존 설정 없음 조건 확인 후 삽입/업데이트
+                        if override_existing || !self.services.contains_key(service_name) {
+                            self.services.insert(service_name.clone(), service_config);
+                        } else {
+                            // TODO: 기존 설정과 병합하는 로직 추가? (현재는 덮어쓰지 않음)
+                            debug!("서비스 '{}' 설정이 이미 존재하고 override_existing=false 이므로 건너뜁니다.", service_name);
                         }
+                    }
+                    Err(e) => {
+                        warn!("서비스 '{}' 설정 파싱 실패: {}", service_name, e);
+                        // 파싱 실패 시 오류를 반환할지, 로그만 남길지 결정 필요
+                        // return Err(SettingsError::JsonParseError { source: e });
                     }
                 }
             }
@@ -407,7 +406,8 @@ mod tests {
     use super::*;
     use crate::middleware::config::{MiddlewareConfig, MiddlewareType};
     use crate::settings::typestate::Validated;
-    
+    use std::io::Write;
+
     #[test]
     fn test_extract_router_middleware() {
         let key = "roxy.http.routers.api.middlewares".to_string();
@@ -508,21 +508,18 @@ mod tests {
         let result = settings.merge_with_json_config(&json_config, true);
         assert!(result.is_ok(), "merge_with_json_config failed: {:?}", result.err());
 
-
-        // 검증: 로드밸런서 설정이 Weighted로 변경되고 가중치가 올바른지 확인
-        // 주의: 현재 Settings 구조는 전역 로드밸런서 설정 하나만 가짐.
-        //       따라서 JSON의 "my-api" 서비스 설정을 settings.load_balancer에 반영하는 것으로 가정.
-        //       실제 설계에서는 서비스별 설정을 어떻게 Settings에 저장할지 결정 필요.
-        //       여기서는 첫 번째 서버의 가중치(5)가 반영되는지만 확인.
-        match &settings.load_balancer {
-            AnyLoadBalancerSettings::Weighted(weighted_settings) => {
-                // WeightedStrategy 자체가 weight() 메서드를 가지므로 그 값을 확인
-                 assert_eq!(weighted_settings.weight(), 5, "Expected weight 5");
-                 assert_eq!(weighted_settings.strategy_name(), "weighted", "Expected weighted strategy");
-            }
-            _ => {
-                panic!("Expected Weighted LoadBalancer settings, found: {:?}", settings.load_balancer);
-            }
+        // 검증: services 맵에 "my-api" 키가 있고, 해당 서비스 설정의 가중치가 올바른지 확인
+        assert!(settings.services.contains_key("my-api"), "Service 'my-api' not found in settings.services");
+        if let Some(service_config) = settings.services.get("my-api") {
+             assert!(!service_config.loadbalancer.servers.is_empty(), "Servers list for 'my-api' is empty");
+             // 첫 번째 서버의 가중치 확인
+             assert_eq!(service_config.loadbalancer.servers[0].weight, 5, "Expected weight 5 for the first server of 'my-api'");
+             // (선택적) 두 번째 서버의 가중치 확인
+             if service_config.loadbalancer.servers.len() > 1 {
+                 assert_eq!(service_config.loadbalancer.servers[1].weight, 10, "Expected weight 10 for the second server of 'my-api'");
+             }
+        } else {
+            panic!("Failed to get service config for 'my-api'");
         }
 
         Ok(())
