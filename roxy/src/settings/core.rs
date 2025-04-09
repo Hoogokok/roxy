@@ -8,9 +8,46 @@ use crate::settings::logging::LogSettings;
 use crate::settings::docker::DockerSettings;
 use crate::settings::server::{ServerSettings, HttpsDisabled, HttpsEnabled};
 use crate::settings::error::SettingsError;
+use crate::settings::load_balancer::{LoadBalancerSettings, NoLoadBalancing, WeightedStrategy, RoundRobinStrategy, LoadBalancerStrategyState};
 
 /// 결과 타입 별칭
 pub type Result<T> = std::result::Result<T, SettingsError>;
+
+/// 모든 LoadBalancerSettings 상태를 감싸는 Enum 정의
+#[derive(Debug, Clone)]
+pub enum AnyLoadBalancerSettings<State: TypeState> {
+    None(LoadBalancerSettings<State, NoLoadBalancing>),
+    RoundRobin(LoadBalancerSettings<State, RoundRobinStrategy>),
+    Weighted(LoadBalancerSettings<State, WeightedStrategy>),
+}
+
+/// AnyLoadBalancerSettings를 위한 헬퍼 메소드 구현
+impl<State: TypeState> AnyLoadBalancerSettings<State> {
+    pub fn has_strategy(&self) -> bool {
+        match self {
+            AnyLoadBalancerSettings::None(_) => false,
+            _ => true,
+        }
+    }
+}
+
+/// Validated 상태에 대한 추가 헬퍼 메소드
+impl AnyLoadBalancerSettings<Validated> {
+    pub fn strategy_name(&self) -> Option<&'static str> {
+        match self {
+            AnyLoadBalancerSettings::None(_) => None,
+            AnyLoadBalancerSettings::RoundRobin(s) => Some(s.strategy_name()),
+            AnyLoadBalancerSettings::Weighted(s) => Some(s.strategy_name()),
+        }
+    }
+
+    pub fn weight(&self) -> Option<usize> {
+        match self {
+            AnyLoadBalancerSettings::Weighted(s) => Some(s.weight()),
+            _ => None,
+        }
+    }
+}
 
 /// 애플리케이션 설정
 #[derive(Debug, Clone)]
@@ -32,6 +69,9 @@ pub struct Settings<State: TypeState = Validated, HttpsState = HttpsDisabled> {
     /// 라우터-미들웨어 매핑
     pub router_middlewares: HashMap<String, Vec<ValidMiddlewareId>>,
     
+    // 로드밸런서 설정 필드 타입을 AnyLoadBalancerSettings enum으로 변경
+    pub load_balancer: AnyLoadBalancerSettings<State>,
+
     // 상태 마커
     pub _marker: PhantomData<State>,
 }
@@ -46,6 +86,7 @@ impl Default for Settings<Validated, HttpsDisabled> {
             docker: DockerSettings::default(),
             middleware: HashMap::new(),
             router_middlewares: HashMap::new(),
+            load_balancer: AnyLoadBalancerSettings::None(LoadBalancerSettings::<Validated, NoLoadBalancing>::new()),
             _marker: PhantomData,
         }
     }
@@ -62,6 +103,7 @@ impl Settings<Validated, HttpsEnabled> {
             docker: DockerSettings::default(),
             middleware: HashMap::new(),
             router_middlewares: HashMap::new(),
+            load_balancer: AnyLoadBalancerSettings::None(LoadBalancerSettings::<Validated, NoLoadBalancing>::new()),
             _marker: PhantomData,
         }
     }
@@ -155,6 +197,7 @@ mod tests {
         let settings = Settings::<Validated, HttpsDisabled>::default();
         assert_eq!(settings.middleware.len(), 0);
         assert_eq!(settings.router_middlewares.len(), 0);
+        assert!(!settings.load_balancer.has_strategy());
     }
     
     #[test]
@@ -162,6 +205,7 @@ mod tests {
         let settings = Settings::<Validated, HttpsEnabled>::create();
         assert_eq!(settings.middleware.len(), 0);
         assert_eq!(settings.router_middlewares.len(), 0);
+        assert!(!settings.load_balancer.has_strategy());
     }
     
     #[tokio::test]
