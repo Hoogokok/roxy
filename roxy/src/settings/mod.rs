@@ -19,7 +19,7 @@ pub mod core;
 mod loader;
 mod merger;
 mod deserializer;
-mod load_balancer;
+pub mod load_balancer;
 mod types_test;
 
 // 주요 타입과 함수를 내보냅니다
